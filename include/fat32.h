@@ -36,6 +36,10 @@ int  fat32_write(const char *path, const void *data, uint32_t len);
 /* Create a directory. Returns 0 on success. */
 int  fat32_mkdir(const char *path);
 
+/* Barrier: return only once every write to the mounted volume is on media.
+ * Called on the shutdown path so a FAT volume is safe to unplug. */
+int  fat32_flush(void);
+
 const char *fat32_label(void);
 uint64_t    fat32_free_bytes(void);
 uint64_t    fat32_total_bytes(void);

@@ -22,6 +22,12 @@ typedef struct blkdev {
     void    *drv;           /* driver-private handle (ata_dev*, nvme_ns*)    */
     int (*read )(struct blkdev *, uint64_t lba, uint32_t count, void *);
     int (*write)(struct blkdev *, uint64_t lba, uint32_t count, const void *);
+    /* Push the device's write cache to stable media. Optional: a driver that
+     * already completes writes durably leaves it null. Without this, a disk
+     * that reports a write complete while it still sits in DRAM can reorder it
+     * past the commit that is supposed to follow it -- which is exactly the
+     * ordering BoltFS's atomic commit depends on. */
+    int (*flush)(struct blkdev *);
 } blkdev_t;
 
 /* Register a device (the struct is copied into the table). Returns its index
@@ -38,6 +44,10 @@ const char *blk_media(const blkdev_t *d);   /* "NVMe" / "SSD" / "HDD" */
 
 int  blk_read (blkdev_t *d, uint64_t lba, uint32_t count, void *buf);
 int  blk_write(blkdev_t *d, uint64_t lba, uint32_t count, const void *buf);
+/* Barrier: returns only once everything already written is on stable media.
+ * 0 on success (including "device needs no flush"), -1 if the device reported
+ * a failure -- a caller ordering a commit around it must treat that as fatal. */
+int  blk_flush(blkdev_t *d);
 
 /* MBR partition table (LBA 0), transport-agnostic (drives blk_read/write). */
 #define BLK_MBR_SIG_OFF   510

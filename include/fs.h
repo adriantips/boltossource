@@ -43,13 +43,58 @@ uint64_t fs_total_bytes(void);
 int      fs_count_nodes(void);
 
 /* --------------------------------------------------------------------------
- *  Persistence: back the tree with a real ATA disk (SSD/HDD). fs_persist_init
- *  attaches the data disk, loads a saved image if one is present (else formats
- *  the current seeded tree onto it), and enables autosave so every mutation is
- *  flushed. Without a data disk the FS stays RAM-only and these are no-ops.
+ *  Persistence: back the tree with a real disk (ATA / AHCI / NVMe).
+ *  fs_persist_init attaches the data disk, loads a saved image if one is
+ *  present (else formats the current seeded tree onto it), and enables autosave
+ *  so every mutation is committed. Without a data disk the FS stays RAM-only
+ *  and these are no-ops.
+ *
+ *  Commits are atomic: the partition holds two blob slots plus a mirrored
+ *  superblock, and a commit writes the inactive slot, flushes the device cache,
+ *  then swaps the superblock generation. A power cut therefore always leaves a
+ *  mountable image -- either the previous one or the new one, never a torn mix.
+ *  See the commentary at the top of fs/ramfs.c's persistence section.
  * --------------------------------------------------------------------------*/
-void     fs_persist_init(void);              /* call once, after ata_init() */
-int      fs_sync(void);                      /* flush whole tree; 0 ok, -1 err */
+void     fs_persist_init(void);              /* call once, after the disk probes */
+int      fs_sync(void);                      /* commit the tree; 0 ok, -1 err  */
+int      fs_shutdown(void);                  /* commit and mark the image clean */
 int      fs_persist_active(void);            /* 1 if backed by a real disk */
-const char *fs_persist_media(void);          /* "SSD"/"HDD"/"" */
+const char *fs_persist_media(void);          /* "NVMe"/"SSD"/"HDD"/"" */
 const char *fs_persist_model(void);          /* disk model, or "" */
+int      fs_was_unclean(void);               /* 1 if this boot followed a crash */
+uint64_t fs_generation(void);                /* live commit generation */
+void     fs_persist_set_readonly(int ro);    /* recovery mode: never write */
+int      fs_persist_readonly(void);
+
+/* --------------------------------------------------------------------------
+ *  fsck. Re-reads the on-disk image and checks every invariant the loader
+ *  relies on: both superblocks, the blob checksum, and the record chain
+ *  (parents precede children, sizes stay inside the blob, names terminate).
+ *  Runs automatically at mount after an unclean shutdown; `fsck` in the shell
+ *  runs it on demand, with -r to repair.
+ *
+ *  Returns 0 = clean, 1 = issues found (see the report), -1 = unreadable.
+ *  `repair` re-commits the in-RAM tree, which restores both superblocks and
+ *  clears the dirty flag.
+ * --------------------------------------------------------------------------*/
+#define FS_CHECK_MAX_ISSUES 8
+#define FS_CHECK_ISSUE_LEN  72
+
+typedef struct {
+    int      sb_ok;          /* how many of the two superblocks validated  */
+    int      checksum_ok;    /* the live blob matched its checksum         */
+    int      structure_ok;   /* the record chain walked cleanly            */
+    int      clean;          /* the image was marked cleanly shut down     */
+    int      repaired;       /* a repair commit was written                */
+    int      dirs, files;
+    uint64_t bytes;
+    uint64_t generation;
+    uint64_t mounts;
+    uint32_t slot;
+    uint32_t node_count;
+    uint64_t blob_bytes;
+    int      nissue;         /* may exceed FS_CHECK_MAX_ISSUES             */
+    char     issue[FS_CHECK_MAX_ISSUES][FS_CHECK_ISSUE_LEN];
+} fs_check_report;
+
+int      fs_check(int repair, fs_check_report *rep);

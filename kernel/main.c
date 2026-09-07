@@ -68,23 +68,28 @@ static void cpu_harden(void) {
     kprintf("[ok] CPU hardening: SMEP=%s UMIP=%s\n", smep ? "on" : "n/a", umip ? "on" : "n/a");
 }
 
-/* Demo kernel threads: prove preemptive switching by heart-beating to serial
- * (the GUI owns the framebuffer console, so threads stay off it). hlt parks the
- * CPU until the next timer tick, which is also when the scheduler runs. */
-static void demo_thread_a(void) {
+/* Demo kernel threads: proof that the scheduler really preempts. Each one wakes
+ * once a second and bumps its own counter; `ps` prints the counters next to the
+ * kernel's context-switch total, so the evidence is on demand rather than
+ * streamed. (They used to write 'A' and 'B' straight to the serial console once
+ * a second, which interleaved with anything the user was typing at the text
+ * shell -- a prompt would come back reading "wriAte foo".) hlt parks the CPU
+ * until the next timer tick, which is also when the scheduler runs. */
+static uint64_t demo_beats[2];
+
+uint64_t demo_thread_beats(int which) {
+    return (which >= 0 && which < 2) ? demo_beats[which] : 0;
+}
+
+static void demo_beat(int which) {
     uint64_t last = 0;
     for (;;) {
-        if (pit_ticks() - last >= 1000) { last = pit_ticks(); serial_putc('A'); }
+        if (pit_ticks() - last >= 1000) { last = pit_ticks(); demo_beats[which]++; }
         __asm__ volatile("hlt");
     }
 }
-static void demo_thread_b(void) {
-    uint64_t last = 0;
-    for (;;) {
-        if (pit_ticks() - last >= 1000) { last = pit_ticks(); serial_putc('B'); }
-        __asm__ volatile("hlt");
-    }
-}
+static void demo_thread_a(void) { demo_beat(0); }
+static void demo_thread_b(void) { demo_beat(1); }
 
 /* Ring-3 user program. The build cross-compiles user/hello.c into a static
  * ET_EXEC ELF and embeds the raw bytes here. We seed it into the filesystem at

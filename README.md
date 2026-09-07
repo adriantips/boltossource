@@ -162,9 +162,42 @@ The native filesystem (**BoltFS**, `fs/ramfs.c`) is reached through a **VFS laye
 (`kernel/vfs.c`). It is no longer RAM-only: `fs_persist_init()` attaches the first
 non-boot disk (preferring NVMe, then SSD, then HDD), **loads a saved image on
 boot** (or formats the seed tree if none), and autosaves the whole tree on every
-mutation, so files survive reboots. The on-disk format is a superblock plus a
-serialised pre-order node list. `diskinfo` lists detected disks + media type;
-`sync` forces a flush. QEMU exposes data disks (`run.sh`) across both transports.
+mutation, so files survive reboots. `diskinfo` lists detected disks + media type;
+`sync` forces a commit. QEMU exposes data disks (`run.sh`) across both transports.
+
+### Crash safety: atomic commits, flush barriers, fsck
+
+Saves are **atomic**, so a power cut can never leave a half-written filesystem.
+The partition holds **two blob slots and a mirrored superblock**, and a commit is
+a shadow-page swap: serialise the tree into the slot that is *not* live, write
+it, **flush the device's write cache**, then swap the superblock generation (and
+mirror it). Whatever instant the power fails, the next mount finds a complete
+image — the previous one or the new one, never a torn mix — and a torn primary
+superblock simply fails its FNV-1a checksum and falls back to the mirror. This is
+the guarantee a write-ahead log provides; the whole-image rewrite already *is*
+the redo record, so no separate log is needed.
+
+The flush barrier is real hardware, not a no-op: `blkdev_t` gained a `flush` op
+implemented as ATA/AHCI **FLUSH CACHE EXT** and the **NVMe Flush** command, so a
+disk that acknowledges writes out of its DRAM cannot reorder the blob past the
+superblock that names it.
+
+The superblock carries a **clean flag**, cleared on mount and set only by
+`fs_shutdown()`. Finding it clear means the last run ended badly, and the mount
+runs a **consistency check** automatically (the boot menu's entry 4 forces one on
+demand). `fsck` runs the same check from the shell — both superblocks, the blob
+checksum, and the record chain (parents precede children, sizes stay inside the
+blob, names terminate) — and `fsck -r` rewrites the image from the live tree.
+
+`poweroff` and `reboot` commit the filesystem and mark it clean *before* touching
+ACPI, so an ordinary shutdown never costs the next boot a check. Older v1 images
+are migrated on first mount rather than reformatted.
+
+**FAT32** writes are power-loss safe too: `fat32_write` used to free the old
+cluster chain and delete the directory entry *first*, so a crash mid-write
+destroyed the file outright. It now writes the new data to freshly allocated
+clusters while the old copy is still intact, switches the directory entry over in
+a single sector write, and only then releases the old chain.
 
 ### Standard filesystems (EXT2 / FAT32)
 
@@ -535,7 +568,8 @@ The interactive OS shell supports a wide range of commands:
 
 - **File & Directory:** `ls`, `tree`, `cd`, `mkdir`, `rm`, `cp`, `mv`, `find`, `trash`, `recover`, `pwd`, `touch`, `write`
 - **File Inspection:** `cat`, `head`, `tail`, `hex`, `meta`, `diff`, `grep`, `checksum`, `preview`, `count`
-- **System Information:** `sysinfo`, `cpuinfo`, `meminfo`, `diskinfo`, `sync`, `uptime`, `battery`, `sensors`, `devices`, `version`, `health`
+- **System Information:** `sysinfo`, `cpuinfo`, `meminfo`, `diskinfo`, `sync`, `fsck`, `uptime`, `battery`, `sensors`, `devices`, `version`, `health`
+- **Power:** `poweroff`, `reboot` (both commit the filesystem and mark it clean before ACPI S5 / reset), `power off|reboot` (alias)
 - **Process Management:** `ps`, `kill`, `top`, `freeze`, `resume`, `services`, `service`, `jobs`, `priority`, `monitor`
 - **System (cont.):** `winrun` (Windows PE32+ loader), `compile` (BoltRT: compile a source file into a real PE32+ `.exe`), `pkg` (package manager), `users` / `useradd` / `userdel` (multi-user), `libctest` (libc validation)
 - **Networking:** `netinfo`, `ping`, `trace`, `ports`, `download`, `browse`, `webx` (ring-3 web browser), `upload`, `wifi`, `firewall`, `share`, `scan`, `nstest` (NetSurf library test)
