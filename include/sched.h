@@ -26,3 +26,7 @@ int          sched_count(void);                     /* live threads */
 int          sched_current(void);
 const char  *sched_name(int i);
 uint64_t     sched_switches(void);
+
+/* Heartbeat counters of the two demo threads (kernel/main.c): they wake once a
+ * second, so a rising count is direct evidence the scheduler is preempting. */
+uint64_t     demo_thread_beats(int which);

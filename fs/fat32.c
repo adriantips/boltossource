@@ -296,11 +296,41 @@ static int dir_put_entry(uint32_t dir_clus, const uint8_t ent[32]) {
     return write_cluster(nc, clusbuf);
 }
 
-/* update size + first cluster of an existing short entry matching name */
-struct upd_ctx { const char *want; uint32_t newclus; uint32_t newsize; int done; };
 static int free_chain(uint32_t c) {
     while (c >= 2 && c < EOC) { uint32_t nx = fat_get(c); fat_set(c, 0); c = nx; }
     return 0;
+}
+
+/* Repoint an existing 8.3 entry at a new cluster chain and length, in place.
+ * The whole entry lives inside one sector, so the disk sees the switch from the
+ * old file to the new one as a single sector write -- which is what makes
+ * overwriting a file power-loss safe rather than a delete-then-create race.
+ * Returns 0 if the entry was found and rewritten. */
+static int dir_update_entry(uint32_t dir_clus, const char short_name[11],
+                            uint32_t first, uint32_t len) {
+    uint32_t c = dir_clus;
+    while (c >= 2 && c < EOC) {
+        if (read_cluster(c, clusbuf) != 0) return -1;
+        uint32_t entries = fs.clus_bytes / 32;
+        for (uint32_t i = 0; i < entries; i++) {
+            uint8_t *e = clusbuf + i * 32;
+            if (e[0] == 0x00) return -1;                   /* end of directory */
+            if (e[11] == 0x0F || e[0] == 0xE5) continue;   /* LFN / deleted    */
+            if (memcmp(e, short_name, 11) != 0) continue;
+            e[20] = (uint8_t)(first >> 16); e[21] = (uint8_t)(first >> 24);
+            e[26] = (uint8_t)(first);       e[27] = (uint8_t)(first >> 8);
+            *(uint32_t *)(e + 28) = len;
+            return write_cluster(c, clusbuf);
+        }
+        c = fat_get(c);
+    }
+    return -1;
+}
+
+/* Barrier for the mounted volume: everything written so far is on media. */
+int fat32_flush(void) {
+    if (!fs.mounted) return 0;
+    return blk_flush(fs.dev);
 }
 
 int fat32_write(const char *path, const void *data, uint32_t len) {
@@ -311,53 +341,56 @@ int fat32_write(const char *path, const void *data, uint32_t len) {
     if (exists && (old_attr & FAT_ATTR_DIR)) return -1;
     if (leaf[0] == 0) return -1;
 
-    /* free old data + remove old directory entry */
-    if (exists) {
-        if (old_clus) free_chain(old_clus);
-        /* mark old dir entry deleted */
-        char sn[11]; to_short(leaf, sn);
-        uint32_t c = parent;
-        while (c >= 2 && c < EOC) {
-            if (read_cluster(c, clusbuf) != 0) break;
-            uint32_t entries = fs.clus_bytes / 32;
-            int hit = 0;
-            for (uint32_t i = 0; i < entries; i++) {
-                uint8_t *e = clusbuf + i * 32;
-                if (e[11] != 0x0F && e[0] != 0xE5 && e[0] != 0 && memcmp(e, sn, 11) == 0) {
-                    e[0] = 0xE5; hit = 1;
-                }
-            }
-            if (hit) write_cluster(c, clusbuf);
-            c = fat_get(c);
-        }
-    }
+    /* Order matters for power-loss safety. This used to free the old cluster
+     * chain and delete the directory entry FIRST, so a crash anywhere in the
+     * rest of the function destroyed the file outright and left the FAT
+     * pointing at freed clusters. Now the new copy is written to freshly
+     * allocated clusters while the old one is still entirely intact, the
+     * directory entry is switched over in a single sector write, and only then
+     * is the old chain released. A crash before the switch leaves the previous
+     * contents; a crash after it leaves the new contents; a crash between the
+     * switch and the free leaks some clusters, which is recoverable and
+     * infinitely preferable to losing the file. */
 
-    /* allocate + write data clusters */
+    /* 1. allocate + write the new data clusters (old file untouched) */
     uint32_t first = 0, prev = 0, written = 0;
     const uint8_t *src = data;
-    if (len == 0) first = 0;
     while (written < len) {
         uint32_t nc = fat_alloc();
-        if (!nc) return -1;
+        if (!nc) { if (first) free_chain(first); return -1; }
         if (!first) first = nc;
         if (prev) fat_set(prev, nc);
         memset(clusbuf, 0, fs.clus_bytes);
         uint32_t chunk = len - written;
         if (chunk > fs.clus_bytes) chunk = fs.clus_bytes;
         memcpy(clusbuf, src + written, chunk);
-        if (write_cluster(nc, clusbuf) != 0) return -1;
+        if (write_cluster(nc, clusbuf) != 0) { free_chain(first); return -1; }
         written += chunk;
         prev = nc;
     }
+    /* The data and its FAT chain must be durable before any entry names them. */
+    blk_flush(fs.dev);
 
-    /* build + insert short directory entry */
-    uint8_t ent[32]; memset(ent, 0, 32);
-    to_short(leaf, (char *)ent);
-    ent[11] = 0x20;                                   /* archive */
-    ent[20] = (uint8_t)(first >> 16); ent[21] = (uint8_t)(first >> 24);
-    ent[26] = (uint8_t)(first);       ent[27] = (uint8_t)(first >> 8);
-    *(uint32_t *)(ent + 28) = len;
-    return dir_put_entry(parent, ent);
+    /* 2. publish it: repoint the existing entry, or add a new one */
+    char sn[11]; to_short(leaf, sn);
+    int rc;
+    if (exists) {
+        rc = dir_update_entry(parent, sn, first, len);
+    } else {
+        uint8_t ent[32]; memset(ent, 0, 32);
+        memcpy(ent, sn, 11);
+        ent[11] = 0x20;                               /* archive */
+        ent[20] = (uint8_t)(first >> 16); ent[21] = (uint8_t)(first >> 24);
+        ent[26] = (uint8_t)(first);       ent[27] = (uint8_t)(first >> 8);
+        *(uint32_t *)(ent + 28) = len;
+        rc = dir_put_entry(parent, ent);
+    }
+    if (rc != 0) { if (first) free_chain(first); return -1; }
+    blk_flush(fs.dev);
+
+    /* 3. the switch is durable, so the old chain is finally safe to release */
+    if (exists && old_clus) { free_chain(old_clus); blk_flush(fs.dev); }
+    return 0;
 }
 
 int fat32_mkdir(const char *path) {

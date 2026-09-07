@@ -93,7 +93,7 @@ class BoltVM:
 
     def __init__(self, name="vm", uefi=False, disks=True, net=True, snapshot=True,
                  memory="2G", smp=2, extra=None, port=None, workdir=None,
-                 boot_img=None, data_disks=None):
+                 boot_img=None, data_disks=None, no_reboot=False):
         self.name = name
         self.uefi = uefi
         self.workdir = workdir or os.path.join(ROOT, "test", "out")
@@ -145,8 +145,13 @@ class BoltVM:
             a += ["-netdev", "user,id=net0", "-device", "e1000,netdev=net0"]
         a += ["-display", "none",
               "-serial", "file:" + self.serial_path,
-              "-qmp", "tcp:127.0.0.1:%d,server,nowait" % self.port,
-              "-no-reboot"]
+              "-qmp", "tcp:127.0.0.1:%d,server,nowait" % self.port]
+        # -no-reboot makes QEMU *exit* on any reset request, QMP system_reset
+        # included, so it is off by default: reset() and the guest's own `reboot`
+        # both need the machine to come back. Tests that want a reboot loop to
+        # show up as an exit ask for it explicitly.
+        if no_reboot:
+            a += ["-no-reboot"]
         a += extra or []
         self.args = a
 
@@ -225,6 +230,14 @@ class BoltVM:
             self._buf += chunk.decode("utf-8", "replace")
         return self._buf
 
+    def clear(self):
+        """Forget everything seen so far. Output already written stays in the
+        log file but stops matching, so a test can wait for the NEXT occurrence
+        of a line that has appeared before -- e.g. the boot banner after a
+        reboot, since a warm reset keeps appending to the same serial file."""
+        self.serial()
+        self._buf = ""
+
     def wait_for(self, needle, timeout=90, poll=0.25):
         """Block until `needle` appears on the serial log. True if it did."""
         end = time.time() + timeout
@@ -302,10 +315,9 @@ class BoltVM:
     def reset(self):
         """Warm-reset the guest. Disk contents survive, so this is how the
         persistence tests check that a file written before the reset is still
-        there afterwards."""
+        there afterwards. Needs no_reboot=False (the default)."""
+        self.clear()
         self._cmd({"execute": "system_reset"})
-        self._read = 0
-        self._buf = ""
         time.sleep(1.0)
 
     def power_cycle(self):

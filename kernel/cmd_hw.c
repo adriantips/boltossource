@@ -64,19 +64,16 @@ int cmd_fat(int argc, char **argv) {
     return 1;
 }
 
+/* `power` predates poweroff/reboot and stays as an alias for them. It used to
+ * jump straight at ACPI without flushing, which meant every shutdown through
+ * this path left the filesystem dirty and cost the next boot a full fsck. */
 int cmd_power(int argc, char **argv) {
     const char *sub = argc > 1 ? argv[1] : "";
-    if (strcmp(sub, "off") == 0 || strcmp(sub, "shutdown") == 0) {
-        kprintf("Powering off via ACPI...\n");
-        acpi_poweroff();
-        return 0;
-    }
-    if (strcmp(sub, "reboot") == 0 || strcmp(sub, "restart") == 0) {
-        kprintf("Rebooting...\n");
-        acpi_reboot();
-        return 0;
-    }
-    kprintf("usage: power off | reboot\n");
+    if (strcmp(sub, "off") == 0 || strcmp(sub, "shutdown") == 0)
+        return cmd_poweroff(argc, argv);
+    if (strcmp(sub, "reboot") == 0 || strcmp(sub, "restart") == 0)
+        return cmd_reboot(argc, argv);
+    kprintf("usage: power off | reboot   (same as the poweroff / reboot commands)\n");
     return 1;
 }
 

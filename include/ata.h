@@ -38,6 +38,7 @@ ata_dev  *ata_fs_disk(void);
 
 /* Sector I/O. lba/count in 512-byte sectors. Return 0 on success, -1 on error
  * (absent disk, out-of-range LBA, or controller error/timeout). */
+int       ata_flush(ata_dev *d);            /* FLUSH CACHE: cache -> media */
 int       ata_read (ata_dev *d, uint64_t lba, uint32_t count, void *buf);
 int       ata_write(ata_dev *d, uint64_t lba, uint32_t count, const void *buf);
 

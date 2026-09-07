@@ -2,6 +2,8 @@
 #include "commands.h"
 #include "hw.h"
 #include "fs.h"
+#include "fat32.h"
+#include "acpi.h"
 #include "blk.h"
 #include "pmm.h"
 #include "kheap.h"
@@ -169,10 +171,85 @@ int cmd_diskinfo(int argc, char **argv) {
 int cmd_sync(int argc, char **argv) {
     (void)argc; (void)argv;
     if (!fs_persist_active()) { kprintf("sync: no persistent disk; FS is RAM-only\n"); return 1; }
+    if (fs_persist_readonly()) { kprintf("sync: filesystem is mounted read-only (recovery)\n"); return 1; }
     int rc = fs_sync();
-    kprintf(rc == 0 ? "sync: flushed FS to %s '%s'\n" : "sync: FAILED\n",
-            fs_persist_media(), fs_persist_model());
+    kprintf(rc == 0 ? "sync: committed FS to %s '%s' (generation %lu)\n" : "sync: FAILED\n",
+            fs_persist_media(), fs_persist_model(), (unsigned long)fs_generation());
     return rc == 0 ? 0 : 1;
+}
+
+/* ------------------------------- fsck ------------------------------------ */
+int cmd_fsck(int argc, char **argv) {
+    int repair = 0;
+    for (int i = 1; i < argc; i++)
+        if (strcmp(argv[i], "-r") == 0 || strcmp(argv[i], "--repair") == 0) repair = 1;
+
+    if (!fs_persist_active()) {
+        kprintf("fsck: no persistent disk; the FS is RAM-only and always consistent\n");
+        return 0;
+    }
+    if (repair && fs_persist_readonly()) {
+        kprintf("fsck: cannot repair a read-only mount (booted in recovery)\n");
+        return 1;
+    }
+
+    fs_check_report r;
+    int rc = fs_check(repair, &r);
+
+    kprintf("BoltFS on %s '%s'\n", fs_persist_media(), fs_persist_model());
+    kprintf("  superblocks : %d of 2 valid\n", r.sb_ok);
+    kprintf("  generation  : %lu   slot %u   mount #%lu\n",
+            (unsigned long)r.generation, r.slot, (unsigned long)r.mounts);
+    kprintf("  shutdown    : %s\n", r.clean ? "clean" : "UNCLEAN (crash or power loss)");
+    kprintf("  checksum    : %s\n", r.checksum_ok ? "ok" : "FAILED");
+    kprintf("  structure   : %s\n", r.structure_ok ? "ok" : "FAILED");
+    kprintf("  contents    : %d dirs, %d files, %lu bytes in %lu image bytes\n",
+            r.dirs, r.files, (unsigned long)r.bytes, (unsigned long)r.blob_bytes);
+
+    if (r.nissue == 0) kprintf("  no issues found.\n");
+    for (int i = 0; i < r.nissue && i < FS_CHECK_MAX_ISSUES; i++)
+        kprintf("  issue: %s\n", r.issue[i]);
+    if (r.nissue > FS_CHECK_MAX_ISSUES)
+        kprintf("  ... and %d more\n", r.nissue - FS_CHECK_MAX_ISSUES);
+
+    if (r.repaired) kprintf("  repaired: rewrote both superblocks and marked the image clean.\n");
+    else if (r.nissue && !repair) kprintf("  run 'fsck -r' to rewrite the image from the live tree.\n");
+
+    return rc < 0 ? 2 : (rc > 0 ? 1 : 0);
+}
+
+/* --------------------------- shutdown / reboot ---------------------------- *
+ *  The one path a user is guaranteed to take every single day, so it is the
+ *  one that must never lose a file. Both commands commit the filesystem and
+ *  mark the image clean BEFORE touching ACPI -- an image left dirty is what
+ *  makes the next boot run a full fsck.
+ * -------------------------------------------------------------------------- */
+static void shutdown_prepare(const char *what) {
+    kprintf("%s: flushing filesystems...\n", what);
+    if (fs_persist_active() && !fs_persist_readonly()) {
+        if (fs_shutdown() == 0)
+            kprintf("%s: BoltFS committed and marked clean (generation %lu)\n",
+                    what, (unsigned long)fs_generation());
+        else
+            kprintf("%s: WARNING - the final commit failed; recent changes may be lost\n", what);
+    }
+    fat32_flush();
+}
+
+int cmd_poweroff(int argc, char **argv) {
+    (void)argc; (void)argv;
+    shutdown_prepare("poweroff");
+    kprintf("poweroff: powering off via ACPI (S5).\n");
+    acpi_poweroff();
+    return 0;
+}
+
+int cmd_reboot(int argc, char **argv) {
+    (void)argc; (void)argv;
+    shutdown_prepare("reboot");
+    kprintf("reboot: restarting.\n");
+    acpi_reboot();
+    return 0;
 }
 
 /* ------------------------------ battery ---------------------------------- */

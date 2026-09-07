@@ -35,6 +35,7 @@
 #define CMD_WRITE_PIO     0x30
 #define CMD_WRITE_PIO_EXT 0x34
 #define CMD_CACHE_FLUSH   0xE7
+#define CMD_CACHE_FLUSH_EXT 0xEA
 #define CMD_IDENTIFY      0xEC
 
 #define ATA_MAX 4
@@ -163,6 +164,12 @@ static int ata_blk_read(blkdev_t *b, uint64_t lba, uint32_t count, void *buf) {
 static int ata_blk_write(blkdev_t *b, uint64_t lba, uint32_t count, const void *buf) {
     return ata_write((ata_dev *)b->drv, lba, count, buf);
 }
+/* rw_sector already issues FLUSH CACHE after every sector, so by the time a
+ * write returns the data is on media. This still sends one explicit flush so
+ * the barrier is real even if that per-sector flush is ever relaxed. */
+static int ata_blk_flush(blkdev_t *b) {
+    return ata_flush((ata_dev *)b->drv);
+}
 static void ata_blk_register(ata_dev *d, int idx) {
     blkdev_t b;
     memset(&b, 0, sizeof b);
@@ -174,6 +181,7 @@ static void ata_blk_register(ata_dev *d, int idx) {
     b.drv         = d;
     b.read        = ata_blk_read;
     b.write       = ata_blk_write;
+    b.flush       = ata_blk_flush;
     b.name[0] = 'a'; b.name[1] = 't'; b.name[2] = 'a';
     b.name[3] = (char)('0' + idx); b.name[4] = 0;
     strncpy(b.model, d->model[0] ? d->model : "ATA disk", sizeof b.model - 1);
@@ -247,6 +255,17 @@ static int rw(ata_dev *d, uint64_t lba, uint32_t count, uint8_t *buf, int write)
     for (uint32_t i = 0; i < count; i++)
         if (rw_sector(d, lba + i, buf + i * ATA_SECTOR, write) != 0) return -1;
     return 0;
+}
+
+/* FLUSH CACHE (0xE7) / FLUSH CACHE EXT (0xEA): the drive returns only once its
+ * write cache has reached the platter/NAND. */
+int ata_flush(ata_dev *d) {
+    if (!d || !d->present) return -1;
+    uint16_t io = d->io_base, ctrl = d->ctrl_base;
+    if (wait_clear_bsy(io) != 0) return -1;
+    ata_select(io, ctrl, d->slave, 0);
+    outb(io + R_CMD, d->lba48 ? CMD_CACHE_FLUSH_EXT : CMD_CACHE_FLUSH);
+    return wait_clear_bsy(io);
 }
 
 int ata_read (ata_dev *d, uint64_t lba, uint32_t count, void *buf) {

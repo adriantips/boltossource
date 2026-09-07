@@ -44,6 +44,7 @@
 #define ADMIN_OP_CREATE_SQ  0x01
 #define ADMIN_OP_CREATE_CQ  0x05
 #define ADMIN_OP_IDENTIFY   0x06
+#define IO_OP_FLUSH         0x00
 #define IO_OP_WRITE         0x01
 #define IO_OP_READ          0x02
 
@@ -177,6 +178,15 @@ static int nvme_blk_read(blkdev_t *b, uint64_t lba, uint32_t count, void *buf) {
 static int nvme_blk_write(blkdev_t *b, uint64_t lba, uint32_t count, const void *buf) {
     (void)b; return nvme_rw(lba, count, (void *)(uintptr_t)buf, 1);
 }
+/* NVM Flush (opcode 0x00): completes once every write already acknowledged for
+ * this namespace is in a power-fail-safe location. */
+static int nvme_blk_flush(blkdev_t *b) {
+    (void)b;
+    uint32_t cmd[16]; memset(cmd, 0, sizeof cmd);
+    cmd[0] = IO_OP_FLUSH;
+    cmd[1] = 1;                                        /* NSID = 1 */
+    return submit(&nv.io, cmd) == 0 ? 0 : -1;
+}
 
 static int identify_ns(void) {
     struct dma_buf id;
@@ -291,6 +301,7 @@ void nvme_init(void) {
     b.is_boot     = 0;
     b.read  = nvme_blk_read;
     b.write = nvme_blk_write;
+    b.flush = nvme_blk_flush;
     strncpy(b.name,  "nvme0n1",   sizeof b.name - 1);
     strncpy(b.model, "QEMU NVMe",  sizeof b.model - 1);
     blk_register(&b);

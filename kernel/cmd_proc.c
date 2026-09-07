@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "commands.h"
+#include "sched.h"
 #include "sysreg.h"
 #include "pmm.h"
 #include "pit.h"
@@ -38,6 +39,13 @@ int cmd_ps(int argc, char **argv) {
     for (int i = 0; i < task_count(); i++) ps_row(task_get(i));
     kprintf("(%d kernel contexts; BoltOS is a cooperative single-address-space kernel)\n",
             task_count());
+
+    /* Scheduler evidence: live threads, how many times the timer tick has
+     * actually switched between them, and the two demo threads' heartbeats. */
+    kprintf("scheduler: %d thread%s, %lu context switches, demo beats %lu/%lu\n",
+            sched_count(), sched_count() == 1 ? "" : "s",
+            (unsigned long)sched_switches(),
+            (unsigned long)demo_thread_beats(0), (unsigned long)demo_thread_beats(1));
     return 0;
 }
 

@@ -50,6 +50,11 @@ int blk_write(blkdev_t *d, uint64_t lba, uint32_t count, const void *buf) {
     if (lba + count > d->sectors) return -1;
     return d->write(d, lba, count, buf);
 }
+int blk_flush(blkdev_t *d) {
+    if (!d) return -1;
+    if (!d->flush) return 0;            /* driver writes are already durable */
+    return d->flush(d);
+}
 
 /* ---------------------------------------------------------------- MBR ------*/
 static uint32_t rd_le32(const uint8_t *p) {

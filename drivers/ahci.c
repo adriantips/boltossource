@@ -58,6 +58,7 @@
 #define ATA_IDENTIFY     0xEC
 #define ATA_READ_DMA_EX  0x25
 #define ATA_WRITE_DMA_EX 0x35
+#define ATA_FLUSH_EX     0xEA
 #define FIS_TYPE_H2D     0x27
 
 #define BOUNCE_SECTORS   128          /* 64 KiB per command */
@@ -104,7 +105,9 @@ static int port_exec(struct ahci_port *p, uint8_t ata_cmd, uint64_t lba,
     /* command header 0 */
     volatile uint32_t *hdr = (volatile uint32_t *)p->clb.virt;
     uint16_t cfl = 5;                                   /* H2D FIS = 5 dwords */
-    hdr[0] = cfl | (write ? (1u << 6) : 0) | (1u << 16);/* PRDTL = 1 entry    */
+    /* bytes == 0 is a non-data command (FLUSH CACHE): no PRDT entry at all. */
+    uint32_t prdtl = bytes ? (1u << 16) : 0;
+    hdr[0] = cfl | (write ? (1u << 6) : 0) | prdtl;
     hdr[1] = 0;                                         /* PRDBC              */
     hdr[2] = (uint32_t)p->ctba.phys;
     hdr[3] = (uint32_t)(p->ctba.phys >> 32);
@@ -129,12 +132,14 @@ static int port_exec(struct ahci_port *p, uint8_t ata_cmd, uint64_t lba,
     fis[12] = (uint8_t)(count);
     fis[13] = (uint8_t)(count >> 8);
 
-    /* PRDT entry at offset 0x80 */
-    volatile uint32_t *prdt = (volatile uint32_t *)(ct + 0x80);
-    prdt[0] = (uint32_t)buf_phys;
-    prdt[1] = (uint32_t)(buf_phys >> 32);
-    prdt[2] = 0;
-    prdt[3] = (bytes - 1) & 0x3FFFFF;                   /* byte count - 1     */
+    /* PRDT entry at offset 0x80 (skipped for non-data commands) */
+    if (bytes) {
+        volatile uint32_t *prdt = (volatile uint32_t *)(ct + 0x80);
+        prdt[0] = (uint32_t)buf_phys;
+        prdt[1] = (uint32_t)(buf_phys >> 32);
+        prdt[2] = 0;
+        prdt[3] = (bytes - 1) & 0x3FFFFF;               /* byte count - 1     */
+    }
 
     /* wait for the port to be idle, then issue slot 0 */
     for (int t = 0; t < 1000000; t++)
@@ -171,6 +176,11 @@ static int ahci_blk_read(blkdev_t *b, uint64_t lba, uint32_t count, void *buf) {
 }
 static int ahci_blk_write(blkdev_t *b, uint64_t lba, uint32_t count, const void *buf) {
     return ahci_rw((struct ahci_port *)b->drv, lba, count, (void *)(uintptr_t)buf, 1);
+}
+/* FLUSH CACHE EXT as a non-data command: the drive completes it only after its
+ * write cache has reached media, which is the barrier the FS commit needs. */
+static int ahci_blk_flush(blkdev_t *b) {
+    return port_exec((struct ahci_port *)b->drv, ATA_FLUSH_EX, 0, 0, 0, 0, 0);
 }
 
 static void extract_model(const uint16_t *id, char *out) {
@@ -226,6 +236,7 @@ static int port_init(int portno) {
     b.drv         = p;
     b.read  = ahci_blk_read;
     b.write = ahci_blk_write;
+    b.flush = ahci_blk_flush;
     int idx = 0;
     for (int i = 0; i < portno; i++) if (g_ports[i].used) idx++;
     b.name[0] = 's'; b.name[1] = 'd'; b.name[2] = (char)('a' + idx); b.name[3] = 0;
