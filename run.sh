@@ -3,15 +3,10 @@
 # Extra args are passed through (e.g. -display sdl for a real window).
 # An e1000 NIC on user-mode (slirp) NAT gives the browser real internet: slirp
 # hands out 10.0.2.15/24, gateway 10.0.2.2, DNS 10.0.2.3 -- the kernel defaults.
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+# QEMU + OVMF discovery and $ROOT live in qemu-env.sh, shared with run-uefi.sh
+# and the QEMU regression suite (test/run-tests.sh).
+. "$(dirname "$0")/qemu-env.sh"
 
-# Detect QEMU across msys2, Git Bash, and WSL mount styles
-[ -f /c/Program\ Files/qemu/qemu-system-x86_64.exe ] && QEMU=/c/Program\ Files/qemu/qemu-system-x86_64.exe
-[ -z "${QEMU-}" ] && [ -f /mnt/c/Program\ Files/qemu/qemu-system-x86_64.exe ] && QEMU=/mnt/c/Program\ Files/qemu/qemu-system-x86_64.exe
-[ -z "${QEMU-}" ] && { echo "ERROR: QEMU not found"; exit 1; }
-
-# Convert ROOT to Windows path when under WSL (QEMU is a Windows exe)
-command -v wslpath &>/dev/null && ROOT=$(wslpath -w "$ROOT")
 exec "$QEMU" \
     -drive id=boot,file="$ROOT/iso/os.img",format=raw,if=none \
     -device ide-hd,drive=boot,bus=ide.0,unit=0 \
@@ -30,10 +25,10 @@ exec "$QEMU" \
     -device ide-hd,drive=ext2,bus=ide.0,unit=1 \
     -boot order=c \
     -cpu max \
-    -m 2G \
+    -m 16G \
     -smp 4 \
     -rtc base=utc \
-    -vga std -global VGA.vgamem_mb=64 \
+    -vga std -global VGA.vgamem_mb=128 \
     -audiodev dsound,id=snd0 \
     -machine pcspk-audiodev=snd0 \
     -device AC97,audiodev=snd0 \
