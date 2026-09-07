@@ -102,6 +102,8 @@ extern const uint8_t _binary_js_elf_start[];
 extern const uint8_t _binary_js_elf_end[];
 extern const uint8_t _binary_browser_elf_start[];
 extern const uint8_t _binary_browser_elf_end[];
+extern const uint8_t _binary_crashme_elf_start[];
+extern const uint8_t _binary_crashme_elf_end[];
 
 /* Write an embedded ELF blob into the filesystem at `path` so proc_exec can load
  * it. /bin is created on first use. Returns 0 on success. */
@@ -125,6 +127,7 @@ static void launch_user_demo(void) {
      * demand -- all three run in ring 3 through the ELF loader + syscalls. */
     seed_blob("/bin/js",      _binary_js_elf_start,      _binary_js_elf_end);
     seed_blob("/bin/browser", _binary_browser_elf_start, _binary_browser_elf_end);
+    seed_blob("/bin/crashme", _binary_crashme_elf_start, _binary_crashme_elf_end);
     if (seed_blob("/bin/hello", _binary_hello_elf_start, _binary_hello_elf_end) != 0)
         return;
 

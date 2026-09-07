@@ -26,9 +26,35 @@ const char *blk_media(const blkdev_t *d) {
     return d->is_ssd ? "SSD" : "HDD";
 }
 
+/* Does this device carry a BoltFS partition? */
+static int has_boltfs(blkdev_t *d) {
+    blk_part parts[4];
+    if (blk_read_mbr(d, parts) <= 0) return 0;
+    for (int i = 0; i < 4; i++)
+        if (parts[i].present && parts[i].type == BLK_PART_BOLTFS) return 1;
+    return 0;
+}
+
 blkdev_t *blk_fs_disk(void) {
-    /* Prefer a non-boot NVMe namespace, then any non-boot SSD, then any
-     * non-boot disk. Lets the FS land on the fastest persistent medium. */
+    /* 1. The disk we booted from, if it carries a BoltFS partition. That is an
+     *    installed system's own root: unambiguous, because we are running the
+     *    kernel that came off it. Without this rule a machine installed to a
+     *    single disk ran RAM-only with its filesystem sitting unmounted right
+     *    beside it, since the boot disk used to be skipped unconditionally.
+     *
+     *    Deliberately narrow: "any disk with a BoltFS partition" would be
+     *    ambiguous the moment two disks have one, and which of them won would
+     *    depend on driver probe order -- a filesystem that moves between boots. */
+    for (int i = 0; i < g_n; i++) {
+        blkdev_t *d = &g_dev[i];
+        if (d->is_boot && has_boltfs(d)) return d;
+    }
+
+    /* 2. Otherwise a data disk, as before: a non-boot NVMe namespace, then any
+     *    non-boot SSD, then any non-boot disk, so the FS lands on the fastest
+     *    persistent medium. The boot disk is never adopted implicitly here --
+     *    formatting it would write an MBR straight over the boot chain that
+     *    lives in the gap before the first partition. */
     blkdev_t *ssd = 0, *any = 0;
     for (int i = 0; i < g_n; i++) {
         blkdev_t *d = &g_dev[i];

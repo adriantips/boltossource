@@ -4,6 +4,9 @@
 #include "pic.h"
 #include "apic.h"
 #include "io.h"
+#include "klog.h"
+#include "sched.h"
+#include "proc.h"
 
 static irq_handler_t handlers[16];
 static irq_handler_t msi_handlers[16];      /* vectors 0x70..0x7F */
@@ -92,7 +95,23 @@ static void panic_dump(struct registers *r) {
 
 struct registers *isr_handler(struct registers *r) {
     if (r->int_no < 32) {
+        /* A fault raised in ring 3 is the process's problem, not the machine's.
+         * It used to take the whole kernel down with it, which meant one bad
+         * pointer in the browser or a user program killed the desktop and
+         * everything else running. Now the process is reported and reaped and
+         * the machine carries on -- which is the difference between an OS you
+         * can leave running and a demo.
+         *
+         * Ring 0 still panics: a kernel fault means kernel state is already
+         * untrustworthy, and continuing would corrupt more than it saved. */
+        if ((r->cs & 3) == 3 && sched_current_proc() && !crash_in_progress()) {
+            struct registers *next = proc_fault_kill(r);
+            if (next) return next;
+        }
+        if (!crash_in_progress())
+            crash_record("kernel panic", 0, r);   /* persisted for the next boot */
         panic_dump(r);
+        kprintf("  (crash log saved to %s)\n", CRASH_LOG_PATH);
         for (;;) __asm__ volatile("cli; hlt");
     }
 

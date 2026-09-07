@@ -42,7 +42,7 @@ outlines (`kernel/ttf.c`) in addition to the built-in bitmap fonts. A
 **system-wide clipboard** (`kernel/clipboard.c`) enables copy/paste across apps.
 Each app is a `kernel/app_*.c` file exposing `draw/key/click/drag/tick` callbacks.
 
-Bundled apps (24):
+Bundled apps (25):
 
 - **Terminal** — the full interactive shell in a window
 - **File Explorer** — browse/open the persistent filesystem
@@ -57,6 +57,8 @@ Bundled apps (24):
   highlighting, line numbers, a Run button and an output console
 - **Task Manager** — live process / CPU / memory view
 - **Settings** — themes and system options (persisted), font switching
+- **Install BoltOS** — the graphical installer: pick a disk, create the account,
+  watch the progress bar; writes both the legacy and UEFI boot paths
 - **Calculator**, **Clock**, **Stopwatch**, **Calendar**, **Notes** (saved to FS)
 - **Paint**, **Color Picker**, **Piano** (PC-speaker, zoomable multi-octave)
 - **System Info**, **Matrix** rain
@@ -130,6 +132,49 @@ long-mode page tables (identity + higher-half direct map), and passes a
 `bootinfo` struct (GOP framebuffer + memory map) in RDI. Built with
 `clang --target=x86_64-unknown-windows` (MS ABI) and linked as an EFI
 application.
+
+## Installer
+
+BoltOS installs itself. `install` (shell) and the **Install BoltOS** desktop app
+are two front-ends over `kernel/install.c`, and they write a self-contained,
+bootable system onto a target disk from inside a running BoltOS — no host
+toolchain, no `dd`, no second machine.
+
+Both boot paths are laid down, so the result boots on legacy BIOS *and* on UEFI
+firmware:
+
+```
+LBA 0        stage1 (MBR), with the partition table overlaid on its code
+LBA 1..32    stage2
+LBA 33       BoltOS boot header — where the kernel is and how big it is
+LBA 34..     kernel.bin
+partition 1  FAT32 EFI system partition: EFI/BOOT/BOOTX64.EFI + kernel.bin
+partition 2  BoltFS, seeded with a copy of the running filesystem
+```
+
+The trick that makes this possible is that a running BoltOS **carries its own
+bootloader**: `build.sh` embeds `stage1.bin`, `stage2.bin` and `BOOTX64.EFI` into
+the kernel image as blobs. That in turn only works because stage2 no longer has
+the kernel's size assembled into it — it reads the boot header at LBA 33 instead
+(see *Boot flow*). The one piece that cannot be embedded is `kernel.bin` itself
+(a kernel cannot contain a copy of itself), so it is read back from the medium
+this machine booted from: the boot header on the install disk, or `kernel.bin` on
+the ESP under UEFI.
+
+The wizard asks for the target disk and the username/password of the account
+you will sign in with, shows the exact layout it is about to write, and then
+reports progress. If the target happens to be the disk this live system is
+persisting to — the normal case when installing from a single-disk live medium —
+persistence is detached first and the in-RAM tree is what gets copied over.
+
+```
+install                              list the installable disks and the planned layout
+install DISK                         interactive: asks for the account, confirms, installs
+install DISK USER PASS [ESP_MB]      unattended
+```
+
+`test/t_install.py` installs onto a blank 512 MiB disk, throws the install medium
+away, and boots the result on both legacy BIOS and UEFI.
 
 ## Storage (HDD / SSD / NVMe / AHCI SATA) + VFS
 
@@ -435,6 +480,34 @@ and userland programs link against:
 Built with `-fstack-protector-strong` and `-fno-math-errno` for kernel
 compatibility.
 
+## Fault isolation, crash logs and dmesg
+
+A CPU fault raised in **ring 3 kills the process, not the machine**. It used to
+panic the kernel, which meant one bad pointer in the browser, the IDE or any
+user program took down the compositor and everything else running with it.
+`isr_handler` now checks the saved CS: ring 3 goes to `proc_fault_kill()`, which
+records the crash, closes the process's descriptors, retires its scheduler slot
+and returns the *next* thread's register frame for the ISR epilogue to resume.
+Ring 0 still panics — a kernel fault means kernel state is already untrustworthy.
+
+`crash ring3 [null|div|ud|stack]` runs `/bin/crashme`, a ring-3 program that
+faults on purpose, so the behaviour can be demonstrated and regression tested
+(`test/t_fault.py` runs all four and checks the shell still answers afterwards).
+
+Every crash — ring-3 fault or kernel panic — is formatted into a report
+(registers, page-fault decode, backtrace) and appended to **`/var/log/crash.log`**,
+which survives the reboot; that is the point, since the report you need is from
+the boot that failed. `crashlog` reads it back, `crashlog clear` empties it.
+The crash formatter is allocation-free and writes into a static buffer, so it is
+safe to run from a fault handler, and a fault raised *inside* it halts rather
+than recursing.
+
+Alongside it, every character passing through `kputc` is copied into a 64 KiB
+kernel log ring (`kernel/klog.c`), so **`dmesg`** can replay the whole boot log
+long after the console has scrolled and the GUI has taken the screen.
+`dmesg -N` shows the last N lines; `dmesg save` appends the ring to
+`/var/log/kernel.log`.
+
 ## StackGuard (stack canaries)
 
 `kernel/stackguard.c` provides **stack-smashing protection**. The kernel is built
@@ -446,6 +519,19 @@ boot.
 
 ## Boot flow (from scratch)
 
+Both loaders show a five-second **boot menu** first — *BoltOS* / *Safe mode* /
+*Recovery shell* / *BoltOS + fsck* — and pass the choice to the kernel in
+`bootinfo.boot_flags`. Safe mode skips the network, audio and the desktop and
+drops to the text shell; recovery additionally mounts the filesystem read-only.
+That is the way back in when a bad setting, a wedged NIC or a crashing app is
+what is stopping the boot.
+
+stage2 does **not** have the kernel's size assembled into it. It reads a
+one-sector **boot header** at LBA 33 (`include/boot.h`, written by
+`mkboothdr.py`) to learn where the kernel starts and how many sectors to load,
+so the same stage2 binary works with any kernel — which is what lets the kernel
+carry a prebuilt copy of it for the installer.
+
 Legacy BIOS boot:
 
 ```
@@ -453,6 +539,8 @@ BIOS ── loads ──▶ stage1.asm (512 B MBR @ 0x7C00)
                       │ INT 13h LBA read
                       ▼
                   stage2.asm (@ 0x8000, real mode)
+                      │  boot menu (5 s timeout)
+                      │  read boot header @LBA 33 -> kernel LBA + sectors
                       │  enable A20
                       │  BIOS E820 memory map
                       │  unreal mode → copy kernel to 1 MiB
@@ -570,6 +658,8 @@ The interactive OS shell supports a wide range of commands:
 - **File Inspection:** `cat`, `head`, `tail`, `hex`, `meta`, `diff`, `grep`, `checksum`, `preview`, `count`
 - **System Information:** `sysinfo`, `cpuinfo`, `meminfo`, `diskinfo`, `sync`, `fsck`, `uptime`, `battery`, `sensors`, `devices`, `version`, `health`
 - **Power:** `poweroff`, `reboot` (both commit the filesystem and mark it clean before ACPI S5 / reset), `power off|reboot` (alias)
+- **Install:** `install` (write a bootable BoltOS onto another disk; also a desktop app)
+- **Diagnostics:** `dmesg` (kernel log ring), `crashlog` (persisted crash reports), `crash ring3 [mode]` (fault a ring-3 process on purpose)
 - **Process Management:** `ps`, `kill`, `top`, `freeze`, `resume`, `services`, `service`, `jobs`, `priority`, `monitor`
 - **System (cont.):** `winrun` (Windows PE32+ loader), `compile` (BoltRT: compile a source file into a real PE32+ `.exe`), `pkg` (package manager), `users` / `useradd` / `userdel` (multi-user), `libctest` (libc validation)
 - **Networking:** `netinfo`, `ping`, `trace`, `ports`, `download`, `browse`, `webx` (ring-3 web browser), `upload`, `wifi`, `firewall`, `share`, `scan`, `nstest` (NetSurf library test)

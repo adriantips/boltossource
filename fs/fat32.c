@@ -17,6 +17,8 @@
 static struct {
     int       mounted;
     blkdev_t *dev;
+    uint64_t  base;           /* first LBA of the volume within the device     */
+    uint64_t  span;           /* volume length in sectors                      */
     uint32_t  bytes_per_sec;
     uint32_t  sec_per_clus;
     uint32_t  reserved;
@@ -27,8 +29,15 @@ static struct {
     uint32_t  data_start;     /* LBA of cluster 2 */
     uint32_t  total_clus;
     uint32_t  clus_bytes;
+    uint32_t  next_free;      /* allocation hint: where to start looking      */
     char      label[12];
 } fs;
+
+/* One-sector FAT read cache. A FAT32 sector holds 128 entries, so walking or
+ * allocating a run of consecutive clusters otherwise re-reads the same sector
+ * 128 times over. Invalidated on every FAT write. */
+static uint8_t  fatcache[SECSZ];
+static uint32_t fatcache_sec = 0xFFFFFFFFu;
 
 static uint8_t  secbuf[SECSZ];
 static uint8_t  clusbuf[MAX_CLUSTER_BYTES];
@@ -37,21 +46,30 @@ int fat32_mounted(void) { return fs.mounted; }
 const char *fat32_label(void) { return fs.label; }
 
 /* ---- low level ---------------------------------------------------------- */
-static int rd_sec(uint32_t lba, void *b) { return blk_read(fs.dev, lba, 1, b); }
-static int wr_sec(uint32_t lba, const void *b) { return blk_write(fs.dev, lba, 1, b); }
+/* Every LBA in this driver is volume-relative; the partition base is added
+ * here and nowhere else, so a FAT32 volume can sit inside a partition (an EFI
+ * system partition, say) as easily as on a whole device. */
+static int rd_sec(uint32_t lba, void *b) { return blk_read(fs.dev, fs.base + lba, 1, b); }
+static int wr_sec(uint32_t lba, const void *b) { return blk_write(fs.dev, fs.base + lba, 1, b); }
 
 static uint32_t clus_lba(uint32_t c) { return fs.data_start + (c - 2) * fs.sec_per_clus; }
+/* Cluster I/O is multi-sector, so it adds the base itself. */
+static uint64_t clus_dev_lba(uint32_t c) { return fs.base + clus_lba(c); }
 
 static uint32_t fat_get(uint32_t clus) {
     uint32_t off = clus * 4;
     uint32_t sec = fs.fat_start + off / SECSZ;
     uint32_t idx = off % SECSZ;
-    if (rd_sec(sec, secbuf) != 0) return EOC;
-    return (*(uint32_t *)(secbuf + idx)) & 0x0FFFFFFFu;
+    if (sec != fatcache_sec) {
+        if (rd_sec(sec, fatcache) != 0) return EOC;
+        fatcache_sec = sec;
+    }
+    return (*(uint32_t *)(fatcache + idx)) & 0x0FFFFFFFu;
 }
 static int fat_set(uint32_t clus, uint32_t val) {
     uint32_t off = clus * 4;
     uint32_t idx = off % SECSZ;
+    fatcache_sec = 0xFFFFFFFFu;                    /* the cached copy is stale */
     for (uint32_t f = 0; f < fs.num_fats; f++) {
         uint32_t sec = fs.fat_start + f * fs.fat_size + off / SECSZ;
         if (rd_sec(sec, secbuf) != 0) return -1;
@@ -63,18 +81,32 @@ static int fat_set(uint32_t clus, uint32_t val) {
 }
 
 /* allocate one free cluster, mark EOC. returns cluster# or 0. */
+/* Allocate one cluster, resuming from where the last allocation stopped and
+ * wrapping once. The old version restarted at cluster 2 every call, so writing
+ * an N-cluster file cost O(N^2) FAT reads -- copying a 7 MiB kernel onto an ESP
+ * took over a million sector reads and looked like a hang. */
 static uint32_t fat_alloc(void) {
-    for (uint32_t c = 2; c < fs.total_clus + 2; c++) {
-        if (fat_get(c) == 0) { if (fat_set(c, EOC) != 0) return 0; return c; }
+    uint32_t last = fs.total_clus + 2;
+    uint32_t start = (fs.next_free >= 2 && fs.next_free < last) ? fs.next_free : 2;
+
+    for (uint32_t pass = 0; pass < 2; pass++) {
+        uint32_t from = pass ? 2 : start;
+        uint32_t to   = pass ? start : last;
+        for (uint32_t c = from; c < to; c++) {
+            if (fat_get(c) != 0) continue;
+            if (fat_set(c, EOC) != 0) return 0;
+            fs.next_free = c + 1;
+            return c;
+        }
     }
     return 0;
 }
 
 static int read_cluster(uint32_t c, void *buf) {
-    return blk_read(fs.dev, clus_lba(c), fs.sec_per_clus, buf);
+    return blk_read(fs.dev, clus_dev_lba(c), fs.sec_per_clus, buf);
 }
 static int write_cluster(uint32_t c, const void *buf) {
-    return blk_write(fs.dev, clus_lba(c), fs.sec_per_clus, buf);
+    return blk_write(fs.dev, clus_dev_lba(c), fs.sec_per_clus, buf);
 }
 
 /* ---- name helpers ------------------------------------------------------- */
@@ -249,6 +281,16 @@ int fat32_list(const char *path, fat_dirent *out, int max) {
 }
 
 /* ---- public: read ------------------------------------------------------- */
+/* Size of a file without reading it, so a caller can allocate exactly once.
+ * -1 if the path is missing or is a directory. */
+int64_t fat32_size(const char *path) {
+    if (!fs.mounted) return -1;
+    uint32_t clus, size; uint8_t attr;
+    if (resolve(path, &clus, &size, &attr, 0, 0) != 0) return -1;
+    if (attr & FAT_ATTR_DIR) return -1;
+    return (int64_t)size;
+}
+
 int fat32_read(const char *path, void *buf, uint32_t max) {
     if (!fs.mounted) return -1;
     uint32_t clus, size; uint8_t attr;
@@ -432,8 +474,12 @@ uint64_t fat32_free_bytes(void) {
 
 /* ---- mount -------------------------------------------------------------- */
 int fat32_mount(blkdev_t *dev) {
-    if (!dev) return -1;
-    if (blk_read(dev, 0, 1, secbuf) != 0) return -1;
+    return dev ? fat32_mount_at(dev, 0, dev->sectors) : -1;
+}
+
+int fat32_mount_at(blkdev_t *dev, uint64_t base, uint64_t span) {
+    if (!dev || base + 1 > dev->sectors) return -1;
+    if (blk_read(dev, base, 1, secbuf) != 0) return -1;
     if (secbuf[510] != 0x55 || secbuf[511] != 0xAA) return -1;
 
     uint32_t bps = secbuf[11] | (secbuf[12] << 8);
@@ -443,6 +489,8 @@ int fat32_mount(blkdev_t *dev) {
     if (spc == 0 || spc * SECSZ > MAX_CLUSTER_BYTES || fatsz == 0) return -1;
 
     fs.dev           = dev;
+    fs.base          = base;
+    fs.span          = span ? span : dev->sectors - base;
     fs.bytes_per_sec = bps;
     fs.sec_per_clus  = spc;
     fs.reserved      = secbuf[14] | (secbuf[15] << 8);
@@ -454,28 +502,50 @@ int fat32_mount(blkdev_t *dev) {
     fs.clus_bytes    = spc * SECSZ;
 
     uint32_t total_sec = *(uint32_t *)(secbuf + 32);
-    if (total_sec == 0) total_sec = (uint32_t)dev->sectors;
+    if (total_sec == 0) total_sec = (uint32_t)fs.span;
     uint32_t data_sec = total_sec - fs.data_start;
     fs.total_clus = data_sec / spc;
 
     memcpy(fs.label, secbuf + 71, 11); fs.label[11] = 0;
     for (int i = 10; i >= 0 && fs.label[i] == ' '; i--) fs.label[i] = 0;
 
+    fs.next_free = 2;
+    fatcache_sec = 0xFFFFFFFFu;
     fs.mounted = 1;
-    kprintf("[ok] FAT32 mounted on %s: '%s', %u clusters x %u B\n",
-            dev->name, fs.label, fs.total_clus, fs.clus_bytes);
+    if (base) kprintf("[ok] FAT32 mounted on %s@LBA%lu: '%s', %u clusters x %u B\n",
+                      dev->name, (unsigned long)base, fs.label, fs.total_clus, fs.clus_bytes);
+    else      kprintf("[ok] FAT32 mounted on %s: '%s', %u clusters x %u B\n",
+                      dev->name, fs.label, fs.total_clus, fs.clus_bytes);
     return 0;
 }
 
+void fat32_unmount(void) { fs.mounted = 0; fs.dev = 0; fs.base = 0; }
+
 /* ---- format ------------------------------------------------------------- */
 int fat32_format(blkdev_t *dev, const char *label) {
-    if (!dev) return -1;
-    uint32_t total = (uint32_t)dev->sectors;
+    return dev ? fat32_format_at(dev, 0, dev->sectors, label) : -1;
+}
+
+int fat32_format_at(blkdev_t *dev, uint64_t base, uint64_t span, const char *label) {
+    if (!dev || base + span > dev->sectors) return -1;
+    uint32_t total = (uint32_t)span;
+    /* FAT32 needs >= 65525 clusters to be a legal FAT32 (below that a strict
+     * driver -- UEFI firmware included -- reads it as FAT16 and rejects it). */
     if (total < 70000) return -1;                     /* too small for FAT32 */
 
-    uint32_t spc = 8;                                  /* 4 KiB clusters */
+    /* FAT32 is only legal above 65525 clusters -- below that a strict reader
+     * (UEFI firmware, Windows) sees FAT16 and rejects the volume. The old fixed
+     * 4 KiB cluster made a 64 MiB EFI system partition come out at ~16k
+     * clusters: a FAT16 in FAT32 clothing. Pick the smallest power-of-two
+     * cluster whose count stays under a sane FAT size, then verify the lower
+     * bound. Bounded by clusbuf (MAX_CLUSTER_BYTES). */
     uint32_t reserved = 32;
     uint32_t num_fats = 2;
+    uint32_t spc = 1;
+    while (spc * SECSZ < MAX_CLUSTER_BYTES &&
+           (total - reserved) / spc > 4194304u)      /* keep each FAT <= 16 MiB */
+        spc *= 2;
+    if ((total - reserved) / spc < 65525u) return -1;  /* too small for FAT32 */
 
     /* iteratively size the FAT: clusters = (total - reserved - 2*fatsz)/spc */
     uint32_t fatsz = 0;
@@ -511,8 +581,8 @@ int fat32_format(blkdev_t *dev, const char *label) {
     for (int i = 0; label && label[i] && i < 11; i++) secbuf[71 + i] = (uint8_t)label[i];
     memcpy(secbuf + 82, "FAT32   ", 8);
     secbuf[510] = 0x55; secbuf[511] = 0xAA;
-    if (blk_write(dev, 0, 1, secbuf) != 0) return -1;
-    blk_write(dev, 6, 1, secbuf);                      /* backup */
+    if (blk_write(dev, base + 0, 1, secbuf) != 0) return -1;
+    blk_write(dev, base + 6, 1, secbuf);               /* backup */
 
     /* FSInfo */
     memset(secbuf, 0, SECSZ);
@@ -521,27 +591,28 @@ int fat32_format(blkdev_t *dev, const char *label) {
     *(uint32_t *)(secbuf + 488) = 0xFFFFFFFF;          /* free count unknown */
     *(uint32_t *)(secbuf + 492) = 0xFFFFFFFF;          /* next free unknown */
     secbuf[510] = 0x55; secbuf[511] = 0xAA;
-    blk_write(dev, 1, 1, secbuf);
+    blk_write(dev, base + 1, 1, secbuf);
 
     /* zero the FATs */
     memset(secbuf, 0, SECSZ);
     for (uint32_t f = 0; f < num_fats; f++)
         for (uint32_t s = 0; s < fatsz; s++)
-            blk_write(dev, reserved + f * fatsz + s, 1, secbuf);
+            blk_write(dev, base + reserved + f * fatsz + s, 1, secbuf);
 
     /* FAT[0]=media|EOC, FAT[1]=EOC, FAT[2]=EOC (root) */
     *(uint32_t *)(secbuf + 0) = 0x0FFFFFF8;
     *(uint32_t *)(secbuf + 4) = 0x0FFFFFFF;
     *(uint32_t *)(secbuf + 8) = 0x0FFFFFFF;
     for (uint32_t f = 0; f < num_fats; f++)
-        blk_write(dev, reserved + f * fatsz, 1, secbuf);
+        blk_write(dev, base + reserved + f * fatsz, 1, secbuf);
 
     /* zero the root directory cluster */
     memset(secbuf, 0, SECSZ);
     for (uint32_t s = 0; s < spc; s++)
-        blk_write(dev, data_start + s, 1, secbuf);
+        blk_write(dev, base + data_start + s, 1, secbuf);
+    blk_flush(dev);
 
-    kprintf("[fat32] formatted %s: %u sectors, FAT %u sec, %u clusters\n",
-            dev->name, total, fatsz, (total - data_start) / spc);
-    return fat32_mount(dev);
+    kprintf("[fat32] formatted %s@LBA%lu: %u sectors, FAT %u sec, %u clusters\n",
+            dev->name, (unsigned long)base, total, fatsz, (total - data_start) / spc);
+    return fat32_mount_at(dev, base, span);
 }

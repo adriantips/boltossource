@@ -4,6 +4,8 @@
 #include "fs.h"
 #include "fat32.h"
 #include "acpi.h"
+#include "install.h"
+#include "klog.h"
 #include "blk.h"
 #include "pmm.h"
 #include "kheap.h"
@@ -342,5 +344,149 @@ int cmd_doctor(int argc, char **argv) {
     int p = run_diagnostics(1);
     if (!p) kprintf("diagnosis: healthy. No action needed.\n");
     else    kprintf("diagnosis: %d issue(s). See [FAIL]/[WARN] hints above.\n", p);
+    return 0;
+}
+
+/* ===========================================================================
+ *  install  -  write a bootable BoltOS onto another disk, from inside BoltOS.
+ *
+ *    install                              list the disks that can be installed to
+ *    install DISK                         interactive: asks for the account, confirms
+ *    install DISK USER PASS [ESP_MB]      unattended (what the test suite drives)
+ * ===========================================================================*/
+int cmd_install(int argc, char **argv) {
+    if (argc < 2) {
+        int n = install_target_count();
+        uint64_t kb = install_kernel_available();
+
+        kprintf("BoltOS installer\n\n");
+        if (!kb) {
+            kprintf("  The kernel image could not be found on the medium this system\n");
+            kprintf("  booted from, so there is nothing to install. Boot from the BoltOS\n");
+            kprintf("  disk image or an installed BoltOS disk and try again.\n");
+            return 1;
+        }
+        char sz[16]; sh_human(kb, sz);
+        kprintf("  kernel image: %s (read back from the boot medium)\n\n", sz);
+
+        if (!n) {
+            kprintf("  No installable disks. The boot disk and the disk holding this\n");
+            kprintf("  system's filesystem are both excluded; attach another one.\n");
+            return 1;
+        }
+        kprintf("  Installable disks:\n");
+        for (int i = 0; i < n; i++) {
+            blkdev_t *d = install_target_get(i);
+            char cap[16]; sh_human(d->sectors * d->sector_size, cap);
+            char plan[128]; install_describe(d->name, plan, sizeof plan);
+            kprintf("    %-8s %-5s %-8s %s\n", d->name, blk_media(d), cap,
+                    d->model[0] ? d->model : "(disk)");
+            kprintf("             -> %s\n", plan);
+        }
+        kprintf("\n  install DISK                       (asks for an account)\n");
+        kprintf("  install DISK USER PASS [ESP_MB]    (unattended)\n");
+        return 0;
+    }
+
+    install_req req;
+    memset(&req, 0, sizeof req);
+    strncpy(req.disk, argv[1], sizeof req.disk - 1);
+
+    if (argc >= 4) {
+        strncpy(req.username, argv[2], sizeof req.username - 1);
+        strncpy(req.password, argv[3], sizeof req.password - 1);
+        if (argc >= 5) req.esp_mb = (uint32_t)atoi(argv[4]);
+    } else {
+        kprintf("Creating the account you will sign in with on the new system.\n");
+        kprintf("username: ");
+        sh_readline(req.username, sizeof req.username);
+        kprintf("password: ");
+        sh_readline(req.password, sizeof req.password);
+        if (!req.username[0]) { kprintf("install: a username is required\n"); return 1; }
+
+        char plan[128];
+        install_describe(req.disk, plan, sizeof plan);
+        kprintf("\nTarget %s will be COMPLETELY ERASED and laid out as:\n  %s\n",
+                req.disk, plan);
+        if (!sh_yesno("Erase it and install")) { kprintf("install: cancelled\n"); return 1; }
+    }
+
+    if (install_run(&req) != 0) {
+        kprintf("install: %s\n", req.error);
+        return 1;
+    }
+    kprintf("\nInstalled. Shut down, remove the install medium, and boot %s.\n"
+            "Sign in as '%s'.\n", req.disk, req.username);
+    return 0;
+}
+
+/* ============================ dmesg / crashlog ============================ *
+ *  dmesg    -- the kernel message ring (kernel/klog.c). Everything kputc has
+ *              printed since boot, so the boot log is still readable after the
+ *              GUI has taken the screen and the console has scrolled away.
+ *  crashlog -- crash reports persisted to /var/log/crash.log. Survives reboots,
+ *              which is the whole point: the report you need is the one from
+ *              the boot that failed, not the one you are in.
+ * ========================================================================== */
+int cmd_dmesg(int argc, char **argv) {
+    int tail = 0;
+    int save = 0;
+    for (int i = 1; i < argc; i++) {
+        if (argv[i][0] == '-' && argv[i][1] >= '0' && argv[i][1] <= '9') tail = atoi(argv[i] + 1);
+        else if (strcmp(argv[i], "save") == 0) save = 1;
+    }
+
+    if (save) {
+        int rc = klog_persist();
+        kprintf(rc == 0 ? "dmesg: kernel log appended to %s\n"
+                        : "dmesg: could not write %s\n", KERNEL_LOG_PATH);
+        return rc == 0 ? 0 : 1;
+    }
+
+    uint32_t used = klog_used();
+    char *buf = (char *)kmalloc(used + 1);
+    if (!buf) { kprintf("dmesg: out of memory\n"); return 1; }
+    uint32_t n = klog_snapshot(buf, used);
+    buf[n] = 0;
+
+    uint32_t from = 0;
+    if (tail > 0) {                       /* -N: only the last N lines */
+        int want = tail;
+        for (uint32_t i = n; i > 0; i--) {
+            if (buf[i - 1] != '\n') continue;
+            if (--want <= 0) { from = i; break; }
+        }
+    }
+    for (uint32_t i = from; i < n; i++) kputc(buf[i]);
+    if (klog_total() > KLOG_CAP)
+        kprintf("\n[dmesg: ring holds the newest %u of %lu bytes]\n",
+                used, (unsigned long)klog_total());
+    kfree(buf);
+    return 0;
+}
+
+int cmd_crashlog(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "clear") == 0) {
+        fs_node *f = fs_lookup(CRASH_LOG_PATH);
+        if (f) { fs_remove_node(f); fs_sync(); kprintf("crashlog: cleared\n"); }
+        else kprintf("crashlog: nothing to clear\n");
+        return 0;
+    }
+
+    fs_node *f = fs_lookup(CRASH_LOG_PATH);
+    if (!f || !f->size) {
+        kprintf("No crashes recorded. (%s is empty.)\n", CRASH_LOG_PATH);
+        kprintf("Reports land here when a ring-3 program faults or the kernel\n");
+        kprintf("panics, and survive the reboot. 'crash null' triggers one.\n");
+        return 0;
+    }
+
+    int crashes = 0;
+    for (uint32_t i = 0; i + 4 < f->size; i++)
+        if (memcmp(f->data + i, "====", 4) == 0 &&
+            (i == 0 || f->data[i - 1] == '\n')) crashes++;
+    kprintf("%s  (%u bytes, %d record%s)\n\n", CRASH_LOG_PATH,
+            (unsigned)f->size, crashes / 2, crashes / 2 == 1 ? "" : "s");
+    for (uint32_t i = 0; i < f->size; i++) kputc((char)f->data[i]);
     return 0;
 }

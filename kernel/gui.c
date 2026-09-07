@@ -762,6 +762,17 @@ static void draw_icon(int id, int x, int y, int s, uint32_t c) {
         }
         break;
     }
+    case ICON_INSTALL: {                        /* disk with a download arrow */
+        uint32_t disc = 0x8894AA, arrow = 0x46D17B;
+        /* platter, drawn as a squat cylinder */
+        g_round(x + s, y + 8 * s, 14 * s, 7 * s, 3 * s, disc, 255);
+        g_fill(x + s, y + 10 * s, 14 * s, s, (disc >> 1) & 0x7F7F7F);
+        /* arrow pointing into it */
+        g_fill(x + 7 * s, y, 2 * s, 5 * s, arrow);
+        for (int i = 0; i < 4; i++)                       /* head, widest first */
+            g_fill(x + (5 + i) * s, y + (5 + i) * s, (8 - 2 * i) * s, s, arrow);
+        break;
+    }
     default:
         g_round(x, y, 14 * s, 12 * s, 2 * s, c, 255);
         break;
@@ -2152,6 +2163,7 @@ void gui_run(void) {
     memory_app_init();
     matrix_app_init();
     doom_app_init();
+    installer_app_init();
     settings_app_init();
     /* Every app gets a launcher icon on the desktop; double-click opens it. The
      * taskbar starts empty and only fills with apps as they are opened (or that

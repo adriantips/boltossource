@@ -1,5 +1,7 @@
 #include <stdint.h>
 #include "commands.h"
+#include "proc.h"
+#include "pit.h"
 #include "kprintf.h"
 #include "string.h"
 #include "fat32.h"
@@ -231,9 +233,31 @@ int cmd_logout(int argc, char **argv) {
  * path (register grid + page-fault decode + backtrace). Debugging aid. */
 int cmd_crash(int argc, char **argv) {
     const char *sub = argc > 1 ? argv[1] : "";
+
+    /* ring 3: the process dies, the machine does not. This is the demo for
+     * per-process fault isolation -- run it and watch the shell come straight
+     * back with the desktop and every other program still running. */
+    if (strcmp(sub, "ring3") == 0 || strcmp(sub, "user") == 0) {
+        const char *mode = argc > 2 ? argv[2] : "null";
+        kprintf("running /bin/crashme %s in ring 3; the kernel should reap it\n", mode);
+        if (proc_exec_argv("/bin/crashme", mode) < 0) {
+            kprintf("crash: could not exec /bin/crashme\n");
+            return 1;
+        }
+        /* Let the scheduler run it and the fault handler finish reaping. */
+        uint64_t until = pit_ticks() + 400;
+        while (pit_ticks() < until) __asm__ volatile("hlt");
+        return 0;
+    }
+
+    /* ring 0: a genuine kernel panic. Halts the machine, after saving a crash
+     * report to /var/log/crash.log for the next boot to show. */
     if (strcmp(sub, "null") == 0) { volatile int *p = (int *)0; *p = 1; }
     else if (strcmp(sub, "div") == 0) { volatile int z = 0; volatile int x = 1 / z; (void)x; }
     else if (strcmp(sub, "ud")  == 0) { __asm__ volatile("ud2"); }
-    else kprintf("usage: crash null | div | ud   (triggers a kernel panic)\n");
+    else {
+        kprintf("usage: crash ring3 [null|div|ud|stack]   fault a ring-3 process\n");
+        kprintf("       crash null | div | ud             panic the kernel\n");
+    }
     return 0;
 }

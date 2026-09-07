@@ -20,15 +20,26 @@ typedef struct {
     uint32_t cluster;
 } fat_dirent;
 
-int  fat32_mount(blkdev_t *dev);          /* 0 on success */
+int  fat32_mount(blkdev_t *dev);          /* whole device; 0 on success */
 int  fat32_mounted(void);
+void fat32_unmount(void);
 int  fat32_format(blkdev_t *dev, const char *label);
+
+/* Partition-relative variants. Every LBA inside the driver is volume-relative,
+ * so a FAT32 volume can live in a partition -- which is what an EFI system
+ * partition is, and therefore what the installer needs to create one.
+ * `span` is the volume length in sectors (0 = to the end of the device). */
+int  fat32_mount_at (blkdev_t *dev, uint64_t base, uint64_t span);
+int  fat32_format_at(blkdev_t *dev, uint64_t base, uint64_t span, const char *label);
 
 /* List directory at absolute path ("/", "/sub"). Returns count, fills up to max. */
 int  fat32_list(const char *path, fat_dirent *out, int max);
 
 /* Read whole file into buf (up to max). Returns bytes read, <0 on error. */
 int  fat32_read(const char *path, void *buf, uint32_t max);
+
+/* File size without reading it; -1 if missing or a directory. */
+int64_t fat32_size(const char *path);
 
 /* Create/overwrite a file with the given bytes. Returns 0 on success. */
 int  fat32_write(const char *path, const void *data, uint32_t len);

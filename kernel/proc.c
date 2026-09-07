@@ -9,6 +9,7 @@
 #include "kheap.h"
 #include "string.h"
 #include "kprintf.h"
+#include "klog.h"
 #include "framebuffer.h"
 
 static int next_pid = 1;
@@ -138,6 +139,39 @@ int proc_exec_argv(const char *path, const char *arg1) {
     if (sched_add_user(entry, ustack, cr3, p, p->name) < 0) { kfree(p); return -1; }
     kprintf("[exec] %s pid=%d entry=0x%lx brk=0x%lx\n", path, p->pid, entry, brk_end);
     return p->pid;
+}
+
+/* ---------------------------------------------------------- fault kill -----*/
+/* Tear down the running ring-3 process after it faulted, and hand the
+ * scheduler's choice of the next thread back to the ISR epilogue.
+ *
+ * This runs on the faulting thread's own kernel stack, which is why the
+ * ordering matters: everything that touches this process is finished before
+ * sched_exit_current() retires the slot, and schedule() then returns a frame on
+ * some *other* thread's stack, so the epilogue's `mov rsp, rax` steps off this
+ * stack and never comes back to it. */
+struct registers *proc_fault_kill(struct registers *r) {
+    proc_t *p = proc_current();
+    if (!p) return 0;
+
+    crash_record("ring-3 fault", p->name, r);
+
+    kprintf("[fault] killed pid=%d (%s): %s at RIP 0x%lx\n",
+            p->pid, p->name,
+            r->int_no == 14 ? "page fault" :
+            r->int_no == 13 ? "general protection fault" :
+            r->int_no == 6  ? "invalid opcode" :
+            r->int_no == 0  ? "divide by zero" : "fault",
+            r->rip);
+
+    g_fb_exclusive = 0;              /* it may have owned the screen */
+    p->exit_code = 128 + (int)r->int_no;
+    p->alive = 0;
+    for (int i = 0; i < PROC_MAX_FD; i++)
+        if (p->fds[i]) { vfs_close(p->fds[i]); p->fds[i] = 0; }
+
+    sched_exit_current();
+    return schedule(r);              /* pick someone else; never returns here */
 }
 
 /* --------------------------------------------------------------- exit ------*/
