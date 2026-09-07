@@ -2,22 +2,31 @@
 ;  BoltOS  -  Stage 2 bootloader  (loaded at 0x8000 by Stage 1)
 ;  Real mode -> long mode. Steps:
 ;    * enable A20
+;    * boot menu (normal / safe mode / recovery), 5 s timeout
+;    * read the BoltOS boot header (LBA 33) for the kernel's location + size
 ;    * VBE: find & set a 32-bpp linear-framebuffer video mode
 ;    * BIOS E820 memory map
 ;    * unreal mode -> copy kernel to physical 1 MiB
 ;    * build PML4/PDPT/PD (identity 0..4 GiB, 2 MiB pages)
 ;    * enter 64-bit long mode, jump into kernel with RDI = bootinfo
 ;
-;  KERNEL_SECTORS passed by build.sh (-D) = ceil(kernel_size / 512).
+;  The kernel's size is NOT baked in here any more: it is read at run time from
+;  the boot header at LBA 33 (see include/boot.h). That decoupling is what lets
+;  the kernel carry a prebuilt copy of this stage2 as a blob, which is what the
+;  `install` command writes onto a target disk. KERNEL_SECTORS (-D from
+;  build.sh) survives only as the fallback for a disk with no header.
 ; ============================================================================
 [BITS 16]
 [ORG 0x8000]
 
 %ifndef KERNEL_SECTORS
-%define KERNEL_SECTORS 512
+%define KERNEL_SECTORS 32768
 %endif
 
-KERNEL_LBA        equ 33
+BOOT_HDR_LBA      equ 33            ; one-sector BoltOS boot header
+KERNEL_LBA        equ 34            ; default kernel start (header overrides)
+HDR_BUF           equ 0x2600        ; scratch for the header sector
+                                    ; (clear of E820_BUF's upward growth)
 KERNEL_PHYS       equ 0x100000
 BOUNCE_SEG        equ 0x7000
 BOUNCE_LIN        equ 0x70000
@@ -54,6 +63,8 @@ stage2_start:
     or      al, 2
     out     0x92, al
 
+    call    boot_menu                ; normal / safe / recovery -> [boot_flags]
+    call    read_bhdr                ; kernel LBA + sector count from LBA 33
     call    do_vbe                   ; pick + set linear framebuffer
     call    do_e820                  ; memory map
     call    enter_unreal             ; flat FS/GS for >1MiB writes
@@ -65,6 +76,10 @@ stage2_start:
     call    build_paging
 
     mov     dword [BOOTINFO + 28], E820_BUF     ; bootinfo.e820_addr
+    mov     eax, [boot_flags]
+    mov     [BOOTINFO + 32], eax                ; bootinfo.boot_flags
+    movzx   eax, byte [boot_drive]
+    mov     [BOOTINFO + 36], eax                ; bootinfo.boot_drive
 
     ; ================= enter long mode =================
     cli
@@ -95,6 +110,131 @@ rm_print:
     int     0x10
     jmp     .l
 .d: ret
+
+; ---- boot menu -------------------------------------------------------------
+; Draws the entry list and waits BOOT_MENU_SECS for a digit, counting down off
+; the BIOS tick counter at 0040:006C (~18.2 Hz). Any other key boots the default
+; immediately, as does the timeout. Sets [boot_flags] for the kernel.
+BOOT_MENU_SECS  equ 5
+TICKS_PER_SEC   equ 18                  ; 18.2 Hz, rounded down (menu is coarse)
+
+boot_menu:
+    mov     si, msg_menu
+    call    rm_print
+
+    xor     ax, ax
+    mov     es, ax
+    mov     eax, [es:0x046C]            ; BIOS tick counter
+    mov     [menu_t0], eax
+    mov     byte [menu_left], BOOT_MENU_SECS
+    call    menu_countdown
+
+.poll:
+    mov     ah, 0x01                    ; keystroke available?
+    int     0x16
+    jnz     .key
+
+    xor     ax, ax
+    mov     es, ax
+    mov     eax, [es:0x046C]
+    sub     eax, [menu_t0]
+    ; elapsed whole seconds = eax / TICKS_PER_SEC
+    xor     edx, edx
+    mov     ecx, TICKS_PER_SEC
+    div     ecx                         ; eax = seconds elapsed
+    cmp     al, BOOT_MENU_SECS
+    jae     .done                       ; timed out -> default entry
+    mov     ah, BOOT_MENU_SECS
+    sub     ah, al                      ; seconds remaining
+    cmp     ah, [menu_left]
+    je      .poll                       ; same second: keep polling
+    mov     [menu_left], ah
+    call    menu_countdown
+    jmp     .poll
+
+.key:
+    mov     ah, 0x00                    ; consume the key
+    int     0x16
+    cmp     al, '2'
+    je      .safe
+    cmp     al, '3'
+    je      .recovery
+    cmp     al, '4'
+    je      .fsck
+    jmp     .done                       ; 1 / Enter / anything else -> normal
+
+.safe:
+    mov     dword [boot_flags], 1       ; BOOT_SAFE
+    mov     si, msg_pick_safe
+    jmp     .say
+.recovery:
+    mov     dword [boot_flags], 3       ; BOOT_SAFE | BOOT_RECOVERY
+    mov     si, msg_pick_recovery
+    jmp     .say
+.fsck:
+    mov     dword [boot_flags], 4       ; BOOT_FSCK
+    mov     si, msg_pick_fsck
+.say:
+    call    rm_print
+    ret
+.done:
+    mov     si, msg_pick_normal
+    call    rm_print
+    ret
+
+; Repaint the "booting in N" line in place (CR, no LF).
+menu_countdown:
+    mov     si, msg_count
+    call    rm_print
+    mov     al, [menu_left]
+    add     al, '0'
+    mov     ah, 0x0E
+    mov     bx, 7
+    int     0x10
+    mov     si, msg_count_tail
+    call    rm_print
+    ret
+
+; ---- boot header (LBA 33) --------------------------------------------------
+; Fills [kern_lba] / [kern_sectors] from the on-disk header. A disk written by
+; an older build (or a read error) keeps the assembly-time defaults, so this is
+; always safe to attempt.
+read_bhdr:
+    mov     dword [kern_lba],     KERNEL_LBA
+    mov     dword [kern_sectors], KERNEL_SECTORS
+
+    mov     word [dap_count], 1
+    mov     word [dap_off],   HDR_BUF
+    mov     word [dap_seg],   0
+    mov     dword [dap_lba],     BOOT_HDR_LBA
+    mov     dword [dap_lba + 4], 0
+    mov     si, dap
+    mov     ah, 0x42
+    mov     dl, [boot_drive]
+    int     0x13
+    jc      .done
+
+    xor     ax, ax
+    mov     es, ax
+    mov     di, HDR_BUF
+    cmp     dword [es:di],     'BOLT'    ; magic[0..3]
+    jne     .done
+    cmp     dword [es:di + 4], 'BHDR'    ; magic[4..7]
+    jne     .done
+    cmp     dword [es:di + 8], 1         ; version
+    jne     .done
+    mov     eax, [es:di + 12]            ; kernel_lba
+    test    eax, eax
+    jz      .done
+    mov     [kern_lba], eax
+    mov     eax, [es:di + 16]            ; kernel_sectors
+    test    eax, eax
+    jz      .done
+    mov     [kern_sectors], eax
+    mov     si, msg_hdr
+    call    rm_print
+.done:
+    ret
 
 ; ---- VBE: find first 32-bpp LFB graphics mode (prefer 1024x768) and set it ----
 do_vbe:
@@ -254,9 +394,11 @@ enter_unreal:
 
 ; ---- load kernel: disk -> bounce buffer -> 1 MiB (flat FS/GS) ----
 load_kernel:
-    mov     dword [cur_lba],   KERNEL_LBA
+    mov     eax, [kern_lba]
+    mov     [cur_lba], eax
     mov     dword [dest_off],  KERNEL_PHYS
-    mov     dword [remaining], KERNEL_SECTORS
+    mov     eax, [kern_sectors]
+    mov     [remaining], eax
 .loop:
     mov     eax, [remaining]
     test    eax, eax
@@ -375,13 +517,18 @@ long_mode_entry:
 ; data
 ; ----------------------------------------------------------------------------
 [BITS 16]
-boot_drive: db 0
-cur_lba:    dd 0
-dest_off:   dd 0
-remaining:  dd 0
-mode_seg:   dw 0
-mode_off:   dw 0
-pref_mode:  dw 0xFFFF
+boot_drive:   db 0
+menu_left:    db 0
+menu_t0:      dd 0
+boot_flags:   dd 0
+kern_lba:     dd 0
+kern_sectors: dd 0
+cur_lba:      dd 0
+dest_off:     dd 0
+remaining:    dd 0
+mode_seg:     dw 0
+mode_off:     dw 0
+pref_mode:    dw 0xFFFF
 
 align 4
 dap:
@@ -401,6 +548,20 @@ gdt64:
     dw  .ptr - gdt64 - 1
     dd  gdt64
 
-msg_stage2:  db "BoltOS S2: A20 ok, VBE + load kernel...", 13, 10, 0
+msg_stage2:  db "BoltOS S2: A20 ok.", 13, 10, 0
 msg_loaded:  db "BoltOS S2: kernel at 1MiB, going long mode.", 13, 10, 0
 msg_diskerr: db "BoltOS S2 disk error", 13, 10, 0
+msg_hdr:     db "  boot header found", 13, 10, 0
+
+msg_menu:    db 13, 10
+             db "  ==== BoltOS boot menu ====", 13, 10
+             db "   1) BoltOS            (normal)", 13, 10
+             db "   2) Safe mode         (no desktop, no network)", 13, 10
+             db "   3) Recovery shell    (safe + read-only filesystem)", 13, 10
+             db "   4) BoltOS + fsck     (check the filesystem first)", 13, 10, 0
+msg_count:   db 13, "  starting entry 1 in ", 0
+msg_count_tail: db "s ... ", 0
+msg_pick_normal:   db 13, 10, "  -> normal boot", 13, 10, 0
+msg_pick_safe:     db 13, 10, "  -> SAFE MODE", 13, 10, 0
+msg_pick_recovery: db 13, 10, "  -> RECOVERY SHELL", 13, 10, 0
+msg_pick_fsck:     db 13, 10, "  -> normal boot + fsck", 13, 10, 0

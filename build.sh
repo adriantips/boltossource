@@ -23,10 +23,63 @@ CFLAGS=(--target=x86_64-elf -ffreestanding -fno-pic -fno-pie
         -fstack-protector-strong -mstack-protector-guard=global
         -Wall -Wextra -O2 -std=c11 -Iinclude -c)
 
+# Locate a host Python (mkboothdr.py + mkhpfs.py). $BOLTOS_PYTHON wins,
+# otherwise every interpreter on PATH and in the usual Windows install roots is
+# tried, under both msys (/c) and WSL (/mnt/c) mount styles. Hard-coding one
+# machine's Python311 path made a fresh checkout fail at the very last step.
+#
+# A machine can easily have several Pythons (msys2 ships one of its own), and
+# only some will have pycdlib, which mkhpfs.py needs for the ISO. So candidates
+# that can import it are preferred; the first that merely runs is the fallback,
+# and the ISO step then reports what to install.
+py_candidates() {
+    local c
+    # NB: not the `py` launcher -- it re-dispatches on the script's shebang, so
+    # `py -c "import pycdlib"` can succeed while `py mkhpfs.py` picks a
+    # different interpreter that lacks it.
+    for c in python3 python; do command -v "$c" 2>/dev/null; done
+    ls -1 /c/Python3*/python.exe /mnt/c/Python3*/python.exe           /c/Users/*/AppData/Local/Programs/Python/Python3*/python.exe           /mnt/c/Users/*/AppData/Local/Programs/Python/Python3*/python.exe 2>/dev/null
+}
+PYTHON="${BOLTOS_PYTHON-}"
+PYTHON_FALLBACK=""
+if [ -z "$PYTHON" ]; then
+    while IFS= read -r c; do
+        [ -x "$c" ] || continue
+        [ -n "$PYTHON_FALLBACK" ] || PYTHON_FALLBACK="$c"
+        if "$c" -c "import pycdlib" >/dev/null 2>&1; then PYTHON="$c"; break; fi
+    done <<< "$(py_candidates)"
+    [ -n "$PYTHON" ] || PYTHON="$PYTHON_FALLBACK"
+fi
+[ -n "$PYTHON" ] || { echo "ERROR: no host Python found (set BOLTOS_PYTHON)"; exit 1; }
+
 mkdir -p build iso
 
-echo "[1/6] stage1.asm"
+echo "[1/6] boot chain (stage1 + stage2 + BOOTX64.EFI)"
+# The whole boot chain is built BEFORE the kernel now, and embedded into the
+# kernel image as blobs. That is what lets `install` write a bootable BoltOS
+# onto another disk from inside BoltOS -- the running system carries its own
+# bootloader. It is only possible because stage2 no longer needs the kernel's
+# size baked in: it reads the boot header at LBA 33 (include/boot.h) instead.
 "$NASM" -f bin boot/stage1.asm -o build/stage1.bin
+"$NASM" -f bin boot/stage2.asm -o build/stage2.bin
+S2SIZE=$(stat -c %s build/stage2.bin)
+if [ "$S2SIZE" -gt $((32 * 512)) ]; then
+    echo "ERROR: stage2 is $S2SIZE bytes, exceeds 16384 (32 sectors)"; exit 1
+fi
+
+# A genuine UEFI application (PE32+) that loads the kernel on CSM-less firmware.
+# MS ABI (which UEFI uses); no red zone; SSE off so it runs before the kernel
+# turns the FPU on. Linked by lld-link as an EFI Application.
+UEFI_CFLAGS=(--target=x86_64-unknown-windows -ffreestanding -fno-stack-protector
+             -fshort-wchar -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -mno-80387
+             -Wall -O2 -Iinclude -c)
+"$CLANG" "${UEFI_CFLAGS[@]}" boot/uefi_boot.c -o build/uefi_boot.o
+"$M/ucrt64/bin/lld-link.exe" -subsystem:efi_application -entry:efi_main     -out:build/BOOTX64.EFI build/uefi_boot.o
+
+# Blobs the installer writes verbatim onto a target disk / ESP.
+( cd build && "$OBJCOPY" -I binary -O elf64-x86-64 stage1.bin    stage1_blob.o )
+( cd build && "$OBJCOPY" -I binary -O elf64-x86-64 stage2.bin    stage2_blob.o )
+( cd build && "$OBJCOPY" -I binary -O elf64-x86-64 BOOTX64.EFI   bootx64_blob.o )
 
 echo "[2/6] kernel asm (boot + isr + syscall + AP trampoline)"
 "$NASM" -f elf64 kernel/boot.asm    -o build/kboot.o
@@ -130,7 +183,8 @@ LIBC_SRCS=(
     libc/string.c libc/string_ext.c libc/malloc.c libc/printf.c libc/scanf.c
     libc/stdlib.c libc/support.c libc/math.c libc/stdio_file.c libc/time.c
 )
-KOBJS=(build/kboot.o build/isr.o build/sc_entry.o build/ap_boot_blob.o build/hello_blob.o build/js_blob.o build/browser_blob.o build/winhello_blob.o build/boltrt_blob.o)
+KOBJS=(build/kboot.o build/isr.o build/sc_entry.o build/ap_boot_blob.o build/hello_blob.o build/js_blob.o build/browser_blob.o build/winhello_blob.o build/boltrt_blob.o
+       build/stage1_blob.o build/stage2_blob.o build/bootx64_blob.o)
 # libc non-local jump (asm); clang's integrated assembler handles the .S
 "$CLANG" --target=x86_64-elf -mcmodel=kernel -c libc/setjmp.S -o build/setjmp.o
 KOBJS+=(build/setjmp.o)
@@ -359,20 +413,20 @@ KSIZE=$(stat -c %s build/kernel.bin)
 KSECT=$(( (KSIZE + 511) / 512 ))
 echo "      kernel.bin = $KSIZE bytes -> $KSECT sectors"
 
-echo "[5/6] stage2.asm (KERNEL_SECTORS=$KSECT)"
-"$NASM" -f bin -DKERNEL_SECTORS="$KSECT" boot/stage2.asm -o build/stage2.bin
-S2SIZE=$(stat -c %s build/stage2.bin)
-if [ "$S2SIZE" -gt $((32 * 512)) ]; then
-    echo "ERROR: stage2 is $S2SIZE bytes, exceeds 16384 (32 sectors)"; exit 1
-fi
-
-echo "[6/7] assemble disk image"
+echo "[5/6] assemble disk image"
+# Disk layout (mirrored exactly by the `install` command):
+#   LBA 0      stage1 (MBR)
+#   LBA 1..32  stage2
+#   LBA 33     BoltOS boot header -- tells stage2 where the kernel is and how
+#              many sectors to load, so stage2 itself is kernel-independent
+#   LBA 34..   kernel.bin
 IMG=iso/os.img
-TOTAL=$(( 33 + KSECT ))
+TOTAL=$(( 34 + KSECT ))
 dd if=/dev/zero          of="$IMG" bs=512 count="$TOTAL"      status=none
 dd if=build/stage1.bin   of="$IMG" bs=512 seek=0  conv=notrunc status=none
 dd if=build/stage2.bin   of="$IMG" bs=512 seek=1  conv=notrunc status=none
-dd if=build/kernel.bin   of="$IMG" bs=512 seek=33 conv=notrunc status=none
+dd if=build/kernel.bin   of="$IMG" bs=512 seek=34 conv=notrunc status=none
+"$PYTHON" mkboothdr.py "$IMG" 34 "$KSIZE"
 
 echo "OK -> $IMG ($(stat -c %s "$IMG") bytes)"
 
@@ -412,36 +466,17 @@ if [ ! -f iso/disk-ext2.img ]; then
 fi
 
 echo "[7/7] build bootable ISO"
-# Locate a host Python for mkhpfs.py. $BOLTOS_PYTHON wins, then anything on
-# PATH, then the usual Windows install roots under both msys (/c) and WSL
-# (/mnt/c) mount styles. Hard-coding one machine's Python311 path made a fresh
-# checkout fail at the very last build step.
-PYTHON="${BOLTOS_PYTHON-}"
-if [ -z "$PYTHON" ]; then
-    for c in python3 python py; do
-        if command -v "$c" >/dev/null 2>&1; then PYTHON="$(command -v "$c")"; break; fi
-    done
-fi
-if [ -z "$PYTHON" ]; then
-    for g in /c/Python3*/python.exe /mnt/c/Python3*/python.exe              /c/Users/*/AppData/Local/Programs/Python/Python3*/python.exe              /mnt/c/Users/*/AppData/Local/Programs/Python/Python3*/python.exe; do
-        [ -f "$g" ] && { PYTHON="$g"; break; }
-    done
-fi
-[ -n "$PYTHON" ] || { echo "ERROR: no host Python found (set BOLTOS_PYTHON)"; exit 1; }
 ISOPATH=iso/boltos.iso
+if ! "$PYTHON" -c "import pycdlib" >/dev/null 2>&1; then
+    echo "ERROR: $PYTHON has no pycdlib (needed for the ISO)."
+    echo "       install it with:  $PYTHON -m pip install pycdlib"
+    echo "       iso/os.img is already built and bootable without it."
+    exit 1
+fi
 "$PYTHON" mkhpfs.py "$IMG" "$ISOPATH" "BoltOS"
 echo "OK -> $ISOPATH ($(stat -c %s "$ISOPATH") bytes)"
 
-echo "[8/8] UEFI loader (BOOTX64.EFI) + ESP staging"
-# A genuine UEFI application (PE32+) that loads the kernel on CSM-less firmware.
-# MS ABI (which UEFI uses); no red zone; SSE off so it runs before the kernel
-# turns the FPU on. Linked by lld-link as an EFI Application.
-UEFI_CFLAGS=(--target=x86_64-unknown-windows -ffreestanding -fno-stack-protector
-             -fshort-wchar -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -mno-80387
-             -Wall -O2 -c)
-"$CLANG" "${UEFI_CFLAGS[@]}" boot/uefi_boot.c -o build/uefi_boot.o
-"$M/ucrt64/bin/lld-link.exe" -subsystem:efi_application -entry:efi_main \
-    -out:build/BOOTX64.EFI build/uefi_boot.o
+echo "[8/8] ESP staging (BOOTX64.EFI was built in step 1)"
 # Stage an EFI System Partition tree: firmware auto-runs EFI/BOOT/BOOTX64.EFI,
 # which reads kernel.bin from the same volume. QEMU can serve esp/ as a FAT
 # volume directly (-drive ...,file=fat:rw:esp), so no disk image needed.
