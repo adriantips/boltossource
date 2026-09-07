@@ -890,6 +890,76 @@ void fs_persist_init(void) {
     fs_commit(0);               /* persist the tree (loaded or freshly seeded) */
 }
 
+/* ---------------------------------------------------------------------------
+ *  Export the live tree as a complete, clean v2 image onto another disk or
+ *  partition, without disturbing this system's own mount. The installer uses it
+ *  to seed the target: the machine you are installing FROM writes its current
+ *  filesystem to the machine you are installing TO.
+ *
+ *  The result is generation 1, slot 0, marked clean, with both superblocks
+ *  written -- exactly what a first boot on the target expects to find.
+ * ------------------------------------------------------------------------- */
+int fs_export_image(blkdev_t *dev, uint64_t base, uint64_t cap) {
+    if (!dev || cap <= BFS_SLOT0) return -1;
+    uint64_t slot_sectors = (cap - BFS_SLOT0) / 2;
+    if (slot_sectors == 0) return -1;
+
+    /* serialise() sizes against the live mount's slots, so measure here. */
+    uint32_t cnt = 0; uint64_t blob = 0;
+    measure(root_, &cnt, &blob);
+    uint64_t sectors = (blob + BLK_SECTOR - 1) / BLK_SECTOR;
+    if (sectors > slot_sectors) return -1;
+
+    uint8_t *buf = (uint8_t *)kmalloc(sectors ? sectors * BLK_SECTOR : BLK_SECTOR);
+    if (!buf) return -1;
+    memset(buf, 0, (sectors ? sectors : 1) * BLK_SECTOR);
+    uint8_t *p = buf;
+    g_emit_idx = 0;
+    emit(root_, BFS_NOPAR, &p);
+    uint32_t sum = fnv32(buf, blob);
+
+    int rc = blk_write(dev, base + BFS_SLOT0, (uint32_t)(sectors ? sectors : 1), buf);
+    kfree(buf);
+    if (rc != 0) return -1;
+    if (blk_flush(dev) != 0) return -1;
+
+    /* sb_fill reads g_slot_sectors/g_mounts for the live mount, so build the
+     * target's superblock by hand rather than borrowing that state. */
+    struct bfs_super sb;
+    memset(&sb, 0, sizeof sb);
+    memcpy(sb.magic, BFS_MAGIC2, 8);
+    sb.version      = 2;
+    sb.slot         = 0;
+    sb.generation   = 1;
+    sb.node_count   = cnt;
+    sb.clean        = 1;
+    sb.blob_bytes   = blob;
+    sb.blob_sum     = sum;
+    sb.slot_sectors = (uint32_t)slot_sectors;
+    sb.mounts       = 0;
+    sb.hdr_sum      = fnv32((const uint8_t *)&sb, sizeof sb - 2 * sizeof(uint32_t));
+
+    uint8_t sec[BLK_SECTOR];
+    memset(sec, 0, sizeof sec);
+    memcpy(sec, &sb, sizeof sb);
+    if (blk_write(dev, base + BFS_SB_A, 1, sec) != 0) return -1;
+    if (blk_flush(dev) != 0) return -1;
+    if (blk_write(dev, base + BFS_SB_B, 1, sec) != 0) return -1;
+    blk_flush(dev);
+    return 0;
+}
+
+/* Give up the backing disk: stop autosaving and forget it, leaving the tree
+ * live in RAM. The installer calls this when the disk it is about to erase is
+ * the one this system is persisting to -- the usual situation when installing
+ * from live media with a single disk attached. Continuing to autosave into a
+ * disk being repartitioned underneath us would corrupt both. */
+void fs_persist_detach(void) {
+    g_autosave = 0;
+    g_disk     = 0;
+    g_base = g_cap = g_slot_sectors = 0;
+}
+
 int fs_persist_active(void) { return g_disk != 0; }
 const char *fs_persist_media(void) { return g_disk ? blk_media(g_disk) : ""; }
 const char *fs_persist_model(void) { return g_disk ? g_disk->model : ""; }

@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "console.h"
+#include "klog.h"
 #include "kprintf.h"
 #include "serial.h"
 #include "framebuffer.h"
@@ -185,6 +186,7 @@ static void putc_fb(char c) {
 void kputc(char c) {
     if (c == '\n') serial_putc('\r');
     serial_putc(c);
+    klog_putc(c);            /* every kernel message is also kept for `dmesg` */
     if (sink)       sink(c);
     else if (on_fb) putc_fb(c);
 }

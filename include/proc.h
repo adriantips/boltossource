@@ -35,3 +35,11 @@ file   *proc_fd_get(proc_t *p, int fd);
 int     proc_fd_close(proc_t *p, int fd);
 
 void    proc_exit(int code) __attribute__((noreturn));
+
+/* Reap the running ring-3 process after a CPU fault and return the register
+ * frame of the thread to run next, for the ISR epilogue to resume. Returns 0 if
+ * there is no current process (the caller then panics as before).
+ * Declared here rather than in sched.h because it is process teardown, not
+ * scheduling policy. */
+struct registers;
+struct registers *proc_fault_kill(struct registers *r);

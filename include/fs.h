@@ -64,6 +64,7 @@ const char *fs_persist_model(void);          /* disk model, or "" */
 int      fs_was_unclean(void);               /* 1 if this boot followed a crash */
 uint64_t fs_generation(void);                /* live commit generation */
 void     fs_persist_set_readonly(int ro);    /* recovery mode: never write */
+void     fs_persist_detach(void);            /* stop persisting; tree stays in RAM */
 int      fs_persist_readonly(void);
 
 /* --------------------------------------------------------------------------
@@ -98,3 +99,9 @@ typedef struct {
 } fs_check_report;
 
 int      fs_check(int repair, fs_check_report *rep);
+
+/* Write the live tree as a complete, clean image onto another disk/partition,
+ * leaving this system's own mount alone. `base`/`cap` are the target partition
+ * in sectors. Used by the installer to seed the machine being installed to. */
+struct blkdev;
+int      fs_export_image(struct blkdev *dev, uint64_t base, uint64_t cap);
