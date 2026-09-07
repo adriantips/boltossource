@@ -412,10 +412,22 @@ if [ ! -f iso/disk-ext2.img ]; then
 fi
 
 echo "[7/7] build bootable ISO"
-P=/c/Users/adria/AppData/Local/Programs/Python/Python311/python.exe
-[ -f "$P" ] || P=/mnt/c/Users/adria/AppData/Local/Programs/Python/Python311/python.exe
-[ -f "$P" ] || { echo "ERROR: Python not found at /c/... or /mnt/c/..."; exit 1; }
-PYTHON=$P
+# Locate a host Python for mkhpfs.py. $BOLTOS_PYTHON wins, then anything on
+# PATH, then the usual Windows install roots under both msys (/c) and WSL
+# (/mnt/c) mount styles. Hard-coding one machine's Python311 path made a fresh
+# checkout fail at the very last build step.
+PYTHON="${BOLTOS_PYTHON-}"
+if [ -z "$PYTHON" ]; then
+    for c in python3 python py; do
+        if command -v "$c" >/dev/null 2>&1; then PYTHON="$(command -v "$c")"; break; fi
+    done
+fi
+if [ -z "$PYTHON" ]; then
+    for g in /c/Python3*/python.exe /mnt/c/Python3*/python.exe              /c/Users/*/AppData/Local/Programs/Python/Python3*/python.exe              /mnt/c/Users/*/AppData/Local/Programs/Python/Python3*/python.exe; do
+        [ -f "$g" ] && { PYTHON="$g"; break; }
+    done
+fi
+[ -n "$PYTHON" ] || { echo "ERROR: no host Python found (set BOLTOS_PYTHON)"; exit 1; }
 ISOPATH=iso/boltos.iso
 "$PYTHON" mkhpfs.py "$IMG" "$ISOPATH" "BoltOS"
 echo "OK -> $ISOPATH ($(stat -c %s "$ISOPATH") bytes)"
