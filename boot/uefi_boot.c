@@ -32,6 +32,16 @@ typedef struct EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL {
     EFI_STATUS (EFIAPI *OutputString)(struct EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *, CHAR16 *);
 } EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL;
 
+/* ---- text input (the boot menu reads keys through this) ------------------ */
+typedef struct { uint16_t ScanCode; CHAR16 UnicodeChar; } EFI_INPUT_KEY;
+typedef struct EFI_SIMPLE_TEXT_INPUT_PROTOCOL {
+    EFI_STATUS (EFIAPI *Reset)(struct EFI_SIMPLE_TEXT_INPUT_PROTOCOL *, unsigned char);
+    /* Returns EFI_NOT_READY when no key is buffered, which is what makes a
+     * poll-with-timeout menu possible without an event loop. */
+    EFI_STATUS (EFIAPI *ReadKeyStroke)(struct EFI_SIMPLE_TEXT_INPUT_PROTOCOL *, EFI_INPUT_KEY *);
+    void *WaitForKey;
+} EFI_SIMPLE_TEXT_INPUT_PROTOCOL;
+
 /* ---- graphics output ---------------------------------------------------- */
 typedef struct {
     uint32_t Version, HorizontalResolution, VerticalResolution, PixelFormat;
@@ -94,7 +104,9 @@ typedef struct {
     void *Reserved, *RegisterProtocolNotify, *LocateHandle, *LocateDevicePath, *InstallConfigurationTable;
     void *LoadImage, *StartImage, *Exit, *UnloadImage;
     EFI_STATUS (EFIAPI *ExitBootServices)(EFI_HANDLE, UINTN);
-    void *GetNextMonotonicCount, *Stall, *SetWatchdogTimer;
+    void *GetNextMonotonicCount;
+    EFI_STATUS (EFIAPI *Stall)(UINTN microseconds);
+    void *SetWatchdogTimer;
     void *ConnectController, *DisconnectController;
     void *OpenProtocol, *CloseProtocol, *OpenProtocolInformation;
     void *ProtocolsPerHandle, *LocateHandleBuffer;
@@ -104,7 +116,7 @@ typedef struct {
 typedef struct {
     char hdr[24];
     CHAR16 *FirmwareVendor; uint32_t FirmwareRevision;
-    EFI_HANDLE ConsoleInHandle; void *ConIn;
+    EFI_HANDLE ConsoleInHandle; EFI_SIMPLE_TEXT_INPUT_PROTOCOL *ConIn;
     EFI_HANDLE ConsoleOutHandle; EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *ConOut;
     EFI_HANDLE StandardErrorHandle; void *StdErr;
     void *RuntimeServices;
@@ -128,7 +140,17 @@ struct bootinfo {
     uint32_t fb_width, fb_height, fb_pitch, fb_bpp;
     uint32_t e820_count;
     uint32_t e820_addr;
+    uint32_t boot_flags;
+    uint32_t boot_drive;
 } __attribute__((packed));
+
+/* Mirrors the BOOT_* set in include/boot.h. Kept as literals rather than an
+ * include because this file is built with the Windows/MS-ABI target and its own
+ * minimal type universe. */
+#define BOOT_SAFE      0x00000001u
+#define BOOT_RECOVERY  0x00000002u
+#define BOOT_FSCK      0x00000004u
+#define BOOT_UEFI      0x00000008u
 
 struct e820 { uint64_t base, len; uint32_t type; } __attribute__((packed));
 
@@ -137,6 +159,7 @@ struct e820 { uint64_t base, len; uint32_t type; } __attribute__((packed));
 
 static EFI_BOOT_SERVICES *BS;
 static EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *Out;
+static EFI_SIMPLE_TEXT_INPUT_PROTOCOL  *In;
 
 static void print(const char *s) {
     CHAR16 buf[128]; int i = 0;
@@ -151,6 +174,51 @@ static void printhex(uint64_t v) {
     buf[18] = 0; Out->OutputString(Out, buf);
 }
 
+/* ---------------------------------------------------------------------------
+ *  Boot menu. The legacy chain grows one in stage2.asm; this is the UEFI twin,
+ *  so a machine that will not reach the desktop can be talked down from either
+ *  firmware. ReadKeyStroke returns EFI_NOT_READY when nothing is buffered, so
+ *  the countdown is just a poll loop around 100 ms Stall()s.
+ * ------------------------------------------------------------------------- */
+#define MENU_SECONDS 5
+
+static uint32_t boot_menu(void) {
+    print("\n  ==== BoltOS boot menu ====\n"
+          "   1) BoltOS            (normal)\n"
+          "   2) Safe mode         (no desktop, no network)\n"
+          "   3) Recovery shell    (safe + read-only filesystem)\n"
+          "   4) BoltOS + fsck     (check the filesystem first)\n");
+    if (!In) return 0;                       /* no console input: boot default */
+
+    for (int s = MENU_SECONDS; s > 0; s--) {
+        char line[48];
+        int i = 0;
+        line[i++] = '\r'; line[i++] = ' '; line[i++] = ' ';
+        const char *t = "starting entry 1 in ";
+        while (*t) line[i++] = *t++;
+        line[i++] = (char)('0' + s);
+        t = "s ... ";
+        while (*t) line[i++] = *t++;
+        line[i] = 0;
+        print(line);
+
+        for (int tenth = 0; tenth < 10; tenth++) {
+            EFI_INPUT_KEY k;
+            if (In->ReadKeyStroke(In, &k) == EFI_SUCCESS) {
+                switch (k.UnicodeChar) {
+                case '2': print("\n  -> SAFE MODE\n");      return BOOT_SAFE;
+                case '3': print("\n  -> RECOVERY SHELL\n"); return BOOT_SAFE | BOOT_RECOVERY;
+                case '4': print("\n  -> normal boot + fsck\n"); return BOOT_FSCK;
+                default:  print("\n  -> normal boot\n");    return 0;
+                }
+            }
+            BS->Stall(100000);               /* 100 ms */
+        }
+    }
+    print("\n  -> normal boot\n");
+    return 0;
+}
+
 static uint64_t alloc_pages(UINTN n) {
     uint64_t addr = 0;
     if (BS->AllocatePages(AllocateAnyPages, EfiLoaderData, n, &addr) != EFI_SUCCESS) return 0;
@@ -161,7 +229,10 @@ static void zero(void *p, UINTN n) { uint8_t *b = p; for (UINTN i = 0; i < n; i+
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
     BS  = st->BootServices;
     Out = st->ConOut;
+    In  = st->ConIn;
     print("BoltOS UEFI loader\n");
+
+    uint32_t bootsel = boot_menu() | BOOT_UEFI;
 
     /* ---- 1. graphics output: pick the current GOP framebuffer ---- */
     EFI_GRAPHICS_OUTPUT_PROTOCOL *gop = 0;
@@ -182,8 +253,16 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
     BS->HandleProtocol(li->DeviceHandle, &SFS_GUID, (void **)&fsp);
     EFI_FILE_PROTOCOL *root = 0, *kf = 0;
     fsp->OpenVolume(fsp, &root);
-    CHAR16 kname[] = u"kernel.bin";
-    if (root->Open(root, &kf, kname, 1, 0) != EFI_SUCCESS) { print("kernel.bin not found\n"); for (;;) {} }
+    /* Try the ESP root first (what build.sh stages), then the installer's
+     * layout under \EFI\BOLTOS\. A firmware that boots us from a differently
+     * organised partition then still finds a kernel instead of dead-ending. */
+    static CHAR16 *knames[] = { u"kernel.bin", u"\\EFI\\BOLTOS\\kernel.bin",
+                                u"\\EFI\\BOOT\\kernel.bin", u"\\boltos\\kernel.bin" };
+    for (unsigned i = 0; i < sizeof(knames) / sizeof(knames[0]); i++) {
+        if (root->Open(root, &kf, knames[i], 1, 0) == EFI_SUCCESS) break;
+        kf = 0;
+    }
+    if (!kf) { print("kernel.bin not found on the boot volume\n"); for (;;) {} }
 
     /* Read the kernel into a scratch buffer. We can't AllocateAddress at 1 MiB
      * (firmware occupies it during boot), so we stage it elsewhere and copy it
@@ -239,6 +318,8 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
     bi->fb_pitch  = fpps * 4;                  /* 32 bpp */
     bi->fb_bpp    = 32;
     bi->e820_addr = (uint32_t)(bipg + PAGE);
+    bi->boot_flags = bootsel;
+    bi->boot_drive = 0xFF;                     /* no BIOS drive number here */
 
     /* get the memory map (also yields the map key for ExitBootServices) */
     static uint8_t mmbuf[32768];

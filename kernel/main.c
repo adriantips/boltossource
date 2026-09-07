@@ -129,8 +129,26 @@ static void launch_user_demo(void) {
 
 void stackguard_seed(void);   /* kernel/stackguard.c: re-seed the stack canary */
 
+/* ---------------------------------------------------------------------------
+ *  Boot mode. The bootloader's menu (stage2.asm / uefi_boot.c) hands its choice
+ *  down in bootinfo.boot_flags; the rest of the kernel asks for it here rather
+ *  than keeping its own copy of the bootinfo pointer, which is only valid until
+ *  the PMM reclaims low memory.
+ * ------------------------------------------------------------------------- */
+static uint32_t g_boot_flags;
+
+uint32_t boot_flags(void)     { return g_boot_flags; }
+int      boot_is_safe(void)   { return (g_boot_flags & (BOOT_SAFE | BOOT_RECOVERY)) != 0; }
+int      boot_is_recovery(void) { return (g_boot_flags & BOOT_RECOVERY) != 0; }
+const char *boot_mode_name(void) {
+    if (g_boot_flags & BOOT_RECOVERY) return "recovery";
+    if (g_boot_flags & BOOT_SAFE)     return "safe";
+    return "normal";
+}
+
 void kmain(struct bootinfo *bi) {
     stackguard_seed();   /* before any other call, so all frames see one value */
+    g_boot_flags = bi->boot_flags;
     serial_init();
     fb_init(bi);
     console_init();          /* paints background + taskbar, starts text console */
@@ -138,6 +156,8 @@ void kmain(struct bootinfo *bi) {
     kprintf("==================================================\n");
     kprintf("   BoltOS kernel  -  64-bit long mode\n");
     kprintf("==================================================\n");
+    kprintf("[ok] boot mode: %s%s\n", boot_mode_name(),
+            (g_boot_flags & BOOT_FSCK) ? " (+fsck)" : "");
     if (fb_present())
         kprintf("[ok] framebuffer %ux%u @0x%lx (32bpp)\n",
                 fb_width(), fb_height(), bi->fb_addr);
@@ -223,9 +243,17 @@ void kmain(struct bootinfo *bi) {
     users_init();    kprintf("[ok] user accounts (%d) loaded\n", users_count());
     ttf_init();      /* parse the embedded TrueType font for scalable text */
     sysreg_init();   kprintf("[ok] service + task registry\n");
-    net_init();      /* netif core + NIC driver probe (e1000 under QEMU) */
-    dhcp_configure(2000);  /* lease IP/mask/gw/DNS; falls back to static on timeout */
-    audio_init();    /* AC97 / Intel HDA codec (PC speaker fallback) */
+    /* Safe mode exists for the boot that would otherwise never finish: a NIC
+     * whose probe hangs, a codec that wedges, a desktop that faults on its first
+     * composite. Everything skipped here can still be started by hand from the
+     * shell once the user is in. */
+    if (boot_is_safe()) {
+        kprintf("[--] safe mode: skipping network + audio bring-up\n");
+    } else {
+        net_init();      /* netif core + NIC driver probe (e1000 under QEMU) */
+        dhcp_configure(2000);  /* lease IP/mask/gw/DNS; falls back to static on timeout */
+        audio_init();    /* AC97 / Intel HDA codec (PC speaker fallback) */
+    }
 
     sched_init();                         /* adopt current context as thread 0 */
     sched_add(demo_thread_a, "demoA");
@@ -238,11 +266,14 @@ void kmain(struct bootinfo *bi) {
     evlog("timer and keyboard online");
     evlog("ramfs mounted and shell started");
 
-    if (fb_present()) {
+    if (fb_present() && !boot_is_safe()) {
         kprintf("\nBoltOS is up. Launching desktop.\n");
         gui_run();          /* enter the GUI desktop; never returns */
     }
 
-    kprintf("\nBoltOS is up. Starting BoltShell.\n");
+    kprintf("\nBoltOS is up (%s mode). Starting BoltShell.\n", boot_mode_name());
+    if (boot_is_safe())
+        kprintf("The desktop is not running. 'help' lists commands; "
+                "'reboot' returns to a normal boot.\n");
     shell_run();    /* serial-only fallback; never returns */
 }
