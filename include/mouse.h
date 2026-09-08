@@ -14,6 +14,10 @@ void    mouse_set_bounds(int screen_w, int screen_h);   /* re-clamp after a res 
 int     mouse_x(void);
 int     mouse_y(void);
 uint8_t mouse_buttons(void);
+/* Buttons that went down since the last call, and clears the latch. A press
+ * that arrived and was released between two compositor frames is only
+ * visible here -- mouse_buttons() reports a level, not an edge. */
+uint8_t mouse_take_pressed(void);
 /* Inject a movement/button update from the USB HID boot-mouse path. */
 void    mouse_inject(int dx, int dy, uint8_t buttons, int wheel);
 /* Returns 1 (and clears the flag) if a packet arrived since the last call. */
