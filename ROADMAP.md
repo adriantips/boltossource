@@ -94,7 +94,8 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 - [x] 61. Terminal text editor (`edit`)
 - [ ] 62. Core dumps written on a ring-3 crash
 - [ ] 63. Post-mortem inspector: registers, stack, ELF symbols
-- [ ] 64. Breakpoint / single-step debugger
+- [x] 64. Breakpoint / single-step debugger (`cc -g`: breakpoints, stepping,
+        backtrace, locals by name; runtime errors report line + call stack)
 - [ ] 65. Package repository format
 - [ ] 66. Package dependency resolution
 - [ ] 67. Packages fetched over the network

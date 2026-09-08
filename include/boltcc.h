@@ -32,3 +32,9 @@ const char *boltcc_version(void);
 /* Compile and run src for the given dialect. Returns 0 on success; nonzero on a
  * compile or runtime error (a diagnostic has already been printed). */
 int  boltcc_run(int lang, const char *src);
+
+/* Compile and run under the source-level debugger: the VM stops on the first
+ * line and takes commands (breakpoints, stepping, backtrace, printing locals).
+ * `src` is also what `list` displays, so it should be the preprocessed unit the
+ * line numbers refer to. */
+int  boltcc_debug(int lang, const char *src);
