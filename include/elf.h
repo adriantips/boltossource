@@ -17,6 +17,25 @@ typedef struct {
     uint64_t p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_align;
 } __attribute__((packed)) Elf64_Phdr;
 
+typedef struct {
+    uint32_t sh_name, sh_type;
+    uint64_t sh_flags, sh_addr, sh_offset, sh_size;
+    uint32_t sh_link, sh_info;
+    uint64_t sh_addralign, sh_entsize;
+} __attribute__((packed)) Elf64_Shdr;
+
+typedef struct {
+    uint32_t st_name;
+    uint8_t  st_info, st_other;
+    uint16_t st_shndx;
+    uint64_t st_value, st_size;
+} __attribute__((packed)) Elf64_Sym;
+
+#define SHT_SYMTAB  2
+#define SHT_STRTAB  3
+#define STT_FUNC    2
+#define ELF_ST_TYPE(i)  ((i) & 0xF)
+
 #define PT_LOAD     1
 #define PF_X        1
 #define PF_W        2
@@ -31,3 +50,11 @@ typedef struct {
  * *brk_end. Returns -1 on a malformed/unsupported image. */
 int elf_load(uint64_t cr3, const uint8_t *image, uint64_t size,
              uint64_t *entry, uint64_t *brk_end);
+
+/* Name the function containing `addr`, from the image's .symtab, as
+ * "name+0x1f". Returns 1 when a symbol covers the address, 0 otherwise (a
+ * stripped binary, or an address outside every function). This is what turns a
+ * post-mortem backtrace from a column of hex into something a person can read,
+ * so it lives here with the rest of what the kernel knows about ELF. */
+int elf_symbolize(const uint8_t *image, uint64_t size, uint64_t addr,
+                  char *out, uint32_t cap);

@@ -142,6 +142,7 @@ const command_t commands[] = {
     { "install",  "System",           "install BoltOS onto a disk",         cmd_install },
     { "dmesg",    "System",           "kernel message log ([-N], save)",    cmd_dmesg },
     { "crashlog", "System",           "persisted crash reports ([clear])",  cmd_crashlog },
+    { "core",     "System",           "post-mortem: core list|show FILE",   cmd_core },
     { "uptime",   "System",           "time since boot",                    cmd_uptime },
     { "winrun",   "System",           "run a Windows .exe (PE32+ loader)",   cmd_winrun },
     { "compile",  "System",           "compile .c/.cpp/.cs/.py to a real .exe",cmd_compile },

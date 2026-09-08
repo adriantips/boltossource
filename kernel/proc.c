@@ -10,6 +10,7 @@
 #include "string.h"
 #include "kprintf.h"
 #include "klog.h"
+#include "core.h"
 #include "framebuffer.h"
 
 static int next_pid = 1;
@@ -168,6 +169,9 @@ struct registers *proc_fault_kill(struct registers *r) {
     if (!p) return 0;
 
     crash_record("ring-3 fault", p->name, r);
+    /* Before anything is torn down: the address space is still loaded, so
+     * this is the only moment the process's stack can be read. */
+    core_write(p->pid, p->name, r);
 
     kprintf("[fault] killed pid=%d (%s): %s at RIP 0x%lx\n",
             p->pid, p->name,

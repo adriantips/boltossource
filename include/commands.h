@@ -99,6 +99,9 @@ int cmd_build(int, char **);
 /* ---- handlers: local version control (kernel/cmd_vcs.c) ----------------- */
 int cmd_vcs(int, char **);
 
+/* ---- handlers: the post-mortem inspector (kernel/cmd_core.c) ------------ */
+int cmd_core(int, char **);
+
 /* ---- handlers: Bonus / Unique ------------------------------------------- */
 int cmd_focus(int, char **);  int cmd_snapshot(int, char **);int cmd_timeline(int, char **);
 int cmd_vault(int, char **);  int cmd_doctor(int, char **); int cmd_assistant(int, char **);

@@ -825,6 +825,58 @@ checks the error names its line and its call stack, then steps a second program
 under `cc -g`, prints a local by name, takes a backtrace and runs it to
 completion.
 
+## Core dumps and the post-mortem inspector
+
+A ring-3 crash already printed its registers and got a line in the crash log,
+which tells you *that* a program died. It does not tell you what it was doing:
+the call chain, the arguments and the locals all live on the stack, and the
+stack goes away with the address space a moment later.
+
+So the fault path saves it first. `kernel/core.c` writes a **core dump** to
+`/var/crash/<program>.<pid>.core` -- the trap frame, the faulting address, and
+as much of the user stack as is actually mapped -- while the dead process's
+address space is still loaded in CR3, which is the only moment its stack can be
+read. Every page is checked with `vmm_get_phys()` before it is touched, so a
+wild stack pointer produces a short dump rather than a second fault inside the
+handler for the first one, and the whole thing is best-effort: a crash report
+that cannot be saved must never stop the process being killed.
+
+The program's text is deliberately *not* in the dump. The binary is on disk
+already, and that is also where its symbols are:
+
+```
+core                 the dumps in /var/crash (the newest 8 are kept)
+core show FILE       the fault, the registers, a named backtrace, the stack
+core rm FILE|all     delete them
+```
+
+`core show` walks the saved frame chain and resolves every return address
+through `elf_symbolize()` (`kernel/elf.c`), which reads the `.symtab` of the
+executable the dump names. That is the difference between a column of hex and
+a bug report:
+
+```
+  fault    vector 14 (page fault)  err=0x7
+           address 0x6ffffffbffe8: non-present page on write
+
+  backtrace
+    #0  0x00000000004000de  recurse+0xe
+    #1  0x00000000004000e3  recurse+0x13
+    #2  0x00000000004000e3  recurse+0x13
+    ...
+```
+
+Ring-3 programs are now built with `-fno-omit-frame-pointer`. A register and a
+couple of instructions per call is the whole price of a userland you can get a
+backtrace out of, and a program you cannot get a backtrace out of is one you
+cannot debug.
+
+The stack is printed alongside, with any value that lands inside a function
+named too -- which is how you find the frame that matters when the chain is
+broken. `test/t_core.py` crashes a program on purpose, reads the dump back,
+checks the backtrace is named rather than numeric, and reboots the machine to
+confirm the dump is still there.
+
 ## TrueType fonts
 
 `kernel/ttf.c` is a from-scratch **TrueType rasterizer**. It parses an embedded
@@ -1182,7 +1234,7 @@ The interactive OS shell supports a wide range of commands:
 - **System Information:** `sysinfo`, `cpuinfo`, `meminfo`, `diskinfo`, `sync`, `fsck`, `uptime`, `battery`, `sensors`, `devices`, `version`, `health`
 - **Power:** `poweroff`, `reboot` (both commit the filesystem and mark it clean before ACPI S5 / reset), `power off|reboot` (alias)
 - **Install:** `install` (write a bootable BoltOS onto another disk; also a desktop app)
-- **Diagnostics:** `dmesg` (kernel log ring), `crashlog` (persisted crash reports), `crash ring3 [mode]` (fault a ring-3 process on purpose)
+- **Diagnostics:** `dmesg` (kernel log ring), `crashlog` (persisted crash reports), `core` (post-mortem inspector: registers, a named backtrace and the stack of a ring-3 crash), `crash ring3 [mode]` (fault a ring-3 process on purpose)
 - **Process Management:** `ps`, `kill`, `top`, `freeze`, `resume`, `services`, `service`, `jobs`, `priority`, `monitor`
 - **System (cont.):** `winrun` (Windows PE32+ loader), `compile` (BoltRT: compile a source file into a real PE32+ `.exe`), `pkg` (package manager), `libctest` (libc validation)
 - **Identity & privilege:** `whoami`, `id`, `groups`, `users`, `useradd`, `userdel`, `passwd`, `sudo`, `lock`, `logout`
@@ -1226,6 +1278,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- js.c    cmd_js.c  boltcc.c  cpp.c  cmd_cc.c  boltpy.c   JavaScript, C preprocessor, C/C++/C#, Python
 |   +-- ccbuild.c  cmd_build.c    Build targets (build.txt) shared by cc, `build` and the IDE
 |   +-- cmd_vcs.c               BoltVCS: local version control (.bvcs objects/commits/refs)
+|   +-- core.c  cmd_core.c       Core dumps on a ring-3 fault + the post-mortem inspector
 |   +-- image.c  font8x8.c  kprintf.c  sysreg.c  user.asm
 |   +-- ttf.c    clipboard.c  users.c  pkg.c
 |   +-- cmd_extra.c  cmd_fs.c  cmd_net.c  cmd_netcfg.c  cmd_serve.c  cmd_ssh.c  cmd_edit.c  cmd_proc.c  cmd_python.c  cmd_sys.c  cmd_hw.c
