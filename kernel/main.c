@@ -48,6 +48,7 @@
 #include "users.h"
 #include "ttf.h"
 #include "string.h"
+#include "kprintf.h"
 
 /* Turn on the CPU's supervisor-mode protections where the silicon offers them:
  *   SMEP - faults if ring 0 ever executes from a user page (blocks a whole
@@ -90,6 +91,54 @@ static void demo_beat(int which) {
 }
 static void demo_thread_a(void) { demo_beat(0); }
 static void demo_thread_b(void) { demo_beat(1); }
+
+/* ---------------------------------------------------------------------------
+ *  Watchdog. Wakes once a second and looks for a runnable thread that has not
+ *  been given the CPU for several seconds. Round-robin over a handful of
+ *  threads should never starve anyone, so a hit means a thread is wedged inside
+ *  an interrupt-disabled region -- a driver spinning on a register that will
+ *  never change, say. The kernel cannot preempt its way out of that, but saying
+ *  so out loud turns "the machine froze" into a diagnosable event, and the
+ *  report lands in the crash log with everything else.
+ *
+ *  It also watches the heap: crossing 90% used is the last chance to say
+ *  something before allocations start failing in places that cannot report it.
+ * ------------------------------------------------------------------------- */
+#define WATCHDOG_STARVE_TICKS  5000     /* ~5 s at 1000 Hz */
+
+static void watchdog_thread(void) {
+    uint64_t last = 0;
+    int warned_slot = -1, warned_heap = 0;
+    for (;;) {
+        if (pit_ticks() - last >= 1000) {
+            last = pit_ticks();
+
+            int slot = sched_starved(WATCHDOG_STARVE_TICKS);
+            if (slot >= 0 && slot != warned_slot) {
+                warned_slot = slot;
+                kprintf("[watchdog] thread %d (%s) has not run for %lu ticks; "
+                        "it is probably wedged with interrupts off\n",
+                        slot, sched_name(slot), (unsigned long)sched_idle_ticks(slot));
+            } else if (slot < 0) {
+                warned_slot = -1;
+            }
+
+            uint64_t used = 0, total = 0;
+            kheap_usage(&used, &total);
+            if (total && used * 100 / total >= 90) {
+                if (!warned_heap) {
+                    warned_heap = 1;
+                    kprintf("[watchdog] kernel heap %lu%% full (%lu of %lu KiB)\n",
+                            (unsigned long)(used * 100 / total),
+                            (unsigned long)(used >> 10), (unsigned long)(total >> 10));
+                }
+            } else {
+                warned_heap = 0;
+            }
+        }
+        __asm__ volatile("hlt");
+    }
+}
 
 /* Ring-3 user program. The build cross-compiles user/hello.c into a static
  * ET_EXEC ELF and embeds the raw bytes here. We seed it into the filesystem at
@@ -266,6 +315,7 @@ void kmain(struct bootinfo *bi) {
     sched_init();                         /* adopt current context as thread 0 */
     sched_add(demo_thread_a, "demoA");
     sched_add(demo_thread_b, "demoB");
+    sched_add(watchdog_thread, "watchdog");
     launch_user_demo();                   /* ring-3 user thread + syscalls */
     kprintf("[ok] preemptive scheduler (%d threads)\n", sched_count());
 

@@ -85,3 +85,40 @@ uint64_t vmm_new_address_space(void) {
     np[511] = kp[511];     /* higher-half kernel    */
     return p;
 }
+
+/* Free everything a user page table owns, then the tables themselves.
+ *
+ * `lvl` is how many further table levels sit below this one:
+ *   2 = PDPT (its entries are PDs)
+ *   1 = PD   (its entries are PTs)
+ *   0 = PT   (its entries are the data pages -- the leaves)
+ * so a PDPT is walked with lvl 2. Getting this off by one frees the tables but
+ * leaks every page they map, which is most of a process. */
+static void free_level(uint64_t table_phys, int lvl) {
+    uint64_t *t = table(table_phys);
+    for (int i = 0; i < 512; i++) {
+        uint64_t e = t[i];
+        if (!(e & PTE_PRESENT)) continue;
+        if (e & PTE_PS) continue;                  /* large page: not ours */
+        uint64_t child = e & ADDR_MASK;
+        if (lvl > 0) free_level(child, lvl - 1);   /* the level below, first */
+        pmm_free_frame(child);                     /* then this entry itself */
+        t[i] = 0;
+    }
+}
+
+void vmm_free_address_space(uint64_t pml4_phys) {
+    if (!pml4_phys || pml4_phys == kernel_pml4) return;
+    /* Only the low half is the process's own. Entries 256 and 511 are the
+     * shared kernel mappings, borrowed from the kernel PML4 -- freeing those
+     * would unmap the kernel out from under every other address space. */
+    uint64_t *t = table(pml4_phys);
+    for (int i = 0; i < 256; i++) {
+        if (!(t[i] & PTE_PRESENT) || (t[i] & PTE_PS)) { t[i] = 0; continue; }
+        uint64_t pdpt = t[i] & ADDR_MASK;
+        free_level(pdpt, 2);                       /* PDPT -> PD -> PT -> pages */
+        pmm_free_frame(pdpt);
+        t[i] = 0;
+    }
+    pmm_free_frame(pml4_phys);
+}

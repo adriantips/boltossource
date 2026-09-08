@@ -508,6 +508,37 @@ long after the console has scrolled and the GUI has taken the screen.
 `dmesg -N` shows the last N lines; `dmesg save` appends the ring to
 `/var/log/kernel.log`.
 
+## Reclamation, `kill`, and the watchdog
+
+A process that ends now gives everything back. Retiring a thread used to just
+clear its slot, leaking the 64 KiB kernel stack, the whole page-table tree and
+every data page — so a machine that launched programs all day slowly ran out of
+memory. A dying thread cannot free the stack it is standing on or the address
+space it is running in, so it becomes a **zombie** and `schedule()` reaps it
+once it has switched away — on the *second* switch, never the first, because the
+ISR frame still lives on the outgoing stack until the epilogue steps off it.
+`vmm_free_address_space()` walks PDPT → PD → PT and frees the data pages and the
+tables that map them, leaving entries 256 and 511 alone: those are the shared
+kernel mappings, and freeing them would unmap the kernel from every other
+process. `test/t_sched.py` runs twenty programs and asserts free memory comes
+back to where it started.
+
+`kill PID` really kills. It used to edit a label in the service registry, which
+meant a runaway ring-3 program could not be stopped at all; it now finds the
+scheduler thread, closes its files, releases the framebuffer if it had grabbed
+the screen, and queues it for reaping. Kernel threads are only flagged —
+unwinding arbitrary kernel state from the outside is not safe.
+
+A **watchdog** thread wakes once a second and looks for a runnable thread that
+has not been given the CPU for five seconds. Round-robin should never starve
+anyone, so a hit means a thread is wedged with interrupts off — a driver
+spinning on a register that will never change, say. The kernel cannot preempt
+its way out of that, but reporting it turns "the machine froze" into a
+diagnosable event. The same thread warns once when the kernel heap passes 90%
+full, which is the last chance to say something before allocations start failing
+in callers that cannot report it. `ps` shows every scheduler thread with its
+ring, CPU ticks and idle ticks.
+
 ## StackGuard (stack canaries)
 
 `kernel/stackguard.c` provides **stack-smashing protection**. The kernel is built
