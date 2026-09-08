@@ -520,3 +520,96 @@ void x25519(uint8_t out[32], const uint8_t scalar[32], const uint8_t point[32]) 
     M(a, a, invc);
     pack25519(out, a);
 }
+
+/* =========================== CSPRNG ======================================
+ *  A SHA-256 DRBG, because the places that need randomness here are places
+ *  where a predictable value is fatal rather than merely untidy: an ECDSA
+ *  nonce that repeats hands over the private key, and a guessable host key or
+ *  ephemeral scalar hands over the session.
+ *
+ *  The pool is seeded from the best hardware source the CPU admits to --
+ *  RDSEED, then RDRAND (CPUID leaf 7 EBX bit 18, leaf 1 ECX bit 30) -- mixed
+ *  with the timestamp counter and the tick count so that a machine whose CPU
+ *  offers neither still gets something that varies per boot. Output is
+ *  SHA-256(pool || counter), and the pool is re-hashed forward after every
+ *  block, so seeing output does not reveal the state that produced it.
+ * ========================================================================= */
+static uint8_t  rnd_pool[32];
+static uint64_t rnd_ctr;
+static int      rnd_ready;
+
+static uint64_t rd_tsc(void) {
+    uint32_t lo, hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static void cpuid_(uint32_t leaf, uint32_t sub, uint32_t r[4]) {
+    __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3])
+                             : "a"(leaf), "c"(sub));
+}
+
+/* 1 if a 64-bit hardware random word was produced. RDSEED/RDRAND can legitimately
+ * fail when the entropy pool is drained, hence the retries and the honest
+ * failure return -- silently substituting a constant would be the worst
+ * possible answer here. */
+static int hw_random(uint64_t *out) {
+    uint32_t r[4];
+    cpuid_(0, 0, r);
+    uint32_t maxleaf = r[0];
+    int have_seed = 0, have_rand = 0;
+    if (maxleaf >= 7) { cpuid_(7, 0, r); have_seed = (r[1] >> 18) & 1; }
+    if (maxleaf >= 1) { cpuid_(1, 0, r); have_rand = (r[2] >> 30) & 1; }
+
+    uint64_t v = 0; uint8_t ok = 0;
+    for (int i = 0; i < 32 && have_seed; i++) {
+        __asm__ volatile("rdseed %0; setc %1" : "=r"(v), "=qm"(ok));
+        if (ok) { *out = v; return 1; }
+    }
+    for (int i = 0; i < 32 && have_rand; i++) {
+        __asm__ volatile("rdrand %0; setc %1" : "=r"(v), "=qm"(ok));
+        if (ok) { *out = v; return 1; }
+    }
+    return 0;
+}
+
+void crypto_rand_stir(const void *extra, uint32_t len) {
+    sha256_ctx c;
+    sha256_init(&c);
+    sha256_update(&c, rnd_pool, sizeof rnd_pool);
+    uint64_t t = rd_tsc();
+    sha256_update(&c, &t, sizeof t);
+    for (int i = 0; i < 4; i++) {
+        uint64_t hw;
+        if (hw_random(&hw)) sha256_update(&c, &hw, sizeof hw);
+    }
+    if (extra && len) sha256_update(&c, extra, len);
+    sha256_final(&c, rnd_pool);
+    rnd_ready = 1;
+}
+
+void crypto_rand_bytes(void *out, uint32_t n) {
+    if (!rnd_ready) crypto_rand_stir(0, 0);
+    uint8_t *o = (uint8_t *)out;
+    while (n) {
+        uint8_t block[32];
+        sha256_ctx c;
+        sha256_init(&c);
+        sha256_update(&c, rnd_pool, sizeof rnd_pool);
+        sha256_update(&c, &rnd_ctr, sizeof rnd_ctr);
+        rnd_ctr++;
+        uint64_t t = rd_tsc();
+        sha256_update(&c, &t, sizeof t);
+        sha256_final(&c, block);
+
+        uint32_t take = n < 32 ? n : 32;
+        memcpy(o, block, take);
+        o += take; n -= take;
+
+        /* Ratchet the pool forward so past output cannot be rewound into it. */
+        sha256_init(&c);
+        sha256_update(&c, rnd_pool, sizeof rnd_pool);
+        sha256_update(&c, block, sizeof block);
+        sha256_final(&c, rnd_pool);
+    }
+}

@@ -78,5 +78,19 @@ void p256_pub_from_priv(const uint8_t priv[32], uint8_t pub[65]);  /* pub = 0x04
 void p256_clamp_priv(uint8_t priv[32]);                            /* reduce into [1,n-1] */
 int  p256_ecdh(uint8_t out[32], const uint8_t priv[32], const uint8_t peer_pub[65]);
 /* ECDSA verify: pub = 0x04||X||Y, r/s 32-byte big-endian. 0 = valid. */
+/* ECDSA sign. `nonce` is the per-signature secret k: it must be unpredictable
+ * and never reused, since two signatures sharing one reveal the private key.
+ * Returns 0, or -1 for a degenerate nonce (retry with fresh randomness). */
+int  p256_ecdsa_sign(const uint8_t *hash, uint32_t hlen, const uint8_t priv[32],
+                     const uint8_t nonce[32], uint8_t r_out[32], uint8_t s_out[32]);
+
 int  p256_ecdsa_verify(const uint8_t *hash, uint32_t hlen,
                        const uint8_t pub[65], const uint8_t r[32], const uint8_t s[32]);
+
+/* --- CSPRNG (net/crypto.c) ------------------------------------------------
+ * SHA-256 DRBG seeded from RDSEED/RDRAND where the CPU offers them, mixed with
+ * the timestamp counter. Use this, not rand(), anywhere a predictable value
+ * would be a security failure rather than merely a dull one -- ECDSA nonces,
+ * host and ephemeral keys, cookies. */
+void crypto_rand_bytes(void *out, uint32_t n);
+void crypto_rand_stir(const void *extra, uint32_t len);   /* fold in more entropy */

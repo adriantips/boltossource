@@ -70,7 +70,7 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 - [x] 40. TCP listen/accept (server sockets)
 - [x] 41. Socket syscalls, so ring-3 programs can use the network
 - [ ] 42. SSH client
-- [ ] 43. SSH server (remote administration and development)
+- [x] 43. SSH server (remote administration and development)
 - [ ] 44. Wi-Fi radio driver
 - [ ] 45. WPA2 four-way handshake
 - [ ] 46. Wi-Fi GUI picker (SSID list, passphrase entry) wired to DHCP

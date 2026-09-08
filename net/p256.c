@@ -255,6 +255,55 @@ int p256_ecdsa_verify(const uint8_t *hash, uint32_t hlen,
     return bn_cmp(Rx, rr) == 0 ? 0 : -1;
 }
 
+/* ECDSA sign over P-256.
+ *
+ * The verify path above already brought in everything this needs -- scalar
+ * multiplication for R = kG, and n_mul / n_inv for the arithmetic mod the group
+ * order -- so signing is the short half.
+ *
+ *   r = (kG).x mod n
+ *   s = k^-1 (z + r*d) mod n
+ *
+ * `k` is the per-signature secret and must be unpredictable and never reused:
+ * two signatures made with the same k reveal the private key outright. The
+ * caller supplies it (from the same entropy the key came from) and it is
+ * clamped into [1, n-1] here. Returns 0 on success, -1 if the nonce was
+ * degenerate -- the caller retries with fresh randomness. */
+int p256_ecdsa_sign(const uint8_t *hash, uint32_t hlen, const uint8_t priv[32],
+                    const uint8_t nonce[32], uint8_t r_out[32], uint8_t s_out[32]) {
+    uint32_t kk[8];
+    be_to_limbs(kk, nonce);                     /* reduce k into [1, n-1] */
+    while (bn_cmp(kk, N) >= 0) bn_sub(kk, kk, N);
+    if (bn_is_zero(kk)) return -1;
+    uint8_t kb[32]; limbs_to_be(kb, kk);
+
+    uint32_t rx[8], ry[8];
+    if (scalar_mul(rx, ry, kb, GX, GY) != 0) return -1;   /* k*G was infinity */
+    uint32_t rr[8];
+    n_mod(rr, rx);                              /* r = x(kG) mod n */
+    if (bn_is_zero(rr)) return -1;
+
+    /* z = leftmost min(hlen,32) bytes of the digest, as in verify */
+    uint8_t zb[32]; for (int i = 0; i < 32; i++) zb[i] = 0;
+    uint32_t n = hlen < 32 ? hlen : 32;
+    memcpy(zb, hash, n);
+    uint32_t z[8]; be_to_limbs(z, zb); n_mod(z, z);
+
+    uint32_t d[8], kinv[8], t[8], ss[8];
+    be_to_limbs(d, priv);  n_mod(d, d);
+    n_inv(kinv, kk);
+    n_mul(t, rr, d);                            /* r*d            */
+    uint32_t sum[8];
+    if (bn_add(sum, z, t)) bn_sub(sum, sum, N); /* z + r*d, folded back mod n */
+    while (bn_cmp(sum, N) >= 0) bn_sub(sum, sum, N);
+    n_mul(ss, kinv, sum);                       /* s = k^-1(z + r*d) */
+    if (bn_is_zero(ss)) return -1;
+
+    limbs_to_be(r_out, rr);
+    limbs_to_be(s_out, ss);
+    return 0;
+}
+
 /* ------------------------------ public API ----------------------------- */
 /* priv must be a valid scalar in [1, n-1]; the caller supplies randomness and
  * we clamp it into range. pub is the uncompressed point 0x04||X||Y (65 bytes). */
