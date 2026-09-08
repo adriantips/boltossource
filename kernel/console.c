@@ -155,7 +155,47 @@ void console_init(void) {
     cur_last = 0;
 }
 
+/* Minimal ANSI CSI handling.
+ *
+ * The console is otherwise a dumb character grid, but a full-screen program
+ * (`edit`) has to clear the screen and place the cursor. Doing that with escape
+ * sequences means one piece of code works here, on a serial terminal and over
+ * SSH -- where the far end is a real terminal and inventing a private protocol
+ * it has never heard of would be the wrong answer. Sequences that are not
+ * implemented are swallowed rather than printed as stray text. */
+static int      esc_state;        /* 0 = normal, 1 = saw ESC, 2 = inside a CSI */
+static char     esc_buf[16];
+static uint32_t esc_len;
+
+static void csi_apply(char final) {
+    uint32_t a = 0;               /* only the first numeric parameter is used */
+    for (uint32_t i = 0; i < esc_len; i++) {
+        if (esc_buf[i] == ';') break;
+        if (esc_buf[i] >= '0' && esc_buf[i] <= '9') a = a * 10 + (uint32_t)(esc_buf[i] - '0');
+    }
+    switch (final) {
+    case 'J':                                        /* erase display        */
+        if (a == 2) console_clear();
+        break;
+    case 'H':                                        /* cursor home          */
+        ccol = crow = 0;
+        break;
+    case 'K':                                        /* erase to end of line */
+        for (uint32_t c = ccol; c < cols; c++) { grid[crow][c] = 0; draw_cell(c, crow); }
+        break;
+    default:                                         /* colours, and the rest */
+        break;
+    }
+}
+
 static void putc_fb(char c) {
+    if (esc_state == 1) { esc_state = (c == '[') ? 2 : 0; esc_len = 0; return; }
+    if (esc_state == 2) {
+        if ((unsigned char)c >= 0x40 && (unsigned char)c <= 0x7E) { csi_apply(c); esc_state = 0; }
+        else if (esc_len < sizeof esc_buf) esc_buf[esc_len++] = c;
+        return;
+    }
+    if (c == 0x1B) { esc_state = 1; return; }
     cursor_erase();                          /* never render over the cursor */
     if (c == '\r') { ccol = 0; return; }
     if (c == '\n') { newline(); return; }

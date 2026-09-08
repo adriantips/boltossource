@@ -27,6 +27,7 @@
 #define KEY_CUT    0x18   /* Ctrl+X */
 #define KEY_SAVE   0x19   /* Ctrl+S */
 #define KEY_LOCK   0x1A   /* Ctrl+Alt+L: lock the session (handled by the GUI) */
+#define KEY_CUTLINE 0x0F  /* Ctrl+K: cut the current line (the terminal editor) */
 
 /* Shift+navigation keys, for extending a text selection. Distinct control bytes
  * so editors can tell "move caret" from "extend selection". */

@@ -71,6 +71,7 @@ static char ctrl_shortcut(char c) {
         case 'v': return KEY_PASTE;
         case 'x': return KEY_CUT;
         case 's': return KEY_SAVE;
+        case 'k': return KEY_CUTLINE;
         default:  return 0;
     }
 }
