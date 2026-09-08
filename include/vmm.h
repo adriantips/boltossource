@@ -26,3 +26,13 @@ uint64_t vmm_get_phys(uint64_t pml4_phys, uint64_t virt);  /* 0 if not mapped   
  * interrupts/syscalls stay valid after a CR3 switch. Low half is empty and
  * free for user pages. Returns the PML4 physical address, 0 on failure. */
 uint64_t vmm_new_address_space(void);
+
+/* Free every frame the low (user) half of an address space owns -- the data
+ * pages and the page tables that map them -- and then the PML4 itself. The
+ * shared kernel entries (256, 511) are left alone: they belong to the kernel
+ * PML4, and freeing them would unmap the kernel from every other process.
+ *
+ * Must not be called while the address space is loaded in CR3. Process teardown
+ * therefore defers it until the scheduler has switched away (see the zombie
+ * reaping in kernel/sched.c). */
+void     vmm_free_address_space(uint64_t pml4_phys);

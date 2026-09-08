@@ -29,10 +29,21 @@ void    proc_init(void);
 int     proc_exec(const char *path);       /* load ELF + run; pid or -1 */
 int     proc_exec_argv(const char *path, const char *arg1); /* with argv[1] */
 proc_t *proc_current(void);                /* running process, or 0     */
+int     proc_pid_of(proc_t *p);            /* pid, or -1 for 0          */
 
 int     proc_fd_alloc(proc_t *p, file *f); /* lowest free fd, or -1     */
 file   *proc_fd_get(proc_t *p, int fd);
 int     proc_fd_close(proc_t *p, int fd);
+
+/* Give back everything a dying process holds that is not memory: its open
+ * files, and the screen if it had grabbed the framebuffer. Every way a process
+ * can die goes through this -- ordinary exit, a CPU fault, and `kill` from
+ * another thread -- because a process killed from outside leaks exactly as
+ * badly as one that faults, and a killed program that owned the screen would
+ * otherwise leave the compositor paused with no way to get it back. Memory is
+ * not freed here: the scheduler reaps the stack and address space later, once
+ * it is no longer standing on them. */
+void    proc_release(proc_t *p);
 
 void    proc_exit(int code) __attribute__((noreturn));
 

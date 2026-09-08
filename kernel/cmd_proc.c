@@ -40,11 +40,22 @@ int cmd_ps(int argc, char **argv) {
     kprintf("(%d kernel contexts; BoltOS is a cooperative single-address-space kernel)\n",
             task_count());
 
-    /* Scheduler evidence: live threads, how many times the timer tick has
-     * actually switched between them, and the two demo threads' heartbeats. */
-    kprintf("scheduler: %d thread%s, %lu context switches, demo beats %lu/%lu\n",
-            sched_count(), sched_count() == 1 ? "" : "s",
-            (unsigned long)sched_switches(),
+    /* The real scheduler threads, which is what `kill` actually operates on. */
+    kprintf("\nscheduler threads (%lu ticks, %lu switches):\n",
+            (unsigned long)sched_ticks(), (unsigned long)sched_switches());
+    sh_pad("SLOT", 6); sh_pad("NAME", 12); sh_pad("RING", 6);
+    sh_pad("TICKS", 10); kprintf("IDLE\n");
+    for (int i = 0; i < 16; i++) {
+        const char *nm = sched_name(i);
+        if (!nm[0]) continue;
+        char num[16];
+        sh_utoa((uint64_t)i, num); sh_pad(num, 6);
+        sh_pad(nm, 12);
+        sh_pad(sched_is_user(i) ? "3" : "0", 6);
+        sh_utoa(sched_thread_ticks(i), num); sh_pad(num, 10);
+        kprintf("%lu\n", (unsigned long)sched_idle_ticks(i));
+    }
+    kprintf("demo heartbeats: %lu / %lu\n",
             (unsigned long)demo_thread_beats(0), (unsigned long)demo_thread_beats(1));
     return 0;
 }
@@ -52,7 +63,22 @@ int cmd_ps(int argc, char **argv) {
 /* ------------------------------- kill ------------------------------------ */
 int cmd_kill(int argc, char **argv) {
     if (argc < 2) { kprintf("usage: kill PID\n"); return 1; }
-    task_t *t = task_find_pid(atoi(argv[1]));
+    int pid = atoi(argv[1]);
+
+    /* A real ring-3 process first: this actually terminates it, frees its
+     * address space and kernel stack, and lets the machine carry on. Until now
+     * `kill` only edited a label in the service registry, which meant a runaway
+     * user program could not be stopped at all. */
+    int slot = sched_slot_of_pid(pid);
+    if (slot >= 0) {
+        int rc = sched_kill(slot);
+        if (rc == -2) { kprintf("kill: %d is the running task\n", pid); return 1; }
+        kprintf("killed pid %d (%s)\n", pid, sched_name(slot));
+        return 0;
+    }
+
+    /* Otherwise it names a registry task (the advisory bookkeeping shown by ps). */
+    task_t *t = task_find_pid(pid);
     if (!t) { kprintf("kill: no such pid %s\n", argv[1]); return 1; }
     if (t->protect) {
         kprintf("kill: %d (%s) is a core kernel context and cannot be killed\n",

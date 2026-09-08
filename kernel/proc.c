@@ -15,8 +15,16 @@
 static int next_pid = 1;
 
 proc_t *proc_current(void) { return sched_current_proc(); }
+int     proc_pid_of(proc_t *p) { return p ? p->pid : -1; }
 
 void proc_init(void) { /* nothing global to set up yet */ }
+
+void proc_release(proc_t *p) {
+    if (!p) return;
+    g_fb_exclusive = 0;              /* it may have owned the screen */
+    for (int i = 0; i < PROC_MAX_FD; i++)
+        if (p->fds[i]) { vfs_close(p->fds[i]); p->fds[i] = 0; }
+}
 
 /* -------------------------------------------------------------- fd table ---*/
 int proc_fd_alloc(proc_t *p, file *f) {
@@ -164,11 +172,9 @@ struct registers *proc_fault_kill(struct registers *r) {
             r->int_no == 0  ? "divide by zero" : "fault",
             r->rip);
 
-    g_fb_exclusive = 0;              /* it may have owned the screen */
     p->exit_code = 128 + (int)r->int_no;
     p->alive = 0;
-    for (int i = 0; i < PROC_MAX_FD; i++)
-        if (p->fds[i]) { vfs_close(p->fds[i]); p->fds[i] = 0; }
+    proc_release(p);
 
     sched_exit_current();
     return schedule(r);              /* pick someone else; never returns here */
@@ -176,14 +182,14 @@ struct registers *proc_fault_kill(struct registers *r) {
 
 /* --------------------------------------------------------------- exit ------*/
 void proc_exit(int code) {
-    g_fb_exclusive = 0;          /* if a fb-grabbing program died, free the panel */
     proc_t *p = proc_current();
     if (p) {
         p->exit_code = code;
         p->alive = 0;
-        for (int i = 0; i < PROC_MAX_FD; i++)
-            if (p->fds[i]) { vfs_close(p->fds[i]); p->fds[i] = 0; }
+        proc_release(p);
         kprintf("[exit] pid=%d code=%d\n", p->pid, code);
+    } else {
+        g_fb_exclusive = 0;      /* no proc to release, but free the panel anyway */
     }
     sched_exit_current();                 /* scheduler will never resume us */
     __asm__ volatile("sti");
