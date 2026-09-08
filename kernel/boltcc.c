@@ -40,6 +40,7 @@ enum {
     N_PREINC, N_PREDEC, N_POSTINC, N_POSTDEC, N_TERN, N_LOGAND, N_LOGOR,
     /* statements */
     N_BLOCK, N_VARDECL, N_DECLS, N_IF, N_WHILE, N_FOR, N_RET, N_BREAK, N_CONT, N_EXPRSTMT, N_EMPTY,
+    N_ASSIGNIDX, N_ARRLIT,
 };
 
 typedef struct Node Node;
@@ -70,6 +71,7 @@ enum {
     OP_CALL, OP_RET,
     OP_PRINT, OP_PRINTLN, OP_PRINTF, OP_CSPRINT, OP_PUTC,
     OP_BUILTIN, OP_INDEX, OP_HALT,
+    OP_NEWARR, OP_ASTORE,
 };
 enum { B_LEN, B_STR, B_INT, B_ABS, B_MIN, B_MAX, B_CHR, B_ORD,
        B_POW, B_SQRT, B_GCD, B_UPPER, B_LOWER, B_SUBSTR };
@@ -77,7 +79,13 @@ enum { B_LEN, B_STR, B_INT, B_ABS, B_MIN, B_MAX, B_CHR, B_ORD,
 typedef struct { int op; long a, b; const char *s; } Instr;
 
 /* ------------------------------------------------------------- VM values --- */
-typedef struct { int t; long i; char *s; } Val;   /* t: 0 int, 1 string */
+/* t: 0 int, 1 string, 2 array. An array keeps its element count in `i` and
+ * points `s` at a block of Vals in the runtime arena -- reusing the two
+ * fields rather than widening Val, which every (Val){a,b,c} literal in here
+ * would otherwise have to be rewritten for. Arrays are references, so
+ * passing one to a function passes the array and not a copy, exactly as a C
+ * array decays to a pointer. */
+typedef struct { int t; long i; char *s; } Val;
 
 /* --------------------------------------------------------------- context --- */
 #define MAX_FUNCS    128
@@ -419,6 +427,12 @@ static Node *parse_assign(void) {
     case TK_PCTEQ:   op = OP_MOD; break;
     default: return l;
     }
+    if (l->kind == N_INDEX) {                 /* a[i] = v, and a[i] op= v */
+        adv();
+        Node *n = node(N_ASSIGNIDX);
+        n->op = op; n->a = l->a; n->b = l->b; n->c = parse_assign();
+        return n;
+    }
     if (l->kind != N_VAR) cc_error("assignment to non-variable", 0);
     adv();
     Node *n = node(N_ASSIGN); n->op = op; n->str = l->str; n->a = parse_assign();
@@ -460,9 +474,40 @@ static Node *parse_vardecl(void) {       /* one or more: type a [=e] (, b [=e])*
     do {
         if (curk() != TK_ID) cc_error("expected variable name", 0);
         const char *nm = cur()->str; adv();
-        while (curk() == TK_LBRACK) { adv(); accept(TK_RBRACK); }   /* array decl */
         Node *d = node(N_VARDECL); d->str = nm;
-        if (accept(TK_ASSIGN)) d->a = parse_assign();
+        if (curk() == TK_LBRACK) {                       /* an array declaration */
+            adv();
+            d->ival = 1;
+            if (curk() != TK_RBRACK) d->b = parse_assign();   /* the size, if given */
+            expect(TK_RBRACK, "]");
+            while (curk() == TK_LBRACK) {                /* extra dimensions are
+                                                          * flattened, not modelled */
+                adv();
+                if (curk() != TK_RBRACK) parse_assign();
+                expect(TK_RBRACK, "]");
+            }
+        }
+        if (accept(TK_ASSIGN)) {
+            if (curk() == TK_LBRACE) {                   /* = { a, b, c } */
+                adv();
+                Node *lit = node(N_ARRLIT);
+                Node *tmp2[256]; int m = 0;
+                if (curk() != TK_RBRACE) {
+                    do {
+                        if (curk() == TK_RBRACE) break;  /* a trailing comma */
+                        if (m < 256) tmp2[m++] = parse_assign();
+                    } while (accept(TK_COMMA));
+                }
+                expect(TK_RBRACE, "}");
+                lit->nkids = m;
+                lit->kids = (Node **)ast_alloc(m * (int)sizeof(Node *));
+                for (int q = 0; q < m; q++) lit->kids[q] = tmp2[q];
+                d->a = lit;
+                d->ival = 1;
+            } else {
+                d->a = parse_assign();
+            }
+        }
         if (n < 32) tmp[n++] = d;
     } while (accept(TK_COMMA));
     expect(TK_SEMI, ";");
@@ -565,6 +610,16 @@ static void parse_func_or_global(void) {
             } while (accept(TK_COMMA));
         }
         expect(TK_RP, ")");
+
+        /* A prototype -- `int f(int);` with no body -- is what a header is made
+         * of, so it has to be accepted and skipped rather than rejected. The
+         * function slot is released again so a later definition of the same
+         * name is the one that gets compiled, and so a name declared but never
+         * defined does not look like a function with an empty body. Forward
+         * references already resolve by name at codegen, so nothing is lost by
+         * dropping the declaration entirely. */
+        if (accept(TK_SEMI)) { C->nfunc--; return; }
+
         f->nparams = np;
         f->params = (const char **)ast_alloc(np * (int)sizeof(char *));
         for (int i = 0; i < np; i++) f->params[i] = ps[i];
@@ -713,6 +768,31 @@ static void gen_expr(Node *n) {
         gen_load(n->str); break;
     case N_CALL: gen_call(n); break;
     case N_INDEX: gen_expr(n->a); gen_expr(n->b); emit(OP_INDEX, 0, 0, 0); break;
+    case N_ARRLIT:
+        /* Build the array, then fill it element by element, leaving the array
+         * itself on the stack for whatever is consuming the expression. */
+        emit(OP_PUSHI, n->nkids, 0, 0);
+        emit(OP_NEWARR, 0, 0, 0);
+        for (int i = 0; i < n->nkids; i++) {
+            emit(OP_DUP, 0, 0, 0);
+            emit(OP_PUSHI, i, 0, 0);
+            gen_expr(n->kids[i]);
+            emit(OP_ASTORE, 0, 0, 0);
+            emit(OP_POP, 0, 0, 0);          /* drop the stored value */
+        }
+        break;
+    case N_ASSIGNIDX:
+        if (n->op == 0) {
+            gen_expr(n->a); gen_expr(n->b); gen_expr(n->c);
+        } else {
+            /* a[i] op= v is a[i] = a[i] op v; the subscript is evaluated twice,
+             * which matters only for a subscript with side effects. */
+            gen_expr(n->a); gen_expr(n->b);
+            gen_expr(n->a); gen_expr(n->b); emit(OP_INDEX, 0, 0, 0);
+            gen_expr(n->c); emit(n->op, 0, 0, 0);
+        }
+        emit(OP_ASTORE, 0, 0, 0);
+        break;
     case N_BIN:
         gen_expr(n->a); gen_expr(n->b); emit(n->op, 0, 0, 0); break;
     case N_UN:
@@ -767,7 +847,14 @@ static void gen_stmt(Node *n) {
         break;
     case N_VARDECL: {
         int idx = loc_add(n->str);
-        if (n->a) { gen_expr(n->a); emit(OP_STOREL, idx, 0, 0); }
+        if (n->a) {                                  /* initialised */
+            gen_expr(n->a);
+            emit(OP_STOREL, idx, 0, 0);
+        } else if (n->ival) {                        /* `int a[N];` */
+            if (n->b) gen_expr(n->b); else emit(OP_PUSHI, 0, 0, 0);
+            emit(OP_NEWARR, 0, 0, 0);
+            emit(OP_STOREL, idx, 0, 0);
+        }
         break; }
     case N_EXPRSTMT: gen_expr(n->a); emit(OP_POP, 0, 0, 0); break;
     case N_IF: {
@@ -975,15 +1062,52 @@ static void vm_run(int start_ip) {
         case OP_PUTC:    { Val a = POP(); kputc((char)(a.t==1 ? (a.s?a.s[0]:0) : a.i)); PUSH(VI(0)); break; }
         case OP_PRINTF:  { int argc = (int)in->b; do_printf(&st[sp - argc], argc); sp -= argc; PUSH(VI(0)); break; }
         case OP_CSPRINT: { int argc = (int)in->b; do_csprint(&st[sp - argc], argc, (int)in->a); sp -= argc; PUSH(VI(0)); break; }
-        case OP_INDEX: { Val idx = POP(), s = POP(); if (s.t != 1) cc_error("runtime: indexing a non-string", 0);
-                         long i = need_int(idx,"index"); int n = (int)strlen(s.s ? s.s : "");
-                         if (i < 0 || i >= n) cc_error("runtime: string index out of range", 0);
-                         PUSH(VI((unsigned char)s.s[i])); break; }
+        case OP_INDEX: {
+            Val idx = POP(), c = POP();
+            long i = need_int(idx, "index");
+            if (c.t == 2) {                       /* an array element */
+                if (i < 0 || i >= c.i)
+                    cc_error("runtime: array index out of range", 0);
+                PUSH(((Val *)c.s)[i]);
+                break;
+            }
+            if (c.t != 1) cc_error("runtime: indexing a non-string", 0);
+            int n = (int)strlen(c.s ? c.s : "");
+            if (i < 0 || i >= n) cc_error("runtime: string index out of range", 0);
+            char *d = rt_alloc(2); d[0] = c.s[i]; d[1] = 0;
+            Val r = { 1, 0, d };
+            PUSH(r);
+            break;
+        }
+        case OP_NEWARR: {
+            /* Elements live in the runtime arena and are zeroed, so an
+             * uninitialised element reads as 0 rather than as whatever the last
+             * program left there. */
+            long n = need_int(POP(), "array size");
+            if (n < 0 || n > 1000000) cc_error("runtime: absurd array size", 0);
+            Val *base = (Val *)rt_alloc((int)(n * (long)sizeof(Val)));
+            for (long k = 0; k < n; k++) base[k] = (Val){0,0,0};
+            Val r = { 2, n, (char *)base };
+            PUSH(r);
+            break;
+        }
+        case OP_ASTORE: {
+            /* Leaves the stored value on the stack, so `a[i] = v` is an
+             * expression like every other assignment here. */
+            Val v = POP(), idx = POP(), arr = POP();
+            if (arr.t != 2) cc_error("runtime: assigning through a non-array", 0);
+            long i = need_int(idx, "index");
+            if (i < 0 || i >= arr.i) cc_error("runtime: array index out of range", 0);
+            ((Val *)arr.s)[i] = v;
+            PUSH(v);
+            break;
+        }
         case OP_BUILTIN: {
             int id = (int)in->a, argc = (int)in->b; Val *a = &st[sp - argc];
             Val r = VI(0);
             switch (id) {
-            case B_LEN: r = VI(a[0].t == 1 ? (long)strlen(a[0].s ? a[0].s : "") : 0); break;
+            case B_LEN: r = VI(a[0].t == 2 ? a[0].i :
+                               a[0].t == 1 ? (long)strlen(a[0].s ? a[0].s : "") : 0); break;
             case B_STR: { const char *cs = val_cstr(a[0]); int l=(int)strlen(cs); char*d=rt_alloc(l+1); memcpy(d,cs,l+1); r=(Val){1,0,d}; break; }
             case B_INT: { if (a[0].t == 1) { r = VI(atoi(a[0].s ? a[0].s : "0")); } else r = VI(a[0].i); break; }
             case B_ABS: { long v = need_int(a[0],"abs"); r = VI(v < 0 ? -v : v); break; }

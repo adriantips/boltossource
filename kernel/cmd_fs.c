@@ -311,7 +311,12 @@ int cmd_touch(int argc, char **argv) {
 
 /* ----------------------------- write ------------------------------------- */
 int cmd_write(int argc, char **argv) {
-    if (argc < 2) { kprintf("usage: write FILE [TEXT...]\n"); return 1; }
+    /* `write -a` appends instead of replacing. Without it there was no way to
+     * build a file up a line at a time from the shell or from a script -- and
+     * so no way to author anything multi-line outside the interactive editor. */
+    int append = 0;
+    if (argc > 1 && !strcmp(argv[1], "-a")) { append = 1; argc--; argv++; }
+    if (argc < 2) { kprintf("usage: write [-a] FILE [TEXT...]\n"); return 1; }
     fs_node *n = fs_lookup(argv[1]);
     if (!n) {
         if (!may_create(argv[1], "write")) return 1;
@@ -328,6 +333,7 @@ int cmd_write(int argc, char **argv) {
         for (const char *s = argv[i]; *s && len < sizeof(buf) - 1; ) buf[len++] = *s++;
     }
     if (len < sizeof(buf) - 1) buf[len++] = '\n';
+    if (append) return fs_append(n, buf, len) == 0 ? 0 : 1;
     fs_write(n, buf, len);
     return 0;
 }

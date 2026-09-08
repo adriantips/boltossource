@@ -304,6 +304,24 @@ class BoltVM:
             if delay:
                 time.sleep(delay)
 
+    def run(self, line, timeout=90):
+        """Type a shell command and block until the prompt comes back.
+
+        Waiting for the prompt instead of sleeping a fixed time is what keeps
+        the suite honest on a busy machine: every fixed sleep is a guess that
+        stops being true the moment the host is loaded, and a test that fails
+        only under load is worse than no test at all.
+        """
+        self.clear()
+        self.type(line + "\n")
+        end = time.time() + timeout
+        while time.time() < end:
+            tail = self.serial().rstrip()
+            if tail.endswith("bolt:/>") or tail.endswith(">"):
+                return self.serial()
+            time.sleep(0.25)
+        return self.serial()
+
     def move(self, x, y):
         self._cmd({"execute": "input-send-event", "arguments": {"events": [
             {"type": "rel", "data": {"axis": "x", "value": x - self.pos[0]}},

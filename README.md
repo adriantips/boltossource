@@ -565,6 +565,62 @@ executes the buffer, streaming the program's output into a console pane below.
 > The kernel has no FPU (SSE/x87 disabled), so every language here is **integer +
 > string** only — there is no floating point.
 
+## Multi-file C: the preprocessor and `cc`
+
+BoltCC could compile exactly one self-contained file. No `#include` meant no
+headers, no headers meant no way to split a program across files, and a language
+you cannot split across files is not one anybody writes real software in. Three
+pieces closed that.
+
+**A C preprocessor** (`kernel/cpp.c`) -- a text-to-text pass before the lexer,
+which is what a C preprocessor actually is. It handles `#include "..."` (relative
+to the including file, then the search path) and `#include <...>`, object-like
+and function-like `#define` with `#` stringification, `#undef`, the full
+`#ifdef` / `#ifndef` / `#if` / `#elif` / `#else` / `#endif` family with a real
+expression evaluator (`defined(X)`, integers, `!`, `&&`, `||`, comparisons,
+parentheses), `#pragma once` and `#error`. A macro is marked while it is being
+expanded so a self-referential one expands once and stops, which is the rule
+that keeps an ordinary `#define getc getc` from hanging the machine. Token
+pasting and variadic macros are deliberately absent: nothing in the tree needs
+them and each is a sharp edge.
+
+**Arrays in BoltCC.** `int a[10];`, `int a[] = {1,2,3};`, indexing, assignment
+through an index, `a[i] += x`, and `len(a)`. Elements are `Val`s in the runtime
+arena and arrays are references, so passing one to a function passes the array
+rather than a copy, exactly as a C array decays to a pointer. Bounds are checked
+at runtime -- a language with no pointers has no excuse for reading past an
+array. **Function prototypes** are now accepted and skipped, which is what a
+header is made of.
+
+**`cc`** (`kernel/cmd_cc.c`) is the driver: it preprocesses each file and
+concatenates the results into one translation unit before compiling. That is a
+unity build, and it is worth naming plainly rather than dressing up -- BoltCC
+has no separate compilation or linking step. What it does give you is a program
+genuinely split across files, with headers shared between them.
+
+```
+cc main.c util.c            build and run
+cc -E main.c                print the preprocessed unit
+cc -o all.c main.c util.c   write the combined unit instead of running
+cc -I DIR -D NAME=VALUE     search path and command-line macros
+```
+
+The dialect comes from the first file's extension (`.c`, `.cpp`/`.cc`/`.cxx`,
+`.cs`). `test/t_cc.py` writes a three-file program from the shell, builds it,
+and checks the answer, the macro expansion, the cross-file call, the include
+guard and the error message for a missing header.
+
+### Quoting in the shell
+
+None of that was authorable from the shell before, because the shell had no
+quoting: it split on every `;`, and every line of C worth writing contains one.
+The tokenizer now honours `"double"` and `'single'` quotes and a backslash
+escape, and the `;` and `|` splitters skip over quoted runs. Inside double
+quotes a backslash escapes only a quote or another backslash, as a POSIX shell
+does -- consuming every escape would eat the ones that belong to the argument,
+so `write f.c "printf(\"hi\n\")"` would silently store a bare `n`.
+`write -a` appends, so a file can be built up a line at a time.
+
 ## TrueType fonts
 
 `kernel/ttf.c` is a from-scratch **TrueType rasterizer**. It parses an embedded
@@ -917,7 +973,7 @@ libcss, and `netsurf/` libraries):
 
 The interactive OS shell supports a wide range of commands:
 
-- **File & Directory:** `ls` (`-l` for mode + owner), `tree`, `cd`, `mkdir`, `rm`, `cp`, `mv`, `find`, `trash`, `recover`, `pwd`, `touch`, `write`, `edit` (full-screen editor), `chmod`, `chown`
+- **File & Directory:** `ls` (`-l` for mode + owner), `tree`, `cd`, `mkdir`, `rm`, `cp`, `mv`, `find`, `trash`, `recover`, `pwd`, `touch`, `write` (`-a` appends), `edit` (full-screen editor), `chmod`, `chown`
 - **File Inspection:** `cat`, `head`, `tail`, `hex`, `meta`, `diff`, `grep`, `checksum`, `preview`, `count`
 - **System Information:** `sysinfo`, `cpuinfo`, `meminfo`, `diskinfo`, `sync`, `fsck`, `uptime`, `battery`, `sensors`, `devices`, `version`, `health`
 - **Power:** `poweroff`, `reboot` (both commit the filesystem and mark it clean before ACPI S5 / reset), `power off|reboot` (alias)
@@ -930,7 +986,7 @@ The interactive OS shell supports a wide range of commands:
 - **Names & time:** `hosts` (local name table), `dns` (resolve / show / flush the cache), `ntp` (clock sync)
 - **Serving:** `serve` (HTTP file server over real accepted connections), `netget` (fetch a URL from a ring-3 socket program)
 - **Remote access:** `sshd` (SSH-2 server: real shell, password auth, encrypted), `sshkey` (host key fingerprint)
-- **Language:** `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the **Code** app compiles C / C++ / C#
+- **Language:** `cc` (multi-file C/C++/C# via the preprocessor + BoltCC), `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the **Code** app compiles C / C++ / C#
 - **Bonus / Unique:** `focus`, `snapshot`, `timeline`, `vault`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
 - **Core:** `help`, `echo`, `clear`, `mem`
 
@@ -962,7 +1018,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- acpi.c   apic.c    smp.c   ap_boot.asm   hpet.c  gdt.c  stackguard.c
 |   +-- blk.c             Generic block layer (ATA/AHCI/NVMe registry + MBR helpers)
 |   +-- dom.c   layout.c  html.c          Browser engine: DOM tree, CSS cascade, box/flex/grid layout
-|   +-- js.c    cmd_js.c  boltcc.c  boltpy.c   JavaScript, C/C++/C#, Python
+|   +-- js.c    cmd_js.c  boltcc.c  cpp.c  cmd_cc.c  boltpy.c   JavaScript, C preprocessor, C/C++/C#, Python
 |   +-- image.c  font8x8.c  kprintf.c  sysreg.c  user.asm
 |   +-- ttf.c    clipboard.c  users.c  pkg.c
 |   +-- cmd_extra.c  cmd_fs.c  cmd_net.c  cmd_netcfg.c  cmd_serve.c  cmd_ssh.c  cmd_edit.c  cmd_proc.c  cmd_python.c  cmd_sys.c  cmd_hw.c
