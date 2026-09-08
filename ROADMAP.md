@@ -101,11 +101,14 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
         from the program's own .symtab, and the stack
 - [x] 64. Breakpoint / single-step debugger (`cc -g`: breakpoints, stepping,
         backtrace, locals by name; runtime errors report line + call stack)
-- [ ] 65. Package repository format
-- [ ] 66. Package dependency resolution
-- [ ] 67. Packages fetched over the network
-- [ ] 68. Binary packages, not just scripts
-- [ ] 69. Curated ports catalogue of dev tools
+- [x] 65. Package + repository format (`pkg build`, `pkg publish`, an index
+        with hashes)
+- [x] 66. Package dependency resolution (`requires`, installed first; `remove`
+        refuses while depended on)
+- [x] 67. Packages fetched over the network (an http:// repository, hash checked)
+- [x] 68. Binary packages, not just scripts (explicit sizes, verbatim payloads,
+        `kind program` exec'd by `pkg run`)
+- [x] 69. Curated catalogue: headers for `cc`, and a starter project `build` runs
 - [ ] 70. Documented, stable syscall ABI and SDK headers
 - [ ] 71. Man pages for every shell command
 - [ ] 72. Shell scripting: variables, conditionals, loops, functions
