@@ -23,7 +23,9 @@ UEFI), own kernel.
 > compilers** and a **Python interpreter**, a **GPU / display-adapter driver**,
 > support for running real **Windows PE32+ executables**, **PC-speaker + AC97
 > audio**, **TrueType font** rendering, a **system-wide clipboard**, **stack
-> canary** protection, **multi-user** support, a **package manager**, a full
+> canary** protection, **multi-user** support, a **package manager** with a real
+> package/repository format that installs over HTTP, **local version control**,
+> **core dumps** with symbolised backtraces, a full
 > **freestanding libc**, **BSD-style sockets** reaching ring 3, an **SSH server**,
 > and image decoding.
 
@@ -952,10 +954,91 @@ pass/block counters, and the account list.
 
 ## Package manager
 
-`kernel/pkg.c` is a minimal **package manager**. Packages ship in a built-in
-catalog of BoltPython scripts. Installing one writes it to `/apps/<name>.py` and
-records the name in `/var/lib/pkg/installed`. Run an installed package with
-`python /apps/<name>.py` or `pkg run <name>`.
+The old `pkg` was five BoltPython programs compiled into the kernel; installing
+one copied a string into `/apps`. Nothing could be added to it without
+rebuilding the kernel on another machine, which is the one thing a package
+manager exists to avoid.
+
+There is now a **package format** and a **repository format**
+(`include/pkg.h`), and everything else is built on them. A package is a text
+header, a blank line, and then its files:
+
+```
+BOLTPKG 1
+package cproject
+version 1.0
+kind    source            # script | program | source
+summary a starter multi-file C project
+requires boltlib mathx
+run     /apps/thing.py    # optional: what `pkg run` executes
+
+file 41 /home/Documents/newproj/build.txt
+<41 raw bytes>
+file 120 /home/Documents/newproj/main.c
+<120 raw bytes>
+```
+
+Sizes are explicit and the payload is copied verbatim, so a package can carry
+an ELF as easily as a script. A repository is a directory of those files plus
+an `index`: the same stanzas, one per package, each naming its file and that
+file's hash.
+
+```
+pkg avail [TERM]        what the repository offers
+pkg install NAME        dependencies first, hash checked, files recorded
+pkg list                what is installed here
+pkg info NAME           one package, and every file it owns
+pkg remove NAME         take back exactly what it put down
+pkg run NAME            run an installed script or program
+pkg update              re-read the repository's index
+pkg repo [URL|PATH]     show, or change, the repository in use
+pkg build DIR [OUT]     pack a directory (and its pkg.txt) into a .pkg
+pkg publish FILE [REPO] add a package to a repository, and index it
+```
+
+**The repository can be somewhere else.** It is a path or an `http://` URL, and
+nothing downstream of `fetch()` knows which -- so a package installed off the
+disk and the same package installed over the network take the same path through
+the code. Fetched bytes are checked against the index's hash before anything is
+written, so a truncated download or a repository that changed underneath is
+refused rather than installed.
+
+**Dependencies** are resolved before the package that needs them is written, so
+a half-installed program never exists; `remove` refuses while something else
+still requires what you are removing, and otherwise deletes exactly the files
+the install recorded.
+
+**Packages can be made here.** `pkg build DIR` packs a directory described by a
+`pkg.txt`, and `pkg publish` puts the result into a repository and rewrites its
+index -- so a program written on BoltOS can be packaged on BoltOS and installed
+on the next machine, with no host toolchain anywhere in that sentence.
+
+The catalogue that ships with the system (`kernel/pkgcat.c`) is written out as
+a real repository under `/var/lib/pkg/repo` the first time one is needed, rather
+than being installed directly: a built-in that took a shortcut would not be
+exercising the code that matters. It is small on purpose --
+
+| package | kind | what it adds |
+| --- | --- | --- |
+| `hello`, `fib`, `primes` | script | BoltPython programs, run with `pkg run` |
+| `boltlib` | source | `/usr/include/bolt.h`: `MIN`/`MAX`/`CLAMP`/`SQR`/`CHECK` for `cc` |
+| `mathx` | source | `/usr/include/mathx.h`: `ipow`, `isqrt`, `fact`, `is_prime` |
+| `cproject` | source | a starter multi-file C project in `~/Documents`, requiring the two above |
+
+-- and `cproject` is the one that shows what this is for: install it, then
+`build /home/Documents/newproj` compiles and runs it, headers and all, without
+another thing being typed.
+
+`test/t_pkg.py` does that round trip, then builds and publishes a package
+inside BoltOS and installs it from the repository it just made, and finally
+serves a repository **generated on the host in Python** over HTTP and installs
+from that -- which is also the proof that the format is one an outside tool can
+write.
+
+> Writing that last test turned up a real bug: the FNV-1a used by `checksum`,
+> `vcs` and `pkg` had a mistyped offset basis (a decimal digit dropped long
+> ago), so it was a perfectly good hash that was not FNV-1a and no outside tool
+> could reproduce it. It is the correct constant now.
 
 ## GPU / display driver
 
@@ -1236,7 +1319,7 @@ The interactive OS shell supports a wide range of commands:
 - **Install:** `install` (write a bootable BoltOS onto another disk; also a desktop app)
 - **Diagnostics:** `dmesg` (kernel log ring), `crashlog` (persisted crash reports), `core` (post-mortem inspector: registers, a named backtrace and the stack of a ring-3 crash), `crash ring3 [mode]` (fault a ring-3 process on purpose)
 - **Process Management:** `ps`, `kill`, `top`, `freeze`, `resume`, `services`, `service`, `jobs`, `priority`, `monitor`
-- **System (cont.):** `winrun` (Windows PE32+ loader), `compile` (BoltRT: compile a source file into a real PE32+ `.exe`), `pkg` (package manager), `libctest` (libc validation)
+- **System (cont.):** `winrun` (Windows PE32+ loader), `compile` (BoltRT: compile a source file into a real PE32+ `.exe`), `pkg` (packages: avail/install/remove/run/build/publish, from a directory or an http:// repository), `libctest` (libc validation)
 - **Identity & privilege:** `whoami`, `id`, `groups`, `users`, `useradd`, `userdel`, `passwd`, `sudo`, `lock`, `logout`
 - **Networking:** `netinfo`, `ifconfig` (interface config, saved to `/etc`), `ping`, `trace`, `ports`, `download`, `browse`, `webx` (ring-3 web browser), `upload`, `wifi`, `firewall`, `share`, `scan`, `nstest` (NetSurf library test)
 - **Names & time:** `hosts` (local name table), `dns` (resolve / show / flush the cache), `ntp` (clock sync)
@@ -1279,6 +1362,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- ccbuild.c  cmd_build.c    Build targets (build.txt) shared by cc, `build` and the IDE
 |   +-- cmd_vcs.c               BoltVCS: local version control (.bvcs objects/commits/refs)
 |   +-- core.c  cmd_core.c       Core dumps on a ring-3 fault + the post-mortem inspector
+|   +-- pkg.c  pkgcat.c          Package manager (format, repository, deps) + its catalogue
 |   +-- image.c  font8x8.c  kprintf.c  sysreg.c  user.asm
 |   +-- ttf.c    clipboard.c  users.c  pkg.c
 |   +-- cmd_extra.c  cmd_fs.c  cmd_net.c  cmd_netcfg.c  cmd_serve.c  cmd_ssh.c  cmd_edit.c  cmd_proc.c  cmd_python.c  cmd_sys.c  cmd_hw.c

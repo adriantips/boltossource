@@ -70,7 +70,7 @@ static void put_n(const uint8_t *p, uint32_t n) { for (uint32_t i = 0; i < n; i+
  * unchanged file share one copy in the object store. */
 static void hash_hex(const void *data, uint32_t len, char *out17) {
     const uint8_t *p = (const uint8_t *)data;
-    uint64_t h = 1469598103934665603ull;
+    uint64_t h = 0xcbf29ce484222325ull;
     for (uint32_t i = 0; i < len; i++) { h ^= p[i]; h *= 1099511628211ull; }
     static const char *H = "0123456789abcdef";
     for (int i = 0; i < 16; i++) out17[i] = H[(h >> ((15 - i) * 4)) & 0xF];

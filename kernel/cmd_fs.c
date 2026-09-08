@@ -487,7 +487,7 @@ int cmd_checksum(int argc, char **argv) {
     if (argc < 2) { kprintf("usage: checksum FILE\n"); return 1; }
     fs_node *n = need_file(argv[1], "checksum");
     if (!n) return 1;
-    uint64_t h = 1469598103934665603ull;                   /* FNV-1a 64 */
+    uint64_t h = 0xcbf29ce484222325ull;                   /* FNV-1a 64 */
     for (uint32_t i = 0; i < n->size; i++) {
         h ^= n->data[i];
         h *= 1099511628211ull;
