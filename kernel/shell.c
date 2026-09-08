@@ -164,6 +164,10 @@ const command_t commands[] = {
 
     /* Networking */
     { "netinfo",  "Network",          "network configuration",              cmd_netinfo },
+    { "ifconfig", "Network",          "show/set the interface, saved to /etc",cmd_ifconfig },
+    { "hosts",    "Network",          "local name table: hosts add NAME IP", cmd_hosts },
+    { "dns",      "Network",          "resolver cache: dns [NAME|flush]",    cmd_dns },
+    { "ntp",      "Network",          "clock sync: ntp [sync|on|off|server]",cmd_ntp },
     { "ping",     "Network",          "connectivity test",                  cmd_ping },
     { "trace",    "Network",          "route tracing",                      cmd_trace },
     { "ports",    "Network",          "open port viewer",                   cmd_ports },

@@ -8,3 +8,5 @@
 *.fd
 assets/font.ttf
 test/out/
+__pycache__/
+*.pyc

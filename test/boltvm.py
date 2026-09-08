@@ -93,7 +93,7 @@ class BoltVM:
 
     def __init__(self, name="vm", uefi=False, disks=True, net=True, snapshot=True,
                  memory="2G", smp=2, extra=None, port=None, workdir=None,
-                 boot_img=None, data_disks=None, no_reboot=False):
+                 boot_img=None, data_disks=None, no_reboot=False, nic="e1000"):
         self.name = name
         self.uefi = uefi
         self.workdir = workdir or os.path.join(ROOT, "test", "out")
@@ -142,7 +142,9 @@ class BoltVM:
               "-vga", "std", "-global", "VGA.vgamem_mb=64",
               "-audiodev", "none,id=snd0", "-device", "AC97,audiodev=snd0"]
         if net:
-            a += ["-netdev", "user,id=net0", "-device", "e1000,netdev=net0"]
+            # `nic` picks the emulated adapter, so the same test body can be run
+            # against every driver BoltOS ships: "e1000" or "virtio-net-pci".
+            a += ["-netdev", "user,id=net0", "-device", nic + ",netdev=net0"]
         a += ["-display", "none",
               "-serial", "file:" + self.serial_path,
               "-qmp", "tcp:127.0.0.1:%d,server,nowait" % self.port]
