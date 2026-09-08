@@ -23,7 +23,7 @@ def reach_shell(vm, timeout=180):
         vm.key("2")                      # safe mode: a text shell, no desktop
         time.sleep(0.4)
     vm.expect("BoltShell ready", timeout=timeout)
-    time.sleep(0.6)
+    vm.wait_prompt()
 
 
 def shell(vm, line, settle=1.6):
