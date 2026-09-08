@@ -91,7 +91,7 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 - [ ] 58. Static library archiver
 - [ ] 59. BoltVCS: init / add / commit / log
 - [ ] 60. BoltVCS: diff / checkout / branch
-- [ ] 61. Terminal text editor (`edit`)
+- [x] 61. Terminal text editor (`edit`)
 - [ ] 62. Core dumps written on a ring-3 crash
 - [ ] 63. Post-mortem inspector: registers, stack, ELF symbols
 - [ ] 64. Breakpoint / single-step debugger

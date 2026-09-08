@@ -113,6 +113,7 @@ const command_t commands[] = {
     { "find",     "File & Directory", "search for files",                   cmd_find },
     { "touch",    "File & Directory", "create empty file / update mtime",   cmd_touch },
     { "write",    "File & Directory", "write text into a file",             cmd_write },
+    { "edit",     "File & Directory", "full-screen text editor: edit FILE", cmd_edit },
     { "trash",    "File & Directory", "move file to trash",                 cmd_trash },
     { "recover",  "File & Directory", "restore trashed file",               cmd_recover },
 

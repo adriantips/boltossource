@@ -176,7 +176,7 @@ SRCS=(
     net/tcp.c net/dns.c net/crypto.c net/tls.c net/p256.c net/p384.c net/rsa.c net/x509.c net/inflate.c net/http.c
     net/wifi.c net/firmware.c net/firewall.c net/dhcp.c net/netcfg.c net/ntp.c
     drivers/e1000.c drivers/virtio_net.c
-    kernel/socket.c net/ssh.c kernel/cmd_ssh.c kernel/cmd_netcfg.c kernel/cmd_serve.c kernel/cmd_fs.c kernel/cmd_sys.c kernel/cmd_proc.c kernel/cmd_net.c kernel/cmd_extra.c kernel/cmd_hw.c kernel/cmd_user.c
+    kernel/socket.c net/ssh.c kernel/cmd_ssh.c kernel/cmd_edit.c kernel/cmd_netcfg.c kernel/cmd_serve.c kernel/cmd_fs.c kernel/cmd_sys.c kernel/cmd_proc.c kernel/cmd_net.c kernel/cmd_extra.c kernel/cmd_hw.c kernel/cmd_user.c
     kernel/html.c kernel/dom.c kernel/layout.c kernel/image.c kernel/ttf.c
     kernel/gui.c kernel/app_terminal.c kernel/app_taskmgr.c kernel/app_settings.c kernel/app_browser.c kernel/app_files.c
     kernel/app_oldbrowser.c oldbrowser/ob_nsurl.c oldbrowser/ob_llcache.c oldbrowser/ob_content.c oldbrowser/ob_window.c oldbrowser/ob_hotlist.c oldbrowser/ob_fbtk.c oldbrowser/ob_gui.c

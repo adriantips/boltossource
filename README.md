@@ -574,6 +574,27 @@ coverage bitmap using a non-zero winding scanline fill. The GUI uses it alongsid
 the built-in 8×8 and 8×16 bitmap fonts — the Settings app lets the user switch
 between `FONT_RETRO`, `FONT_ARIAL`, and `FONT_TTF`.
 
+## `edit` -- a text editor for the terminal
+
+The Notes app could edit a file, but only from the desktop. Everything done from
+the text shell -- safe mode, a serial console, an SSH session, the recovery
+shell, which are precisely the situations where a file needs fixing -- had no
+way to change a file beyond overwriting it wholesale with `write`. That is not
+an editor; it is a way to lose the rest of the file.
+
+`edit FILE` (`kernel/cmd_edit.c`) is a full-screen, nano-style editor: no modes
+to be in the wrong one of, and the keys are listed on screen, which matters for
+the only editor on a machine with nothing to fall back to. Arrows, Home/End and
+PgUp/PgDn move; `^S` saves, `^K` cuts a line, `^X` exits and offers to save
+first. Reads and writes go through `fs_may()`, so it cannot open or overwrite
+what the shell would refuse.
+
+Drawing uses **ANSI escape sequences** rather than a private console call, so one
+piece of code paints the framebuffer console, a serial terminal and anything else
+that speaks terminal. `kernel/console.c` gained the matching CSI handling for
+that (`ESC[2J`, `ESC[H`, `ESC[K`, and swallowing the sequences it does not
+implement instead of printing them as stray text).
+
 ## Clipboard
 
 `kernel/clipboard.c` provides a **system-wide text clipboard** shared by every
@@ -896,7 +917,7 @@ libcss, and `netsurf/` libraries):
 
 The interactive OS shell supports a wide range of commands:
 
-- **File & Directory:** `ls` (`-l` for mode + owner), `tree`, `cd`, `mkdir`, `rm`, `cp`, `mv`, `find`, `trash`, `recover`, `pwd`, `touch`, `write`, `chmod`, `chown`
+- **File & Directory:** `ls` (`-l` for mode + owner), `tree`, `cd`, `mkdir`, `rm`, `cp`, `mv`, `find`, `trash`, `recover`, `pwd`, `touch`, `write`, `edit` (full-screen editor), `chmod`, `chown`
 - **File Inspection:** `cat`, `head`, `tail`, `hex`, `meta`, `diff`, `grep`, `checksum`, `preview`, `count`
 - **System Information:** `sysinfo`, `cpuinfo`, `meminfo`, `diskinfo`, `sync`, `fsck`, `uptime`, `battery`, `sensors`, `devices`, `version`, `health`
 - **Power:** `poweroff`, `reboot` (both commit the filesystem and mark it clean before ACPI S5 / reset), `power off|reboot` (alias)
@@ -944,7 +965,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- js.c    cmd_js.c  boltcc.c  boltpy.c   JavaScript, C/C++/C#, Python
 |   +-- image.c  font8x8.c  kprintf.c  sysreg.c  user.asm
 |   +-- ttf.c    clipboard.c  users.c  pkg.c
-|   +-- cmd_extra.c  cmd_fs.c  cmd_net.c  cmd_netcfg.c  cmd_serve.c  cmd_ssh.c  cmd_proc.c  cmd_python.c  cmd_sys.c  cmd_hw.c
+|   +-- cmd_extra.c  cmd_fs.c  cmd_net.c  cmd_netcfg.c  cmd_serve.c  cmd_ssh.c  cmd_edit.c  cmd_proc.c  cmd_python.c  cmd_sys.c  cmd_hw.c
 |   +-- cmd_js.c  cmd_libctest.c  cmd_nstest.c
 |   \-- app_*.c           24 desktop apps (browser, files, ide, taskmgr, doom, paint, games, ...)
 +-- libc/

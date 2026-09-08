@@ -272,13 +272,20 @@ class BoltVM:
         return {"type": "key", "data": {"down": down,
                                         "key": {"type": "qcode", "data": qcode}}}
 
-    def key(self, qcode, shift=False):
+    def key(self, qcode, shift=False, ctrl=False, alt=False):
+        """Press and release one key, optionally with modifiers held.
+
+        `ctrl` is what lets a test drive anything that reads control keys --
+        the editor's ^S / ^X, a shell interrupt -- which cannot be expressed as
+        a character through type()."""
         ev = []
-        if shift:
-            ev.append(self._keyev("shift", True))
+        if shift: ev.append(self._keyev("shift", True))
+        if ctrl:  ev.append(self._keyev("ctrl", True))
+        if alt:   ev.append(self._keyev("alt", True))
         ev += [self._keyev(qcode, True), self._keyev(qcode, False)]
-        if shift:
-            ev.append(self._keyev("shift", False))
+        if alt:   ev.append(self._keyev("alt", False))
+        if ctrl:  ev.append(self._keyev("ctrl", False))
+        if shift: ev.append(self._keyev("shift", False))
         self._cmd({"execute": "input-send-event", "arguments": {"events": ev}})
         time.sleep(0.05)
 

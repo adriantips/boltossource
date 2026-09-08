@@ -87,6 +87,8 @@ int cmd_serve(int, char **);   int cmd_netget(int, char **);
 /* ---- handlers: SSH (kernel/cmd_ssh.c) ----------------------------------- */
 int cmd_sshd(int, char **);    int cmd_sshkey(int, char **);
 
+/* ---- handlers: terminal editor (kernel/cmd_edit.c) ---------------------- */
+int cmd_edit(int, char **);
 
 /* ---- handlers: Bonus / Unique ------------------------------------------- */
 int cmd_focus(int, char **);  int cmd_snapshot(int, char **);int cmd_timeline(int, char **);
