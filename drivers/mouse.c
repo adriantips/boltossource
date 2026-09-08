@@ -16,6 +16,11 @@
 static volatile int     mx, my;          /* absolute cursor position */
 static volatile int     sw, sh;          /* screen bounds for clamping */
 static volatile uint8_t btns;            /* current button bitmask */
+/* Buttons that have gone down since the last read. The compositor samples
+ * the mouse once a frame, and a full repaint can take longer than a real
+ * click lasts -- without a latch, a fast click (or the second half of a
+ * double-click) simply never happened. */
+static volatile uint8_t btn_latch;
 static volatile int     evt;             /* set on every decoded packet */
 
 static volatile uint8_t pkt[4];
@@ -50,7 +55,9 @@ static void decode_packet(void) {
     if (my < 0)      my = 0;
     if (mx > sw - 1) mx = sw - 1;
     if (my > sh - 1) my = sh - 1;
-    btns = f & 0x07;
+    uint8_t nb = f & 0x07;
+    btn_latch |= (uint8_t)(nb & ~btns);
+    btns = nb;
     if (pktsz == 4) {                          /* low nibble of byte3 is signed Z */
         int z = pkt[3] & 0x0F;
         if (z & 0x08) z -= 16;
@@ -68,7 +75,9 @@ void mouse_inject(int dx, int dy, uint8_t buttons, int wheel) {
     if (my < 0)      my = 0;
     if (mx > sw - 1) mx = sw - 1;
     if (my > sh - 1) my = sh - 1;
-    btns = buttons & 0x07;
+    uint8_t nb = buttons & 0x07;
+    btn_latch |= (uint8_t)(nb & ~btns);
+    btns = nb;
     wheelacc += wheel;
     evt = 1;
 }
@@ -136,6 +145,7 @@ void mouse_init(int screen_w, int screen_h) {
 int     mouse_x(void)        { return mx; }
 int     mouse_y(void)        { return my; }
 uint8_t mouse_buttons(void)  { return btns; }
+uint8_t mouse_take_pressed(void) { uint8_t l = btn_latch; btn_latch = 0; return l; }
 int     mouse_poll_event(void) { int e = evt; evt = 0; return e; }
 int     mouse_wheel(void)      { int w = wheelacc; wheelacc = 0; return w; }
 // hold on guys

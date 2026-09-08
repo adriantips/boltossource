@@ -1849,9 +1849,8 @@ static void handle_wheel(int dz) {
         }
 }
 
-static void handle_mouse(void) {
+static void handle_mouse(uint8_t b) {
     int x = mlx(), y = mly();
-    uint8_t b = mouse_buttons();
     uint8_t down = b & ~prev_btns;
     uint8_t up   = prev_btns & ~b;
 
@@ -2289,7 +2288,15 @@ void gui_run(void) {
         }
 
         xhci_poll();                                 /* drain USB HID keyboard reports */
-        if (mouse_poll_event()) { handle_mouse(); last_input_tick = pit_ticks(); }
+        if (mouse_poll_event()) {
+            /* A click that began and ended between two frames is only in the
+             * latch: replay it as a press, then let the real (released) state
+             * deliver the matching release, so nothing is left half-dragged. */
+            uint8_t now = mouse_buttons(), latched = mouse_take_pressed();
+            if (latched & ~now) handle_mouse((uint8_t)(now | latched));
+            handle_mouse(now);
+            last_input_tick = pit_ticks();
+        }
         { int dz = mouse_wheel(); if (dz) { handle_wheel(dz); last_input_tick = pit_ticks(); } }
         int ci;
         while ((ci = kbd_trygetc()) >= 0) {
