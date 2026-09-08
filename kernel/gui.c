@@ -762,6 +762,18 @@ static void draw_icon(int id, int x, int y, int s, uint32_t c) {
         }
         break;
     }
+    case ICON_SECURITY: {                       /* padlock */
+        uint32_t body = 0xE8C24A, shackle = 0xB0B6C2;
+        /* shackle: a squared-off arch above the body */
+        g_fill(x + 4 * s, y + 2 * s, 2 * s, 5 * s, shackle);
+        g_fill(x + 10 * s, y + 2 * s, 2 * s, 5 * s, shackle);
+        g_fill(x + 4 * s, y + s, 8 * s, 2 * s, shackle);
+        /* body + keyhole */
+        g_round(x + 2 * s, y + 7 * s, 12 * s, 8 * s, 2 * s, body, 255);
+        g_round(x + 7 * s, y + 9 * s, 2 * s, 2 * s, s, 0x20242E, 255);
+        g_fill(x + 7 * s, y + 10 * s, 2 * s, 3 * s, 0x20242E);
+        break;
+    }
     case ICON_INSTALL: {                        /* disk with a download arrow */
         uint32_t disc = 0x8894AA, arrow = 0x46D17B;
         /* platter, drawn as a squat cylinder */
@@ -2035,31 +2047,91 @@ void gui_pump(void) {
 }
 
 /* ===========================================================================
- *  Login screen. Shown full-screen before the desktop; keyboard-driven. On a
- *  correct username/password the current user is set and the desktop appears.
+ *  Sign-in and lock screen.
+ *
+ *  The same full-screen panel serves both, because they ask the same question
+ *  and must be equally hard to get past. The difference is only what happens
+ *  behind it: signing in starts a session, unlocking resumes one, so the lock
+ *  screen keeps the username fixed and never offers to switch it.
+ *
+ *  The lock arms on Ctrl+Alt+L and on idle. Idle is measured from the last key
+ *  or mouse event, so a machine left alone in an office does not stay open.
  * ===========================================================================*/
 static int  login_active;
+static int  login_locked;         /* 1 = locking a live session, not signing in */
 static char login_user[USER_NAME_MAX];
 static int  login_ulen;
 static char login_pass[40];
 static int  login_plen;
 static int  login_field;          /* 0 = username, 1 = password */
 static int  login_err;
+static char login_msg[64];        /* throttle / error text under the fields    */
+static uint64_t last_input_tick;  /* for the idle auto-lock                    */
+
+/* Minutes of idleness before the session locks itself. 0 disables it. */
+static int lock_idle_minutes = 10;
 
 static void login_begin(void) {
-    login_active = 1; login_ulen = login_plen = 0; login_field = 0; login_err = 0;
-    login_user[0] = login_pass[0] = 0;
+    login_active = 1; login_locked = 0;
+    login_ulen = login_plen = 0; login_field = 0; login_err = 0;
+    login_user[0] = login_pass[0] = 0; login_msg[0] = 0;
 }
+
+/* Lock the running session: the desktop stays exactly as it is behind the
+ * panel, and the password of the *current* user unlocks it. */
+void gui_lock(void) {
+    if (login_active) return;
+    const char *who = users_current();
+    if (!who[0]) return;                     /* nobody signed in; nothing to lock */
+    login_active = 1; login_locked = 1;
+    strncpy(login_user, who, sizeof login_user - 1);
+    login_ulen = (int)strlen(login_user);
+    login_plen = 0; login_pass[0] = 0;
+    login_field = 1;                          /* the username is not in question */
+    login_err = 0; login_msg[0] = 0;
+    dirty = 1;
+}
+int  gui_locked(void) { return login_active && login_locked; }
+void gui_set_idle_lock(int minutes) { lock_idle_minutes = minutes; }
+int  gui_idle_lock(void) { return lock_idle_minutes; }
+
 void gui_logout(void) { users_logout(); login_begin(); dirty = 1; }
+
 static void login_submit(void) {
     login_user[login_ulen] = 0; login_pass[login_plen] = 0;
+
+    /* Guessing is throttled here exactly as it is at the shell: a wrong
+     * password costs an escalating delay, so an unattended machine cannot be
+     * brute-forced at keyboard speed. */
+    uint64_t wait = users_lockout_ms();
+    if (wait) {
+        login_err = 1;
+        login_msg[0] = 0;
+        kstrlcat(login_msg, "Too many attempts - wait a moment", sizeof login_msg);
+        login_plen = 0; login_pass[0] = 0;
+        return;
+    }
+
     int uid = users_auth(login_user, login_pass);
-    if (uid >= 0) { users_login(uid); login_active = 0; }
-    else { login_err = 1; login_plen = 0; login_pass[0] = 0; login_field = 1; }
+    if (uid >= 0) {
+        users_note_success();
+        if (!login_locked) users_login(uid);   /* unlocking resumes the session */
+        login_active = 0; login_locked = 0;
+        login_msg[0] = 0;
+        login_plen = 0; login_pass[0] = 0;
+        last_input_tick = pit_ticks();
+    } else {
+        users_note_failure();
+        login_err = 1;
+        login_msg[0] = 0;
+        login_plen = 0; login_pass[0] = 0;
+        login_field = 1;
+    }
 }
 static void login_key(char c) {
     unsigned char u = (unsigned char)c;
-    if (u == '\t') { login_field ^= 1; login_err = 0; return; }
+    /* On the lock screen the account is fixed, so Tab has nothing to move to. */
+    if (u == '\t') { if (!login_locked) login_field ^= 1; login_err = 0; return; }
     if (u == '\n') { if (login_field == 0 && login_ulen > 0) login_field = 1; else login_submit(); return; }
     if (u == '\b') {
         if (login_field == 0) { if (login_ulen) login_user[--login_ulen] = 0; }
@@ -2079,14 +2151,17 @@ static void draw_login(void) {
     g_round(cx, cy, cw, chh, 12, 0x161A28, 255);
     /* TrueType title (scalable, anti-aliased) with a bitmap fallback */
     g_text_tt(cx + cw/2 - g_text_tt_width("BoltOS", 34)/2, cy + 14, "BoltOS", 0xFFFFFF, 34);
-    g_text_tt(cx + cw/2 - g_text_tt_width("Sign in to continue", 14)/2, cy + 56, "Sign in to continue", 0x8893A8, 14);
+    {
+        const char *sub = login_locked ? "Locked - enter your password" : "Sign in to continue";
+        g_text_tt(cx + cw/2 - g_text_tt_width(sub, 14)/2, cy + 56, sub, 0x8893A8, 14);
+    }
 
     int fx = cx + 30, fw = cw - 60, fh = 30;
     int uy = cy + 96, py = cy + 152;
-    g_text(fx, uy - 16, "Username", 0x8893A8, 1);
-    g_round(fx, uy, fw, fh, 6, login_field == 0 ? 0x223052 : 0x10131F, 255);
-    g_rect(fx, uy, fw, fh, login_field == 0 ? 0x4FC3F7 : 0x33333F);
-    g_text(fx + 10, uy + 8, login_user, 0xFFFFFF, 1);
+    g_text(fx, uy - 16, login_locked ? "Signed in as" : "Username", 0x8893A8, 1);
+    g_round(fx, uy, fw, fh, 6, (!login_locked && login_field == 0) ? 0x223052 : 0x10131F, 255);
+    g_rect(fx, uy, fw, fh, (!login_locked && login_field == 0) ? 0x4FC3F7 : 0x33333F);
+    g_text(fx + 10, uy + 8, login_user, login_locked ? 0x8893A8 : 0xFFFFFF, 1);
 
     g_text(fx, py - 16, "Password", 0x8893A8, 1);
     g_round(fx, py, fw, fh, 6, login_field == 1 ? 0x223052 : 0x10131F, 255);
@@ -2094,10 +2169,14 @@ static void draw_login(void) {
     char stars[40]; int i; for (i = 0; i < login_plen && i < 39; i++) stars[i] = '*'; stars[i] = 0;
     g_text(fx + 10, py + 8, stars, 0xFFFFFF, 1);
 
-    if (login_err)
-        g_text(cx + cw/2 - g_text_width("Incorrect credentials", 1)/2, cy + chh - 32, "Incorrect credentials", 0xFF6B6B, 1);
-    else
+    if (login_err) {
+        const char *m = login_msg[0] ? login_msg : "Incorrect password";
+        g_text(cx + cw/2 - g_text_width(m, 1)/2, cy + chh - 32, m, 0xFF6B6B, 1);
+    } else if (login_locked) {
+        g_text(fx, cy + chh - 32, "Enter your password to unlock", 0x55607A, 1);
+    } else {
         g_text(fx, cy + chh - 32, "Tab switches field . default: user / bolt", 0x55607A, 1);
+    }
 }
 
 /* ===========================================================================
@@ -2164,6 +2243,7 @@ void gui_run(void) {
     matrix_app_init();
     doom_app_init();
     installer_app_init();
+    security_app_init();
     settings_app_init();
     /* Every app gets a launcher icon on the desktop; double-click opens it. The
      * taskbar starts empty and only fills with apps as they are opened (or that
@@ -2178,6 +2258,7 @@ void gui_run(void) {
 
     wallpaper_restore();       /* restore a saved image wallpaper, if any */
 
+    last_input_tick = pit_ticks();
     login_begin();             /* gate the desktop behind a sign-in */
 
     for (;;) {
@@ -2189,9 +2270,14 @@ void gui_run(void) {
          * scheduler runs that ring-3 thread. Repaint the desktop once it lets go. */
         if (g_fb_exclusive) { __asm__ volatile("hlt"); dirty = 1; continue; }
 
-        if (login_active) {                          /* sign-in: keyboard only */
+        if (login_active) {                          /* sign-in / lock: keys only */
             xhci_poll();
-            int ci; while ((ci = kbd_trygetc()) >= 0) { login_key((char)ci); dirty = 1; }
+            int ci;
+            while ((ci = kbd_trygetc()) >= 0) {
+                last_input_tick = pit_ticks();
+                login_key((char)ci);
+                dirty = 1;
+            }
             if (dirty) {
                 draw_login();
                 if (output_is_native()) fb_blit(BB);
@@ -2203,9 +2289,23 @@ void gui_run(void) {
         }
 
         xhci_poll();                                 /* drain USB HID keyboard reports */
-        if (mouse_poll_event()) handle_mouse();
-        { int dz = mouse_wheel(); if (dz) handle_wheel(dz); }
-        int ci; while ((ci = kbd_trygetc()) >= 0) handle_key((char)ci);
+        if (mouse_poll_event()) { handle_mouse(); last_input_tick = pit_ticks(); }
+        { int dz = mouse_wheel(); if (dz) { handle_wheel(dz); last_input_tick = pit_ticks(); } }
+        int ci;
+        while ((ci = kbd_trygetc()) >= 0) {
+            last_input_tick = pit_ticks();
+            /* Ctrl+Alt+L is intercepted here, before any window sees it: a
+             * lock an app could swallow would not be a lock. */
+            if ((char)ci == KEY_LOCK) { gui_lock(); dirty = 1; continue; }
+            handle_key((char)ci);
+        }
+
+        /* Idle auto-lock. Measured from the last real input, so a session left
+         * alone closes itself rather than staying open indefinitely. */
+        if (lock_idle_minutes > 0 && !login_active) {
+            uint64_t idle = pit_ticks() - last_input_tick;
+            if (idle > (uint64_t)lock_idle_minutes * 60000ull) { gui_lock(); dirty = 1; }
+        }
 
         doom_pump();        /* DOOM self-throttles to ~35 fps and only when focused */
 

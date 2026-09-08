@@ -6,6 +6,7 @@
 #include "pit.h"
 #include "blk.h"
 #include "boot.h"
+#include "users.h"
 #include "kprintf.h"
 
 static fs_node *root_;
@@ -29,6 +30,13 @@ static fs_node *node_new(const char *name, int is_dir, fs_node *parent) {
     n->is_dir = is_dir;
     n->parent = parent;
     n->mtime  = pit_ticks();
+    /* A new node belongs to whoever made it, with the conventional default
+     * mode. Nodes restored from disk have theirs overwritten by the loader. */
+    n->mode = (uint16_t)(is_dir ? FS_MODE_DIR : FS_MODE_FILE);
+    int uid = users_current_uid();
+    int gid = users_current_gid();
+    n->uid  = (uint16_t)(uid < 0 ? 0 : uid);
+    n->gid  = (uint16_t)(gid < 0 ? 0 : gid);
     if (parent) {                               /* append to sibling list */
         if (!parent->child) parent->child = n;
         else {
@@ -117,6 +125,77 @@ void fs_init(void) {
             "console.log('fetch-issued');\n";
         fs_write(f, js, (uint32_t)strlen(js));
     }
+}
+
+/* ---------------------------------------------------------------------------
+ *  Permissions. One check, used by the shell, the VFS and the GUI alike.
+ *
+ *  root (uid 0, which is also what sudo reports) bypasses the check, as it does
+ *  everywhere. Otherwise owner bits apply to the owner, group bits to members of
+ *  the owning group, and other bits to everyone else -- the standard rule,
+ *  because a surprising permission model is a broken one.
+ *
+ *  Nodes loaded from an image written before permissions existed have mode 0.
+ *  Those are treated as unowned and allowed, so upgrading an install does not
+ *  lock the user out of their own files; the first chmod gives them real bits.
+ * ------------------------------------------------------------------------- */
+int fs_may(fs_node *n, int want) {
+    if (!n) return 0;
+    if (n->mode == 0) return 1;                  /* pre-permissions node */
+    int uid = users_current_uid();
+    if (uid <= 0) return 1;                      /* root, or nobody logged in yet */
+    int bits;
+    if      ((int)n->uid == uid)                 bits = (n->mode >> 6) & 7;
+    else if ((int)n->gid == users_current_gid()) bits = (n->mode >> 3) & 7;
+    else                                         bits =  n->mode       & 7;
+    return (bits & want) == want;
+}
+
+int fs_may_path(const char *path, int want) {
+    fs_node *n = fs_lookup(path);
+    return n ? fs_may(n, want) : 0;
+}
+
+int fs_may_create_in(fs_node *dir) {
+    return dir && dir->is_dir && fs_may(dir, FS_PERM_WRITE);
+}
+
+void fs_chown_node(fs_node *n, int uid, int gid, int mode) {
+    if (!n) return;
+    if (uid >= 0)  n->uid  = (uint16_t)uid;
+    if (gid >= 0)  n->gid  = (uint16_t)gid;
+    if (mode >= 0) n->mode = (uint16_t)(mode & FS_MODE_MASK);
+    fs_autosave();
+}
+
+int fs_chmod(const char *path, int mode) {
+    fs_node *n = fs_lookup(path);
+    if (!n) return -1;
+    int uid = users_current_uid();
+    if (uid > 0 && (int)n->uid != uid) return -2;   /* only the owner, or root */
+    n->mode = (uint16_t)(mode & FS_MODE_MASK);
+    fs_autosave();
+    return 0;
+}
+
+int fs_chown(const char *path, int uid, int gid) {
+    fs_node *n = fs_lookup(path);
+    if (!n) return -1;
+    if (users_current_uid() > 0) return -2;         /* giving a file away needs root */
+    if (uid >= 0) n->uid = (uint16_t)uid;
+    if (gid >= 0) n->gid = (uint16_t)gid;
+    fs_autosave();
+    return 0;
+}
+
+void fs_mode_string(fs_node *n, char *out) {
+    int m = n ? n->mode : 0;
+    if (!m) m = (n && n->is_dir) ? FS_MODE_DIR : FS_MODE_FILE;
+    out[0] = (n && n->is_dir) ? 'd' : '-';
+    static const char *rwx = "rwxrwxrwx";
+    for (int i = 0; i < 9; i++)
+        out[1 + i] = (m & (0400 >> i)) ? rwx[i] : '-';
+    out[10] = 0;
 }
 
 fs_node *fs_root(void) { return root_; }
@@ -394,18 +473,38 @@ struct bfs_super {
     uint32_t blob_sum;                 /* FNV-1a over the blob                 */
     uint32_t slot_sectors;             /* sectors per slot at write time       */
     uint64_t mounts;                   /* lifetime mount count (diagnostics)   */
-    uint32_t hdr_sum;                  /* FNV-1a over the 60 bytes before it   */
+    uint32_t hdr_sum;                  /* FNV-1a over the bytes before it      */
     uint32_t reserved;
 };
 
-struct bfs_rec {
-    uint32_t parent;                   /* index of parent record, BFS_NOPAR for root */
+/* `version` doubles as the record layout: 2 = bfs_rec2 (no ownership),
+ * 3 = bfs_rec (with mode/uid/gid). Commits always write 3. */
+
+/* v2 record, still read so an image written before ownership existed keeps its
+ * files. 56 bytes; `pad` was always zero. */
+struct bfs_rec2 {
+    uint32_t parent;
     uint32_t is_dir;
-    uint32_t size;                     /* file data length (0 for dirs) */
+    uint32_t size;
     uint32_t pad;
     uint64_t mtime;
     char     name[FS_NAME_MAX];
 };
+
+/* v3 record: the same, plus the owner and mode. 64 bytes. */
+struct bfs_rec {
+    uint32_t parent;                   /* index of parent record, BFS_NOPAR for root */
+    uint32_t is_dir;
+    uint32_t size;                     /* file data length (0 for dirs) */
+    uint16_t mode;                     /* permission bits                    */
+    uint16_t uid;
+    uint16_t gid;
+    uint16_t reserved;
+    uint64_t mtime;
+    char     name[FS_NAME_MAX];
+};
+
+#define BFS_VERSION 3
 
 static uint64_t g_slot_sectors;        /* usable sectors in each blob slot */
 static uint32_t g_slot;                /* live slot (0/1) */
@@ -440,6 +539,9 @@ static void emit(fs_node *n, uint32_t parent_idx, uint8_t **pp) {
     r.parent = parent_idx;
     r.is_dir = (uint32_t)n->is_dir;
     r.size   = n->is_dir ? 0 : n->size;
+    r.mode   = n->mode;
+    r.uid    = n->uid;
+    r.gid    = n->gid;
     r.mtime  = n->mtime;
     strncpy(r.name, n->name, FS_NAME_MAX);
     memcpy(*pp, &r, sizeof r); *pp += sizeof r;
@@ -475,7 +577,7 @@ static void sb_fill(struct bfs_super *sb, uint32_t slot, uint64_t gen,
                     uint32_t cnt, uint64_t blob, uint32_t blob_sum, int clean) {
     memset(sb, 0, sizeof *sb);
     memcpy(sb->magic, BFS_MAGIC2, 8);
-    sb->version      = 2;
+    sb->version      = BFS_VERSION;
     sb->slot         = slot;
     sb->generation   = gen;
     sb->node_count   = cnt;
@@ -501,7 +603,7 @@ static int sb_read(uint64_t lba, struct bfs_super *out) {
     if (blk_read(g_disk, lba, 1, sec) != 0) return -1;
     struct bfs_super *sb = (struct bfs_super *)sec;
     if (memcmp(sb->magic, BFS_MAGIC2, 8) != 0) return -1;
-    if (sb->version != 2) return -1;
+    if (sb->version != 2 && sb->version != BFS_VERSION) return -1;
     if (fnv32(sec, sizeof *sb - 2 * sizeof(uint32_t)) != sb->hdr_sum) return -1;
     if (sb->blob_bytes == 0 || sb->node_count == 0) return -1;
     *out = *sb;
@@ -560,19 +662,33 @@ static void fs_clear(void) {
 /* Rebuild the tree from a serialised blob. Every field is bounds-checked before
  * it is trusted: this is the one place a corrupt disk gets to hand the kernel
  * arbitrary numbers. Returns 0 on success. */
-static int rebuild(const uint8_t *buf, uint64_t blob, uint32_t cnt) {
+static int rebuild(const uint8_t *buf, uint64_t blob, uint32_t cnt, uint32_t version) {
     fs_node **map = (fs_node **)kmalloc(cnt * sizeof(fs_node *));
     if (!map) return -1;
 
     fs_clear();
 
+    uint32_t recsz = (version >= 3) ? (uint32_t)sizeof(struct bfs_rec)
+                                    : (uint32_t)sizeof(struct bfs_rec2);
     uint64_t off = 0;
     int ok = 1;
     for (uint32_t i = 0; i < cnt && ok; i++) {
-        if (off + sizeof(struct bfs_rec) > blob) { ok = 0; break; }
+        if (off + recsz > blob) { ok = 0; break; }
         struct bfs_rec r;
-        memcpy(&r, buf + off, sizeof r);
-        off += sizeof r;
+        memset(&r, 0, sizeof r);
+        if (version >= 3) {
+            memcpy(&r, buf + off, sizeof r);
+        } else {
+            /* v2: no ownership on disk. mode 0 means "unowned", which fs_may
+             * treats as allowed, so an upgraded install keeps working until the
+             * first chmod gives its files real bits. */
+            struct bfs_rec2 o;
+            memcpy(&o, buf + off, sizeof o);
+            r.parent = o.parent; r.is_dir = o.is_dir; r.size = o.size;
+            r.mtime = o.mtime;
+            memcpy(r.name, o.name, FS_NAME_MAX);
+        }
+        off += recsz;
         r.name[FS_NAME_MAX - 1] = 0;                /* never trust the disk    */
         uint32_t dsize = r.is_dir ? 0 : r.size;
         if (off + dsize > blob) { ok = 0; break; }
@@ -583,12 +699,16 @@ static int rebuild(const uint8_t *buf, uint64_t blob, uint32_t cnt) {
             strncpy(n->name, "/", FS_NAME_MAX);
             n->is_dir = 1;
             n->mtime  = r.mtime;
+            n->mode   = r.mode ? r.mode : FS_MODE_DIR;
+            n->uid    = r.uid; n->gid = r.gid;
         } else {
             if (r.parent >= i) { ok = 0; break; }   /* parents precede children */
             if (!map[r.parent] || !map[r.parent]->is_dir) { ok = 0; break; }
             n = node_new(r.name, r.is_dir ? 1 : 0, map[r.parent]);
             if (!n) { ok = 0; break; }
             n->mtime = r.mtime;
+            n->mode  = r.mode;                      /* 0 for a v2 image */
+            n->uid   = r.uid; n->gid = r.gid;
             if (!r.is_dir && dsize) {
                 n->data = (uint8_t *)kmalloc(dsize);
                 if (!n->data) { ok = 0; break; }
@@ -618,7 +738,7 @@ static int load_slot(const struct bfs_super *sb) {
     }
     if (fnv32(buf, sb->blob_bytes) != sb->blob_sum) { kfree(buf); return -1; }
 
-    int rc = rebuild(buf, sb->blob_bytes, sb->node_count);
+    int rc = rebuild(buf, sb->blob_bytes, sb->node_count, sb->version);
     kfree(buf);
     return rc;
 }
@@ -642,7 +762,8 @@ static int load_v1(void) {
     for (uint64_t i = 0; i < sb->blob_bytes; i++) sum += buf[i];
     if (sum != sb->checksum) { kfree(buf); return -1; }
 
-    int rc = rebuild(buf, sb->blob_bytes, sb->node_count);
+    /* A v1 image predates ownership entirely, so it uses the v2 record layout. */
+    int rc = rebuild(buf, sb->blob_bytes, sb->node_count, 2);
     kfree(buf);
     return rc;
 }
@@ -708,16 +829,26 @@ int fs_check(int repair, fs_check_report *rep) {
     }
     rep->checksum_ok = 1;
 
-    /* Walk the records with the same bounds rebuild() enforces. */
+    /* Walk the records with the same bounds rebuild() enforces, in whichever
+     * layout the superblock declares. */
+    uint32_t recsz = (sb->version >= 3) ? (uint32_t)sizeof(struct bfs_rec)
+                                        : (uint32_t)sizeof(struct bfs_rec2);
     uint64_t off = 0;
     for (uint32_t i = 0; i < sb->node_count; i++) {
-        if (off + sizeof(struct bfs_rec) > sb->blob_bytes) {
+        if (off + recsz > sb->blob_bytes) {
             chk_note(rep, "record list runs past the end of the blob");
             kfree(buf); return -1;
         }
         struct bfs_rec r;
-        memcpy(&r, buf + off, sizeof r);
-        off += sizeof r;
+        memset(&r, 0, sizeof r);
+        if (sb->version >= 3) memcpy(&r, buf + off, sizeof r);
+        else {
+            struct bfs_rec2 o;
+            memcpy(&o, buf + off, sizeof o);
+            r.parent = o.parent; r.is_dir = o.is_dir; r.size = o.size;
+            memcpy(r.name, o.name, FS_NAME_MAX);
+        }
+        off += recsz;
         if (i > 0 && r.parent >= i) {
             chk_note(rep, "record names a parent that does not precede it");
             kfree(buf); return -1;
@@ -928,7 +1059,7 @@ int fs_export_image(blkdev_t *dev, uint64_t base, uint64_t cap) {
     struct bfs_super sb;
     memset(&sb, 0, sizeof sb);
     memcpy(sb.magic, BFS_MAGIC2, 8);
-    sb.version      = 2;
+    sb.version      = BFS_VERSION;
     sb.slot         = 0;
     sb.generation   = 1;
     sb.node_count   = cnt;

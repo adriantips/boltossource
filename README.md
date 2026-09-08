@@ -42,7 +42,7 @@ outlines (`kernel/ttf.c`) in addition to the built-in bitmap fonts. A
 **system-wide clipboard** (`kernel/clipboard.c`) enables copy/paste across apps.
 Each app is a `kernel/app_*.c` file exposing `draw/key/click/drag/tick` callbacks.
 
-Bundled apps (25):
+Bundled apps (26):
 
 - **Terminal** — the full interactive shell in a window
 - **File Explorer** — browse/open the persistent filesystem
@@ -59,6 +59,8 @@ Bundled apps (25):
 - **Settings** — themes and system options (persisted), font switching
 - **Install BoltOS** — the graphical installer: pick a disk, create the account,
   watch the progress bar; writes both the legacy and UEFI boot paths
+- **Security** — session and lock settings, the firewall (rules, presets, live
+  pass/block counters) and the account list
 - **Calculator**, **Clock**, **Stopwatch**, **Calendar**, **Notes** (saved to FS)
 - **Paint**, **Color Picker**, **Piano** (PC-speaker, zoomable multi-octave)
 - **System Info**, **Matrix** rain
@@ -399,12 +401,42 @@ between `FONT_RETRO`, `FONT_ARIAL`, and `FONT_TTF`.
 GUI app. Copy in one window (`Ctrl+C`), paste in another (`Ctrl+V`). Backed by
 a single static buffer; the cap is `CLIP_CAP` bytes.
 
-## Multi-user
+## Multi-user, permissions and privilege
 
-`kernel/users.c` implements a **multi-user account table**. Users are stored as
-`name:hexhash:uid` lines in `/etc/passwd`. The FS autosaves, so accounts survive
-reboots. The `users` shell command lists accounts; `useradd` / `userdel` add and
-remove them. Each user context is tracked by UID.
+`kernel/users.c` implements a real **multi-user system**, not just a table of
+names. Accounts live in `/etc/passwd` as `name:salt:hash:uid:gid:home`.
+
+**Passwords** are stretched with **PBKDF2-HMAC-SHA256** (4096 rounds) over a
+per-account random salt, and compared in constant time. The previous scheme was
+a single unsalted FNV-1a pass — a checksum, not a password hash: two users with
+the same password produced the same value on disk, and the whole table fell to a
+wordlist instantly. A missing account is hashed anyway before being rejected, so
+the table cannot be enumerated by timing. Repeated failures back off
+exponentially, at the shell *and* at the sign-in screen.
+
+**Files have owners.** Every `fs_node` carries `uid`, `gid` and POSIX-style mode
+bits, persisted in the BoltFS image (record version 3; v2 images still load, with
+their files treated as unowned until first `chmod`). One function, `fs_may()`,
+answers every permission question, and the shell, the **VFS** and the GUI all go
+through it — so a ring-3 program cannot open what `cat` would refuse. Creating or
+removing an entry checks the *directory*, since that is what changes.
+`ls -l` shows the mode string and owner; `chmod` and `chown` change them.
+
+**Privilege is scoped.** `sudo COMMAND` runs exactly one command as root and
+drops the elevation afterwards, so nothing stays elevated by accident.
+Authentication is cached for a five-minute grace period. Only members of the
+admin group may elevate; account management (`useradd`, `userdel`, another
+user's `passwd`) requires it.
+
+**Sessions lock.** `Ctrl+Alt+L`, the `lock` command, or the idle timer (default
+10 minutes, configurable in Security) puts the desktop behind a password prompt
+with the session left exactly as it was. The lock is intercepted in the
+compositor before any window sees the key, so no app can swallow it.
+
+Commands: `whoami`, `id`, `groups`, `users`, `useradd`, `userdel`, `passwd`,
+`sudo`, `chmod`, `chown`, `lock`, `logout`. The **Security** desktop app shows
+the same state — session, firewall rules with one-click presets and live
+pass/block counters, and the account list.
 
 ## Package manager
 
@@ -685,14 +717,15 @@ libcss, and `netsurf/` libraries):
 
 The interactive OS shell supports a wide range of commands:
 
-- **File & Directory:** `ls`, `tree`, `cd`, `mkdir`, `rm`, `cp`, `mv`, `find`, `trash`, `recover`, `pwd`, `touch`, `write`
+- **File & Directory:** `ls` (`-l` for mode + owner), `tree`, `cd`, `mkdir`, `rm`, `cp`, `mv`, `find`, `trash`, `recover`, `pwd`, `touch`, `write`, `chmod`, `chown`
 - **File Inspection:** `cat`, `head`, `tail`, `hex`, `meta`, `diff`, `grep`, `checksum`, `preview`, `count`
 - **System Information:** `sysinfo`, `cpuinfo`, `meminfo`, `diskinfo`, `sync`, `fsck`, `uptime`, `battery`, `sensors`, `devices`, `version`, `health`
 - **Power:** `poweroff`, `reboot` (both commit the filesystem and mark it clean before ACPI S5 / reset), `power off|reboot` (alias)
 - **Install:** `install` (write a bootable BoltOS onto another disk; also a desktop app)
 - **Diagnostics:** `dmesg` (kernel log ring), `crashlog` (persisted crash reports), `crash ring3 [mode]` (fault a ring-3 process on purpose)
 - **Process Management:** `ps`, `kill`, `top`, `freeze`, `resume`, `services`, `service`, `jobs`, `priority`, `monitor`
-- **System (cont.):** `winrun` (Windows PE32+ loader), `compile` (BoltRT: compile a source file into a real PE32+ `.exe`), `pkg` (package manager), `users` / `useradd` / `userdel` (multi-user), `libctest` (libc validation)
+- **System (cont.):** `winrun` (Windows PE32+ loader), `compile` (BoltRT: compile a source file into a real PE32+ `.exe`), `pkg` (package manager), `libctest` (libc validation)
+- **Identity & privilege:** `whoami`, `id`, `groups`, `users`, `useradd`, `userdel`, `passwd`, `sudo`, `lock`, `logout`
 - **Networking:** `netinfo`, `ping`, `trace`, `ports`, `download`, `browse`, `webx` (ring-3 web browser), `upload`, `wifi`, `firewall`, `share`, `scan`, `nstest` (NetSurf library test)
 - **Language:** `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the **Code** app compiles C / C++ / C#
 - **Bonus / Unique:** `focus`, `snapshot`, `timeline`, `vault`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
