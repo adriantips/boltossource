@@ -95,8 +95,10 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 - [x] 59. BoltVCS: init / add / commit / log / status / show
 - [x] 60. BoltVCS: diff (LCS, not a line compare) / checkout / branch
 - [x] 61. Terminal text editor (`edit`)
-- [ ] 62. Core dumps written on a ring-3 crash
-- [ ] 63. Post-mortem inspector: registers, stack, ELF symbols
+- [x] 62. Core dumps written on a ring-3 crash (trap frame + the mapped
+        stack, pruned to the newest 8)
+- [x] 63. Post-mortem inspector: `core show` -- registers, a backtrace named
+        from the program's own .symtab, and the stack
 - [x] 64. Breakpoint / single-step debugger (`cc -g`: breakpoints, stepping,
         backtrace, locals by name; runtime errors report line + call stack)
 - [ ] 65. Package repository format
