@@ -125,6 +125,58 @@ void fs_init(void) {
             "console.log('fetch-issued');\n";
         fs_write(f, js, (uint32_t)strlen(js));
     }
+
+    /* An example project, so that the Code app's tree and the `build` command
+     * have something real on a machine nobody has written anything on yet. It
+     * is deliberately the smallest shape that is still a project: a header, two
+     * sources that need each other, and the build file naming them.
+     *
+     *     build /home/Documents/hello        from the shell
+     *     Code -> hello -> main.c -> Run     from the desktop
+     */
+    fs_create("/home/Documents", 1);
+    fs_create("/home/Documents/hello", 1);
+    f = fs_create("/home/Documents/hello/greet.h", 0);
+    if (f) {
+        const char *s =
+            "#ifndef GREET_H\n"
+            "#define GREET_H\n"
+            "int greet(string who);\n"
+            "#endif\n";
+        fs_write(f, s, (uint32_t)strlen(s));
+    }
+    f = fs_create("/home/Documents/hello/greet.c", 0);
+    if (f) {
+        const char *s =
+            "#include \"greet.h\"\n"
+            "\n"
+            "int greet(string who) {\n"
+            "    printf(\"Hello, %s!\\n\", who);\n"
+            "    return 0;\n"
+            "}\n";
+        fs_write(f, s, (uint32_t)strlen(s));
+    }
+    f = fs_create("/home/Documents/hello/main.c", 0);
+    if (f) {
+        const char *s =
+            "#include \"greet.h\"\n"
+            "\n"
+            "int main() {\n"
+            "    greet(\"BoltOS\");\n"
+            "    for (int i = 1; i <= 3; i++)\n"
+            "        printf(\"  %d squared is %d\\n\", i, i * i);\n"
+            "    return 0;\n"
+            "}\n";
+        fs_write(f, s, (uint32_t)strlen(s));
+    }
+    f = fs_create("/home/Documents/hello/build.txt", 0);
+    if (f) {
+        const char *s =
+            "# What `build` and the Code app's Run button compile here.\n"
+            "target hello\n"
+            "  src main.c greet.c\n";
+        fs_write(f, s, (uint32_t)strlen(s));
+    }
 }
 
 /* ---------------------------------------------------------------------------

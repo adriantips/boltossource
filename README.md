@@ -55,8 +55,9 @@ Bundled apps (26):
   its classic framebuffer-frontend toolbar (Back / Forward / Reload / Stop /
   Home, address bar, throbber, bookmarks), rendering through the BoltOS layout
   engine over the kernel TCP/TLS stack
-- **Code** — a multi-language IDE (C / C++ / C# / Python) with syntax
-  highlighting, line numbers, a Run button and an output console
+- **Code** — a multi-language IDE (C / C++ / C# / Python) with a **project
+  tree**, **open-file tabs**, syntax highlighting, line numbers, a Run button
+  that builds the project's **target** (`build.txt`) and an output console
 - **Task Manager** — live process / CPU / memory view
 - **Settings** — themes and system options (persisted), font switching
 - **Install BoltOS** — the graphical installer: pick a disk, create the account,
@@ -535,10 +536,12 @@ window glue is `kernel/app_oldbrowser.c`.
 
 ## IDE & compilers (BoltCC + BoltPy)
 
-The **Code** app (`kernel/app_ide.c`) is a real in-kernel IDE: a text editor with
-a movable caret, line numbers, mouse click-to-place, scrolling, and live syntax
-highlighting, plus a language switcher and a **Run** button that compiles and
-executes the buffer, streaming the program's output into a console pane below.
+The **Code** app (`kernel/app_ide.c`) is a real in-kernel IDE: a **project tree**
+down the left, **open-file tabs** across the top, and a text editor with a
+movable caret, line numbers, mouse click-to-place, scrolling, auto-indent,
+bracket pairing and live syntax highlighting. **Run** builds the project's
+current target through BoltCC and streams the program's output into a console
+pane below. See *Projects and the `build` command* below for what a target is.
 
 - **BoltCC** (`kernel/boltcc.c`) is a from-scratch **C / C++ / C# compiler**: one
   pipeline — lexer → recursive-descent parser → AST → **stack bytecode** → a
@@ -621,6 +624,91 @@ quotes a backslash escapes only a quote or another backslash, as a POSIX shell
 does -- consuming every escape would eat the ones that belong to the argument,
 so `write f.c "printf(\"hi\n\")"` would silently store a bare `n`.
 `write -a` appends, so a file can be built up a line at a time.
+
+## Projects, targets and `build`
+
+`cc main.c util.c parse.c` is a multi-file build whose file list lives on the
+command line -- which means it lives in the head of whoever types it. Writing
+that list down beside the sources is the whole difference between a directory of
+files and a project: the build is the same one every time, and it is the same
+one the Code app runs.
+
+A project is a directory with a **`build.txt`** in it naming one or more
+**targets**:
+
+```
+# two programs sharing one utility file
+target hello
+  src main.c greet.c
+  define DEBUG=1          # a -D macro, for this target
+  include inc             # a -I directory, relative to the project
+
+target tool
+  src tool.c greet.c
+```
+
+Lines before the first `target` form a target named after the directory, so a
+one-target project is just `src main.c greet.c`. A directory with **no**
+`build.txt` is still a project: its target is every source file in it, in the
+dialect of the first one -- the common case should not need a file to describe
+it.
+
+```
+build                     build and run the first target of the working directory
+build /home/Documents/hello
+build -t tool /proj       a different target of the same project
+build -l /proj            list the targets and their sources, build nothing
+build -g                  run it under the debugger
+build -o all.c            write the combined unit instead of running it
+```
+
+The build file is deliberately a list, not a language: no rules, no variables,
+no recipes. BoltCC compiles a whole program in one pass, so there is nothing for
+a dependency graph to skip; `make` belongs with separate compilation and arrives
+with it.
+
+`include/ccbuild.h` is the one place a target is resolved and turned into a
+translation unit. `cc` builds a target out of its argv, `build` reads one out of
+a project, and the Code app's Run button resolves the same target through the
+same code -- a project that built on the desktop and failed in an SSH session
+would be a bug nobody could find.
+
+### The Code app
+
+The IDE is now built around that project.
+
+- a **project tree** down the left side: directories expand in place, a click
+  opens a file
+- **open-file tabs** across the top, each with its own caret, scroll position
+  and dirty marker; `x` closes one, and a tab with unsaved changes refuses
+- **Run** saves every dirty file first and then builds the *target* the current
+  file belongs to -- a file's project is the directory it sits in, which is
+  where its `build.txt` is. The toolbar's `target:` button cycles through the
+  targets when there is more than one.
+- **Build .exe** bakes that same unit into a genuine Windows PE32+ executable
+  (`winrun NAME.exe` here, double-click on Windows)
+- **New** creates a file in the project, **Save** (or `Ctrl+S`) writes it, and
+  the leftmost button re-points the tree at another directory
+
+The four language samples are still there, as four unsaved scratch tabs
+(`demo.c`, `demo.cpp`, `demo.cs`, `demo.py`) -- a tab with no file behind it
+compiles on its own, which is what a scratch buffer is for. A fresh install
+seeds a small example project at `/home/Documents/hello` so there is something
+real to open.
+
+`test/t_project.py` builds two targets out of one project from the shell,
+checks that a target's `define` reaches the preprocessor and that `-l` lists
+without building; `test/t_ide.py` opens the app on the desktop, finds the Run
+button by its colour and presses it, which is the check that a compiler running
+inside a GUI callback cannot take the compositor down with it.
+
+> While writing that test the compositor turned out to drop fast clicks: the
+> mouse driver exposed a button *level*, and a full repaint can take longer than
+> a real click lasts, so a press that began and ended between two frames never
+> happened -- which is also why double-clicking a desktop icon sometimes did
+> nothing. The driver now latches button *edges* (`mouse_take_pressed()`) and
+> the compositor replays a click it would otherwise have missed, press and
+> release both, so nothing is left half-dragged.
 
 ## The debugger -- `cc -g`
 
@@ -1045,7 +1133,7 @@ The interactive OS shell supports a wide range of commands:
 - **Names & time:** `hosts` (local name table), `dns` (resolve / show / flush the cache), `ntp` (clock sync)
 - **Serving:** `serve` (HTTP file server over real accepted connections), `netget` (fetch a URL from a ring-3 socket program)
 - **Remote access:** `sshd` (SSH-2 server: real shell, password auth, encrypted), `sshkey` (host key fingerprint)
-- **Language:** `cc` (multi-file C/C++/C# via the preprocessor + BoltCC; `-g` runs it under the source-level debugger), `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the **Code** app compiles C / C++ / C#
+- **Language:** `cc` (multi-file C/C++/C# via the preprocessor + BoltCC; `-g` runs it under the source-level debugger), `build` (build a project's target from its `build.txt`), `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the **Code** app compiles C / C++ / C#
 - **Bonus / Unique:** `focus`, `snapshot`, `timeline`, `vault`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
 - **Core:** `help`, `echo`, `clear`, `mem`
 
@@ -1078,6 +1166,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- blk.c             Generic block layer (ATA/AHCI/NVMe registry + MBR helpers)
 |   +-- dom.c   layout.c  html.c          Browser engine: DOM tree, CSS cascade, box/flex/grid layout
 |   +-- js.c    cmd_js.c  boltcc.c  cpp.c  cmd_cc.c  boltpy.c   JavaScript, C preprocessor, C/C++/C#, Python
+|   +-- ccbuild.c  cmd_build.c    Build targets (build.txt) shared by cc, `build` and the IDE
 |   +-- image.c  font8x8.c  kprintf.c  sysreg.c  user.asm
 |   +-- ttf.c    clipboard.c  users.c  pkg.c
 |   +-- cmd_extra.c  cmd_fs.c  cmd_net.c  cmd_netcfg.c  cmd_serve.c  cmd_ssh.c  cmd_edit.c  cmd_proc.c  cmd_python.c  cmd_sys.c  cmd_hw.c

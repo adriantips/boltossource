@@ -49,7 +49,7 @@ def reach_shell(vm, timeout=180):
         vm.key("2")
         time.sleep(0.4)
     vm.expect("BoltShell ready", timeout=timeout)
-    time.sleep(0.6)
+    vm.wait_prompt()
 
 
 def write_file(vm, path, lines):

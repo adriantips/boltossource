@@ -267,6 +267,22 @@ class BoltVM:
         if needle in self.serial():
             raise AssertionError("unexpected %r on the serial log" % needle)
 
+    def wait_prompt(self, timeout=60):
+        """Block until the shell prints its prompt.
+
+        "BoltShell ready" is printed before the shell reaches its read loop, so
+        typing a fixed moment after it is a guess -- and on a loaded host the
+        guess is sometimes wrong, which is how a test fails only when the
+        machine is busy. Waiting for the prompt is the same thing run() does
+        after a command, applied to the first one.
+        """
+        end = time.time() + timeout
+        while time.time() < end:
+            if self.serial().rstrip().endswith(">"):
+                return True
+            time.sleep(0.25)
+        return False
+
     # ---- input -----------------------------------------------------------
     def _keyev(self, qcode, down):
         return {"type": "key", "data": {"down": down,

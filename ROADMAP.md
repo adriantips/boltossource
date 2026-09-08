@@ -78,13 +78,16 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 
 ## Phase 4 — Development platform
 
-- [ ] 48. IDE project tree for real multi-file projects
-- [ ] 49. Build targets in the IDE, run through BoltCC
+- [x] 48. IDE project tree for real multi-file projects (tree, open-file tabs,
+        save-all-then-build)
+- [x] 49. Build targets in the IDE, run through BoltCC (`build.txt`; the
+        `build` command resolves the same target from the shell)
 - [x] 50. BoltCC: C preprocessor (`#include`, `#define`, conditionals)
 - [~] 51. BoltCC: arrays (structs and pointers still to come)
 - [ ] 52. BoltCC: native x86-64 code generation
 - [ ] 53. BoltCC: emit linkable objects
 - [~] 54. `cc` command (builds + runs multi-file C; bytecode, not yet an ELF)
+        and `build`, which resolves a project's target out of its build.txt
 - [ ] 55. Assembler for `.asm` sources
 - [ ] 56. Linker producing ELF64 executables
 - [ ] 57. `make` with dependency rules
