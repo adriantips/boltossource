@@ -14,6 +14,7 @@
 #include "string.h"
 #include "kprintf.h"
 #include "kheap.h"
+#include "commands.h"   /* sh_readline: the debugger reads commands */
 
 /* ----------------------------------------------------------- diagnostics --- */
 static void *g_errjmp[5];
@@ -46,6 +47,7 @@ enum {
 typedef struct Node Node;
 struct Node {
     int   kind, op;
+    int   line;             /* source line, for diagnostics and the debugger    */
     long  ival;
     const char *str;        /* var/call name, string literal, static-ns flag   */
     int   isstatic;         /* N_VAR: a C# static namespace path (Console/Math) */
@@ -58,6 +60,8 @@ typedef struct {
     const char **params; int nparams;
     Node *body;
     int   entry;            /* code pc, filled at codegen                       */
+    const char **locnames;  /* slot -> name, for the debugger; from the AST arena */
+    int   nlocnames;
 } Func;
 
 /* --------------------------------------------------------------- bytecode --- */
@@ -76,7 +80,10 @@ enum {
 enum { B_LEN, B_STR, B_INT, B_ABS, B_MIN, B_MAX, B_CHR, B_ORD,
        B_POW, B_SQRT, B_GCD, B_UPPER, B_LOWER, B_SUBSTR };
 
-typedef struct { int op; long a, b; const char *s; } Instr;
+/* `line` is what turns a runtime error from "something went wrong" into a
+ * place in the source. It costs four bytes an instruction and is the difference
+ * between a language you can debug and one you can only re-read. */
+typedef struct { int op; long a, b; const char *s; int line; } Instr;
 
 /* ------------------------------------------------------------- VM values --- */
 /* t: 0 int, 1 string, 2 array. An array keeps its element count in `i` and
@@ -98,6 +105,7 @@ typedef struct {
     /* lexer */
     const char *src;
     Tok  *toks; int ntok, tokcap, ti;
+    int   curline;          /* the line codegen is on; stamped into each Instr */
     /* arenas */
     char *strarena; int strpos, strcap;
     char *astarena; int astpos, astcap;
@@ -107,16 +115,25 @@ typedef struct {
     /* codegen */
     Instr *code; int ncode, codecap;
     const char *loc[MAX_LOCALS]; int nloc, maxloc;
+    const char *slotname[MAX_LOCALS];   /* every slot, never popped (debugger) */
     struct { int contfix[64]; int ncont; int brk[64]; int nbrk; } loops[MAX_LOOP]; int nloop;
     int curfunc_nlocals;
 } CC;
 
 static CC *C;
 
+/* Set by the VM while a program runs, so an error raised deep inside a builtin
+ * can still say which line of the user's program it happened on. A message
+ * with no location tells you only that something went wrong. */
+static int   g_rt_line;
+static void (*g_rt_backtrace)(void);
+
 static void cc_error(const char *msg, const char *detail) {
-    kprintf("BoltCC: %s", msg);
+    if (g_rt_line) kprintf("BoltCC: line %d: %s", g_rt_line, msg);
+    else           kprintf("BoltCC: %s", msg);
     if (detail) { kprintf(": %s", detail); }
     kputc('\n');
+    if (g_rt_backtrace) g_rt_backtrace();
     g_haderr = 1;
     __builtin_longjmp(g_errjmp, 1);
 }
@@ -132,6 +149,10 @@ static Node *node(int kind) {
     Node *x = (Node *)ast_alloc(sizeof(Node));
     memset(x, 0, sizeof(*x));
     x->kind = kind;
+    /* The token the parser is looking at is the best approximation of where
+     * this construct lives, and it is right for every construct that starts
+     * with its own keyword or operand. */
+    x->line = (C && C->toks && C->ti < C->ntok) ? C->toks[C->ti].line : 0;
     return x;
 }
 static const char *intern(const char *s, int n) {
@@ -657,6 +678,7 @@ static int emit(int op, long a, long b, const char *s) {
     }
     Instr *i = &C->code[C->ncode];
     i->op = op; i->a = a; i->b = b; i->s = s;
+    i->line = C->curline;
     return C->ncode++;
 }
 static int loc_find(const char *nm) {
@@ -667,6 +689,7 @@ static int loc_add(const char *nm) {
     if (C->nloc >= MAX_LOCALS) cc_error("too many locals", 0);
     int i = C->nloc++;
     C->loc[i] = nm;
+    C->slotname[i] = nm;
     if (C->nloc > C->maxloc) C->maxloc = C->nloc;
     return i;
 }
@@ -680,6 +703,11 @@ static int func_find(const char *nm) {
 }
 
 static void gen_expr(Node *n);
+
+/* Every node carries its line; recording it as codegen walks in means each
+ * instruction knows where it came from without threading a parameter through
+ * every generator. */
+static void at_line(Node *n) { if (n && n->line) C->curline = n->line; }
 static void gen_stmt(Node *n);
 
 static void gen_load(const char *nm) {
@@ -760,6 +788,7 @@ static void gen_call(Node *n) {
 }
 
 static void gen_expr(Node *n) {
+    at_line(n);
     switch (n->kind) {
     case N_NUM: emit(OP_PUSHI, n->ival, 0, 0); break;
     case N_STR: emit(OP_PUSHS, 0, 0, n->str); break;
@@ -835,6 +864,7 @@ static void gen_expr(Node *n) {
 }
 
 static void gen_stmt(Node *n) {
+    at_line(n);
     if (!n) return;
     switch (n->kind) {
     case N_EMPTY: break;
@@ -932,7 +962,12 @@ static const char *val_cstr(Val v) {        /* read-only view for printing */
 }
 
 /* ================================================================== VM ===== */
-typedef struct { int retpc; Val locals[MAX_LOCALS]; } Frame;
+typedef struct {
+    int retpc;
+    int fn;                 /* index into C->funcs, or -1 for the preamble */
+    int callline;           /* the line the call was made from             */
+    Val locals[MAX_LOCALS];
+} Frame;
 
 static void print_cstr(const char *s) { while (*s) kputc(*s++); }
 
@@ -996,6 +1031,172 @@ static long need_int(Val v, const char *what) { if (v.t != 0) cc_error("runtime:
 static Val   *g_vm_st;
 static Frame *g_vm_frames;
 
+/* The call stack, for a runtime error. Walking outwards from the innermost
+ * frame is the order a reader wants: what failed, then what asked for it. */
+static Frame *g_bt_frames;
+static int   *g_bt_fp;
+
+static void vm_backtrace(void) {
+    if (!g_bt_frames || !g_bt_fp) return;
+    int fp = *g_bt_fp;
+    if (fp <= 0) return;
+    kprintf("  call stack:\n");
+    for (int i = fp; i > 0; i--) {
+        int fn = g_bt_frames[i].fn;
+        const char *nm = (fn >= 0 && fn < C->nfunc) ? C->funcs[fn].name : "?";
+        kprintf("    %s()  called from line %d\n", nm, g_bt_frames[i].callline);
+    }
+}
+
+/* The debugger needs a shell to read commands from. BoltRT links this same
+ * compiler into a standalone Windows executable, where there is none -- so it
+ * is compiled out there, and boltcc_debug() falls back to an ordinary run. */
+#ifndef BOLTCC_NO_DEBUGGER
+/* ============================== DEBUGGER =================================
+ *  A source-level debugger for the bytecode VM.
+ *
+ *  "Build it and run it" is only half of writing software; the other half is
+ *  finding out why it did the wrong thing. Every instruction carries the line
+ *  it came from and every frame knows its function and call site, so the VM
+ *  can stop on a line, show the call stack and print a local by name -- which
+ *  is what debugging a program actually consists of.
+ *
+ *  The hook is called before each instruction. When nothing is armed it is a
+ *  single null test, so a normal run pays almost nothing for it.
+ * ======================================================================== */
+struct dbg_state {
+    int    active;              /* a debug session is running               */
+    int    stepping;            /* stop at the next new line                */
+    int    lastline;            /* the line we last stopped on              */
+    int    quit;                /* the user asked to stop the program       */
+    int    bp[32]; int nbp;     /* breakpoint lines                         */
+    const char *src;            /* the preprocessed unit, for `list`        */
+};
+static struct dbg_state g_dbg;
+
+/* Print `count` source lines starting at `from` (1-based), marking `mark`. */
+static void dbg_list(int from, int count, int mark) {
+    if (!g_dbg.src) { kprintf("  (no source available)\n"); return; }
+    if (from < 1) from = 1;
+    int line = 1;
+    const char *p = g_dbg.src;
+    while (*p && line < from) { if (*p == '\n') line++; p++; }
+    for (int n = 0; n < count && *p; n++, line++) {
+        kprintf("%s%4d | ", line == mark ? "=>" : "  ", line);
+        while (*p && *p != '\n') kputc(*p++);
+        kputc('\n');
+        if (*p) p++;
+    }
+}
+
+static void dbg_print_val(Val v) {
+    if (v.t == 2) kprintf("array[%ld]", v.i);
+    else          kprintf("%s", val_cstr(v));
+}
+
+/* The interactive stop. Returns when the user resumes. */
+static void dbg_stop(int line, Frame *frames, int fp) {
+    int fn = frames[fp].fn;
+    const char *fname = (fn >= 0 && fn < C->nfunc) ? C->funcs[fn].name : "main";
+    kprintf("\nstopped at line %d in %s()\n", line, fname);
+    dbg_list(line, 1, line);
+
+    for (;;) {
+        kprintf("(dbg) ");
+        char cmd[128];
+        if (sh_readline(cmd, sizeof cmd) < 0) { g_dbg.quit = 1; return; }
+
+        char *a = cmd;
+        while (*a == ' ') a++;
+        char *arg = a;
+        while (*arg && *arg != ' ') arg++;
+        if (*arg) *arg++ = 0;
+        while (*arg == ' ') arg++;
+
+        if (!strcmp(a, "c")) { g_dbg.stepping = 0; return; }
+        if (!strcmp(a, "s") || !strcmp(a, "n")) { g_dbg.stepping = 1; return; }
+        if (!strcmp(a, "q")) { g_dbg.quit = 1; return; }
+
+        if (!strcmp(a, "b")) {
+            int ln = *arg ? atoi(arg) : line;
+            if (g_dbg.nbp >= 32) { kprintf("too many breakpoints\n"); continue; }
+            g_dbg.bp[g_dbg.nbp++] = ln;
+            kprintf("breakpoint at line %d\n", ln);
+            continue;
+        }
+        if (!strcmp(a, "d")) {
+            if (!*arg) { g_dbg.nbp = 0; kprintf("all breakpoints cleared\n"); continue; }
+            int ln = atoi(arg), out = 0;
+            for (int k = 0; k < g_dbg.nbp; k++) if (g_dbg.bp[k] != ln) g_dbg.bp[out++] = g_dbg.bp[k];
+            g_dbg.nbp = out;
+            kprintf("breakpoint at line %d cleared\n", ln);
+            continue;
+        }
+        if (!strcmp(a, "bt")) {
+            kprintf("  %s()  line %d\n", fname, line);
+            for (int k = fp; k > 0; k--) {
+                int pf = frames[k - 1].fn;
+                const char *pn = (pf >= 0 && pf < C->nfunc) ? C->funcs[pf].name : "main";
+                kprintf("  %s()  line %d\n", pn, frames[k].callline);
+            }
+            continue;
+        }
+        if (!strcmp(a, "l")) {
+            int from = *arg ? atoi(arg) : line - 4;
+            dbg_list(from, 10, line);
+            continue;
+        }
+        if (!strcmp(a, "locals")) {
+            const Func *f = (fn >= 0 && fn < C->nfunc) ? &C->funcs[fn] : 0;
+            int shown = 0;
+            if (f) for (int k = 0; k < f->nlocnames; k++) {
+                if (!f->locnames[k]) continue;
+                kprintf("  %s = ", f->locnames[k]);
+                dbg_print_val(frames[fp].locals[k]);
+                kputc('\n');
+                shown++;
+            }
+            if (!shown) kprintf("  (no named locals in this frame)\n");
+            continue;
+        }
+        if (!strcmp(a, "p")) {
+            if (!*arg) { kprintf("usage: p NAME\n"); continue; }
+            const Func *f = (fn >= 0 && fn < C->nfunc) ? &C->funcs[fn] : 0;
+            int found = 0;
+            if (f) for (int k = 0; k < f->nlocnames; k++)
+                if (f->locnames[k] && !strcmp(f->locnames[k], arg)) {
+                    kprintf("%s = ", arg); dbg_print_val(frames[fp].locals[k]);
+                    kputc('\n'); found = 1; break;
+                }
+            if (!found) for (int k = 0; k < C->nglob; k++)
+                if (!strcmp(C->gname[k], arg)) {
+                    kprintf("%s = ", arg); dbg_print_val(g_globstore[k]);
+                    kputc('\n'); found = 1; break;
+                }
+            if (!found) kprintf("no variable '%s' in scope here\n", arg);
+            continue;
+        }
+        if (!a[0]) continue;
+        kprintf("commands: b [line]  d [line]  c  s  bt  p NAME  locals  l [line]  q\n");
+    }
+}
+
+/* Called before every instruction while a debug session is active. */
+static void dbg_step(int line, Frame *frames, int fp) {
+    if (!line || line == g_dbg.lastline) return;   /* same source line */
+    int hit = g_dbg.stepping;
+    for (int k = 0; !hit && k < g_dbg.nbp; k++) if (g_dbg.bp[k] == line) hit = 1;
+    if (!hit) { g_dbg.lastline = line; return; }
+    g_dbg.lastline = line;
+    dbg_stop(line, frames, fp);
+}
+
+#else
+struct dbg_state { int active; int quit; const char *src; };
+static struct dbg_state g_dbg;
+static void dbg_step(int line, Frame *frames, int fp) { (void)line; (void)frames; (void)fp; }
+#endif
+
 static void vm_run(int start_ip) {
     Val *st = g_vm_st = (Val *)kmalloc(4096 * sizeof(Val));
     Frame *frames = g_vm_frames = (Frame *)kmalloc(512 * sizeof(Frame));
@@ -1006,6 +1207,9 @@ static void vm_run(int start_ip) {
 
     int ip = start_ip;
     uint64_t guard = 0;
+    frames[0].fn = -1; frames[0].callline = 0;
+    g_bt_frames = frames; g_bt_fp = &fp;
+    g_rt_backtrace = vm_backtrace;
     #define PUSH(v) do { if (sp >= 4096) cc_error("runtime: stack overflow", 0); st[sp++] = (v); } while (0)
     #define POP()   (st[--sp])
     #define VI(x)   ((Val){0,(long)(x),0})
@@ -1013,6 +1217,11 @@ static void vm_run(int start_ip) {
     for (;;) {
         if (++guard > 800000000ull) cc_error("runtime: execution limit reached (infinite loop?)", 0);
         Instr *in = &C->code[ip++];
+        g_rt_line = in->line;
+        if (g_dbg.active) {
+            dbg_step(in->line, frames, fp);
+            if (g_dbg.quit) { kprintf("program stopped by the debugger\n"); return; }
+        }
         switch (in->op) {
         case OP_PUSHI: PUSH(VI(in->a)); break;
         case OP_PUSHS: { Val v = { 1, 0, (char *)in->s }; PUSH(v); break; }
@@ -1055,7 +1264,8 @@ static void vm_run(int start_ip) {
             Frame *nf = &frames[fp + 1];
             for (int i = 0; i < MAX_LOCALS; i++) nf->locals[i] = (Val){0,0,0};
             for (int i = 0; i < argc; i++) nf->locals[argc - 1 - i] = POP();
-            nf->retpc = ip; fp++; ip = C->funcs[fi].entry; break; }
+            nf->retpc = ip; nf->fn = fi; nf->callline = in->line;
+            fp++; ip = C->funcs[fi].entry; break; }
         case OP_RET: { Val rv = POP(); int rp = frames[fp].retpc; fp--; PUSH(rv); if (rp < 0) { ip = -1; } else ip = rp; break; }
         case OP_PRINT:   { Val a = POP(); print_cstr(val_cstr(a)); PUSH(VI(0)); break; }
         case OP_PRINTLN: { Val a = POP(); print_cstr(val_cstr(a)); kputc('\n'); PUSH(VI(0)); break; }
@@ -1148,7 +1358,9 @@ const char *boltcc_lang_name(int lang) {
 }
 const char *boltcc_version(void) { return "BoltCC 1.0  -  C / C++ / C# -> bytecode"; }
 
-int boltcc_run(int lang, const char *src) {
+/* Both public entry points run the same pipeline; `debug` only decides whether
+ * the VM stops on the first line and takes commands. */
+static int boltcc_exec(int lang, const char *src, int debug) {
     CC ctx; memset(&ctx, 0, sizeof(ctx));
     C = &ctx;
     C->lang = lang;
@@ -1172,12 +1384,18 @@ int boltcc_run(int lang, const char *src) {
     for (int i = 0; i < C->nfunc; i++) {
         Func *f = &C->funcs[i];
         C->nloc = 0; C->maxloc = 0; C->nloop = 0;
+        for (int k = 0; k < MAX_LOCALS; k++) C->slotname[k] = 0;
         for (int p = 0; p < f->nparams; p++) loc_add(f->params[p]);
         f->entry = C->ncode;
         gen_stmt(f->body);
         emit(OP_PUSHI, 0, 0, 0);     /* implicit  return 0;  on fall-through */
         emit(OP_RET, 0, 0, 0);
         if (C->maxloc > MAX_LOCALS) cc_error("function uses too many locals", 0);
+        /* Keep the slot names so the debugger can print locals by name. Only
+         * the slots this function actually used, out of the AST arena. */
+        f->nlocnames = C->maxloc;
+        f->locnames  = (const char **)ast_alloc(C->maxloc * (int)sizeof(char *));
+        for (int k = 0; k < C->maxloc; k++) f->locnames[k] = C->slotname[k];
     }
 
     /* preamble: run global initialisers, then call main/Main, then halt */
@@ -1204,9 +1422,23 @@ int boltcc_run(int lang, const char *src) {
     g_rtcap = 1024 * 1024; g_rtpos = 0; g_rt = (char *)kmalloc(g_rtcap);
     if (!g_rt) cc_error("out of memory (runtime)", 0);
 
+    memset(&g_dbg, 0, sizeof g_dbg);
+#ifndef BOLTCC_NO_DEBUGGER
+    if (debug) {
+        g_dbg.active = 1;
+        g_dbg.stepping = 1;          /* stop on the first line of the program */
+        g_dbg.src = src;
+        kprintf("BoltCC debugger. b [line] breakpoint, s step, c continue,\n");
+        kprintf("p NAME print, locals, bt backtrace, l list, q quit.\n");
+    }
+#else
+    (void)debug;                     /* no shell to take commands from here */
+#endif
     vm_run(start);
 
 cleanup:
+    g_dbg.active = 0;
+    g_rt_line = 0; g_rt_backtrace = 0; g_bt_frames = 0; g_bt_fp = 0;
     if (C->toks) kfree(C->toks);
     if (C->code) kfree(C->code);
     if (C->strarena) kfree(C->strarena);
@@ -1217,3 +1449,6 @@ cleanup:
     C = 0;
     return rc;
 }
+
+int boltcc_run(int lang, const char *src)   { return boltcc_exec(lang, src, 0); }
+int boltcc_debug(int lang, const char *src) { return boltcc_exec(lang, src, 1); }

@@ -160,7 +160,7 @@ echo "[2d/6] BoltRT stub: BoltCC + BoltPython baked into a PE32+ EXE -> embed bl
 "$CLANG" --target=x86_64-w64-mingw32 -nostdlib -ffreestanding -fno-stack-protector \
          -mno-sse -mno-sse2 -mno-mmx -mno-80387 -mno-red-zone \
          -mstack-probe-size=0x7fffffff \
-         -O2 -std=c11 -Iinclude -Wl,-e,entry -Wl,--subsystem,console -Wl,--dynamicbase \
+         -O2 -std=c11 -DBOLTCC_NO_DEBUGGER -Iinclude -Wl,-e,entry -Wl,--subsystem,console -Wl,--dynamicbase \
          user/boltrt.c kernel/boltcc.c kernel/boltpy.c libc/string.c \
          -o build/boltrt.exe -lkernel32
 ( cd build && "$OBJCOPY" -I binary -O elf64-x86-64 boltrt.exe boltrt_blob.o )

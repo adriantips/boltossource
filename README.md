@@ -603,6 +603,7 @@ cc main.c util.c            build and run
 cc -E main.c                print the preprocessed unit
 cc -o all.c main.c util.c   write the combined unit instead of running
 cc -I DIR -D NAME=VALUE     search path and command-line macros
+cc -g main.c                build and run under the debugger
 ```
 
 The dialect comes from the first file's extension (`.c`, `.cpp`/`.cc`/`.cxx`,
@@ -620,6 +621,64 @@ quotes a backslash escapes only a quote or another backslash, as a POSIX shell
 does -- consuming every escape would eat the ones that belong to the argument,
 so `write f.c "printf(\"hi\n\")"` would silently store a bare `n`.
 `write -a` appends, so a file can be built up a line at a time.
+
+## The debugger -- `cc -g`
+
+Building a program and running it is half of writing software. The other half is
+finding out why it did the wrong thing, and until now BoltCC gave you nothing
+for that: a runtime error said *what* went wrong and never *where*, and there
+was no way to stop a running program and look at it. A language you cannot
+debug is one you can only re-read.
+
+Two things fixed that, and they are separate claims.
+
+**Every instruction knows its line.** The parser stamps each AST node with the
+token's line, codegen carries that into each emitted instruction, and every call
+frame records the function it is running and the line it was called from. A
+runtime error -- an out-of-bounds index, a division by zero, a bad conversion --
+now names the line and prints the call stack that reached it, even when the
+error is raised deep inside a builtin:
+
+```
+BoltCC: line 1: runtime: array index out of range
+  call stack:
+    at()  called from line 6
+```
+
+That costs four bytes per instruction and one store per dispatch, which is the
+right trade for the difference between a located error and a shrug.
+
+**`cc -g` runs the program under a source-level debugger.** The VM stops before
+the first line and takes commands; the hook is a single null test when no
+session is armed, so an ordinary run pays essentially nothing for it.
+
+```
+b [line]    set a breakpoint (default: the current line)
+d [line]    delete one breakpoint, or all of them
+s / n       step to the next line
+c           continue
+bt          backtrace: every frame and the line it is on
+p NAME      print a local, or a global, by name
+locals      print every named local in this frame
+l [line]    list source around a line
+q           stop the program
+```
+
+Locals print by name because each function keeps its slot-name table past
+codegen -- the compiler already knew the names and simply used to throw them
+away. `list` reads the *preprocessed* unit, which is what the line numbers refer
+to, so a program built from several files lists the same text the debugger is
+stepping through.
+
+The debugger needs a shell to read commands from. BoltRT links this same
+compiler into a standalone Windows `.exe`, where there is none, so it is
+compiled out there (`-DBOLTCC_NO_DEBUGGER`) and the entry point falls back to an
+ordinary run.
+
+`test/t_debug.py` writes a program with a genuine off-by-one from the shell,
+checks the error names its line and its call stack, then steps a second program
+under `cc -g`, prints a local by name, takes a backtrace and runs it to
+completion.
 
 ## TrueType fonts
 
@@ -986,7 +1045,7 @@ The interactive OS shell supports a wide range of commands:
 - **Names & time:** `hosts` (local name table), `dns` (resolve / show / flush the cache), `ntp` (clock sync)
 - **Serving:** `serve` (HTTP file server over real accepted connections), `netget` (fetch a URL from a ring-3 socket program)
 - **Remote access:** `sshd` (SSH-2 server: real shell, password auth, encrypted), `sshkey` (host key fingerprint)
-- **Language:** `cc` (multi-file C/C++/C# via the preprocessor + BoltCC), `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the **Code** app compiles C / C++ / C#
+- **Language:** `cc` (multi-file C/C++/C# via the preprocessor + BoltCC; `-g` runs it under the source-level debugger), `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the **Code** app compiles C / C++ / C#
 - **Bonus / Unique:** `focus`, `snapshot`, `timeline`, `vault`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
 - **Core:** `help`, `echo`, `clear`, `mem`
 

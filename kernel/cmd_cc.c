@@ -53,6 +53,7 @@ static void usage(void) {
             "  -E          preprocess only, and print the result\n"
             "  -I DIR      add a directory to the #include <> search path\n"
             "  -D N[=V]    define a macro\n"
+            "  -g          run under the debugger (breakpoints, stepping, locals)\n"
             "  -q          run, but do not print the compile banner\n"
             "\n"
             "Several files are preprocessed and combined into one translation unit\n"
@@ -65,7 +66,7 @@ int cmd_cc(int argc, char **argv) {
     const char *srcs[MAX_SRCS];
     int nsrc = 0;
     const char *outpath = 0;
-    int only_pp = 0, quiet = 0;
+    int only_pp = 0, quiet = 0, debug = 0;
 
     cpp_reset_defines();
     cpp_reset_include_dirs();
@@ -76,6 +77,7 @@ int cmd_cc(int argc, char **argv) {
         const char *a = argv[i];
         if (!strcmp(a, "-o") && i + 1 < argc)      outpath = argv[++i];
         else if (!strcmp(a, "-E"))                 only_pp = 1;
+        else if (!strcmp(a, "-g"))                 debug = 1;
         else if (!strcmp(a, "-q"))                 quiet = 1;
         else if (!strcmp(a, "-I") && i + 1 < argc) cpp_add_include_dir(argv[++i]);
         else if (!strncmp(a, "-I", 2) && a[2])     cpp_add_include_dir(a + 2);
@@ -144,7 +146,7 @@ int cmd_cc(int argc, char **argv) {
             if (!quiet)
                 kprintf("cc: %d file%s, %s\n", nsrc, nsrc == 1 ? "" : "s",
                         boltcc_lang_name(lang));
-            int rc = boltcc_run(lang, unit);
+            int rc = debug ? boltcc_debug(lang, unit) : boltcc_run(lang, unit);
             if (rc != 0) failed = 1;
         }
     }
