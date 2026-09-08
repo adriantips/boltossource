@@ -67,8 +67,8 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 - [x] 37. NTP client, so the clock is right without RTC drift
 - [ ] 38. IPv6 addressing and neighbour discovery
 - [ ] 39. SLAAC autoconfiguration
-- [ ] 40. TCP listen/accept (server sockets)
-- [ ] 41. Socket syscalls, so ring-3 programs can use the network
+- [x] 40. TCP listen/accept (server sockets)
+- [x] 41. Socket syscalls, so ring-3 programs can use the network
 - [ ] 42. SSH client
 - [ ] 43. SSH server (remote administration and development)
 - [ ] 44. Wi-Fi radio driver

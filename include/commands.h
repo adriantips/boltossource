@@ -81,6 +81,9 @@ int cmd_domlayout(int, char **);
 int cmd_ifconfig(int, char **);int cmd_hosts(int, char **);  int cmd_dns(int, char **);
 int cmd_ntp(int, char **);
 
+/* ---- handlers: server + ring-3 socket client (kernel/cmd_serve.c) -------- */
+int cmd_serve(int, char **);   int cmd_netget(int, char **);
+
 /* ---- handlers: Bonus / Unique ------------------------------------------- */
 int cmd_focus(int, char **);  int cmd_snapshot(int, char **);int cmd_timeline(int, char **);
 int cmd_vault(int, char **);  int cmd_doctor(int, char **); int cmd_assistant(int, char **);

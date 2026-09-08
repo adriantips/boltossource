@@ -93,7 +93,8 @@ class BoltVM:
 
     def __init__(self, name="vm", uefi=False, disks=True, net=True, snapshot=True,
                  memory="2G", smp=2, extra=None, port=None, workdir=None,
-                 boot_img=None, data_disks=None, no_reboot=False, nic="e1000"):
+                 boot_img=None, data_disks=None, no_reboot=False, nic="e1000",
+                 hostfwd=None):
         self.name = name
         self.uefi = uefi
         self.workdir = workdir or os.path.join(ROOT, "test", "out")
@@ -144,7 +145,13 @@ class BoltVM:
         if net:
             # `nic` picks the emulated adapter, so the same test body can be run
             # against every driver BoltOS ships: "e1000" or "virtio-net-pci".
-            a += ["-netdev", "user,id=net0", "-device", nic + ",netdev=net0"]
+            # `hostfwd` is a list of (host_port, guest_port) pairs, which is how
+            # a test reaches a server running INSIDE the guest -- slirp gives the
+            # guest no address the host can dial otherwise.
+            nd = "user,id=net0"
+            for hp, gp in (hostfwd or []):
+                nd += ",hostfwd=tcp::%d-:%d" % (hp, gp)
+            a += ["-netdev", nd, "-device", nic + ",netdev=net0"]
         a += ["-display", "none",
               "-serial", "file:" + self.serial_path,
               "-qmp", "tcp:127.0.0.1:%d,server,nowait" % self.port]

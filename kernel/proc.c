@@ -48,11 +48,15 @@ static inline void poke64(uint8_t *page_kv, uint64_t frame_off, uint64_t v) {
     *(uint64_t *)(page_kv + frame_off) = v;
 }
 
-/* Map the user stack and lay out a minimal SysV entry stack (argc/argv/auxv).
- * arg0 is argv[0]; arg1 (if non-null) becomes argv[1], so a ring-3 tool can be
- * handed an operand (e.g. the script path for /bin/js). Returns the initial
- * user RSP, or 0 on failure. */
-static uint64_t setup_user_stack(uint64_t cr3, const char *arg0, const char *arg1) {
+/* Lay out the SysV entry stack: argc, argv[], NULL, envp NULL, AT_NULL.
+ *
+ * `argv` is the full vector including argv[0]. It used to be argv[0] plus at
+ * most one more, which meant no program could take an option and an operand at
+ * the same time -- `netget HOST PATH PORT` silently became `netget HOST`, using
+ * defaults for the rest, which is the kind of bug that looks like the network
+ * being broken. Returns the initial user RSP, or 0 on failure. */
+static uint64_t setup_user_stack(uint64_t cr3, int argc, const char **argv) {
+    if (argc < 1 || argc > PROC_MAX_ARGV) return 0;
     uint64_t base = USER_STACK_TOP - (uint64_t)USER_STACK_PGS * PAGE_SIZE;
     uint64_t top_frame = 0;
     for (int i = 0; i < USER_STACK_PGS; i++) {
@@ -69,29 +73,25 @@ static uint64_t setup_user_stack(uint64_t cr3, const char *arg0, const char *arg
     uint64_t page_va = USER_STACK_TOP - PAGE_SIZE;     /* user VA of top page base */
     #define OFF(uva) ((uva) - page_va)
 
-    int argc = arg1 ? 2 : 1;
-
-    /* copy the argv strings down from the very top of the stack */
-    uint64_t slen0 = strlen(arg0) + 1;
-    uint64_t arg0_uva = (USER_STACK_TOP - slen0) & ~0xFull;
-    for (uint64_t i = 0; i < slen0; i++) tk[OFF(arg0_uva) + i] = (uint8_t)arg0[i];
-
-    uint64_t arg1_uva = 0, lowstr = arg0_uva;
-    if (arg1) {
-        uint64_t slen1 = strlen(arg1) + 1;
-        arg1_uva = (arg0_uva - slen1) & ~0xFull;
-        for (uint64_t i = 0; i < slen1; i++) tk[OFF(arg1_uva) + i] = (uint8_t)arg1[i];
-        lowstr = arg1_uva;
+    /* Copy the strings down from the very top, remembering where each landed.
+     * They must all fit in the top page along with the vector below them. */
+    uint64_t uva[PROC_MAX_ARGV];
+    uint64_t cur = USER_STACK_TOP;
+    for (int i = 0; i < argc; i++) {
+        uint64_t slen = strlen(argv[i]) + 1;
+        cur = (cur - slen) & ~0xFull;
+        if (cur <= page_va + (uint64_t)(argc + 5) * 8 + 64) return 0;   /* no room */
+        for (uint64_t j = 0; j < slen; j++) tk[OFF(cur) + j] = (uint8_t)argv[i][j];
+        uva[i] = cur;
     }
 
     /* vector: argc, argv[0..argc-1], NULL, envp NULL, AT_NULL(key,val) */
     uint64_t nq = (uint64_t)argc + 5;
-    uint64_t sp = (lowstr - nq * 8) & ~0xFull;          /* 16-aligned argc slot */
+    uint64_t sp = (cur - nq * 8) & ~0xFull;             /* 16-aligned argc slot */
     uint64_t o  = OFF(sp);
     poke64(tk, o, (uint64_t)argc);                       /* argc            */
-    poke64(tk, o + 8,  arg0_uva);                        /* argv[0]         */
-    uint64_t k = o + 16;
-    if (arg1) { poke64(tk, k, arg1_uva); k += 8; }       /* argv[1]         */
+    uint64_t k = o + 8;
+    for (int i = 0; i < argc; i++) { poke64(tk, k, uva[i]); k += 8; }
     poke64(tk, k,      0); k += 8;                        /* argv terminator */
     poke64(tk, k,      0); k += 8;                        /* envp terminator */
     poke64(tk, k,      0); k += 8;                        /* auxv AT_NULL k  */
@@ -104,6 +104,11 @@ static uint64_t setup_user_stack(uint64_t cr3, const char *arg0, const char *arg
 int proc_exec(const char *path) { return proc_exec_argv(path, 0); }
 
 int proc_exec_argv(const char *path, const char *arg1) {
+    const char *av[2] = { path, arg1 };
+    return proc_exec_vec(path, arg1 ? 2 : 1, av);
+}
+
+int proc_exec_vec(const char *path, int argc, const char **argv) {
     file *f = vfs_open(path, O_RDONLY);
     if (!f) { kprintf("[exec] %s: not found\n", path); return -1; }
 
@@ -126,7 +131,7 @@ int proc_exec_argv(const char *path, const char *arg1) {
     }
     kfree(image);
 
-    uint64_t ustack = setup_user_stack(cr3, path, arg1);
+    uint64_t ustack = setup_user_stack(cr3, argc, argv);
     if (!ustack) return -1;
 
     proc_t *p = (proc_t *)kmalloc(sizeof(proc_t));

@@ -24,7 +24,7 @@ UEFI), own kernel.
 > support for running real **Windows PE32+ executables**, **PC-speaker + AC97
 > audio**, **TrueType font** rendering, a **system-wide clipboard**, **stack
 > canary** protection, **multi-user** support, a **package manager**, a full
-> **freestanding libc**, and image decoding.
+> **freestanding libc**, **BSD-style sockets** reaching ring 3, and image decoding.
 
 ## Image Preview
 
@@ -112,6 +112,34 @@ reads the keyboard, `SYS_HTTPGET` fetches a URL over the in-kernel TCP/TLS stack
 and `SYS_FBEND` hands the screen back. No HTML parsing, layout, or script
 execution happens in ring 0. (The in-window desktop **Browser** app still uses
 the in-kernel copy of the engine for its embedded window.)
+
+### Preemptible syscalls
+
+Syscalls run with **interrupts enabled**. `SYSCALL` enters with IF cleared by
+FMASK, and every wait in the network stack has the same shape — spin
+`netif_poll_all()`, then `hlt` until the next timer tick, until the deadline
+passes. With interrupts off that tick never arrives: the `hlt` never wakes, the
+deadline is never reached, and the machine stops dead rather than timing out.
+That is why no ring-3 program could use the network at all; `SYS_HTTPGET` had
+the same defect from the start, so the ring-3 browser froze the machine the
+moment it fetched anything.
+
+Enabling interrupts means a syscall can be **preempted**, which the user RSP was
+not ready for: it was stashed in a global, so two threads in syscalls at once
+would overwrite each other's and return to ring 3 on the wrong stack. It is
+pushed on the process's kernel stack instead, one copy per invocation (with a
+matching padding push, so the frame stays 16-byte aligned for the C ABI). The
+global survives only as a scratch slot across the stack switch itself, where IF
+is still clear.
+
+### Program arguments
+
+`proc_exec_vec()` passes a **full argv vector** (`PROC_MAX_ARGV` entries). The
+loader could previously hand a program argv[0] plus at most one operand, so no
+ring-3 program could take an option and an argument at the same time —
+`netget HOST PATH PORT` silently ran as `netget HOST` and used defaults for the
+rest, which presents as the network being broken rather than as a missing
+argument.
 
 ## ACPI / APIC / SMP
 
@@ -365,6 +393,44 @@ wire. Before the cache existed, every image on a page re-resolved the same host,
 putting a full DNS round trip in front of each one. `hosts add NAME IP` names a
 peer locally (and that lookup never leaves the machine); `dns NAME` resolves one,
 `dns` shows the cache with each entry's remaining TTL, and `dns flush` empties it.
+
+### Sockets, and taking connections
+
+The stack could only ever *open* connections, never accept them, so nothing
+could reach the machine: no way to pull a file off it from a laptop or a phone,
+and no basis for any service at all. `tcp_listen()` claims a port, `tcp_input()`
+answers the SYNs that arrive on it (a new SYN_RCVD connection, then ESTABLISHED
+on the client's ACK), and `tcp_accept()` hands over the next connection nobody
+has claimed. There is no separate listening-socket object — what comes back is
+an ordinary `tcp_conn`, so send, recv and close need no server-side variants.
+
+Above that, **a socket is a file descriptor** (`kernel/socket.c`): a `file` whose
+ops are socket ops and whose `priv` is the connection. Because it is a file,
+`read()`, `write()` and `close()` already work on it, the process fd table
+already owns it, and `proc_release()` already closes it when the process dies —
+there is no second descriptor space to keep in step with the first. Ring 3
+reaches it through `SYS_SOCKET` / `SYS_CONNECT` / `SYS_LISTEN` / `SYS_ACCEPT`
+plus `SYS_RESOLVE`, so a user program can now speak *any* protocol rather than
+only the one `SYS_HTTPGET` knew. Ports below 1024 are privileged: an account
+that could bind 22 could stand in front of the ssh server and collect the
+passwords of everyone who connected.
+
+Two commands exercise both directions:
+
+- **`serve [PORT] [DIR]`** — an HTTP file server. GET only, one connection at a
+  time, no keep-alive: the job is handing files to a browser on the same
+  network, and every extra feature is another parser exposed to whatever else is
+  on it. Paths are percent-decoded and any `..` segment is refused *before* the
+  lookup, and every file goes through the same `fs_may()` check as the shell —
+  serving a tree must not become a way around the ownership rules on it.
+  Directories render a browsable index. Any key stops it.
+- **`netget HOST [PATH] [PORT]`** — execs `/bin/netget`, which runs in **ring 3**
+  and speaks HTTP over a socket using nothing but `resolve_host()`, `socket()`,
+  `connect_ip()`, `write()` and `read()`.
+
+`test/t_socket.py` drives both ends for real: the host fetches a file and a
+directory index from the guest through a QEMU port forward, checks a traversal
+is refused, and then runs the ring-3 client against a server on the host.
 
 ### The clock: SNTP
 
@@ -787,6 +853,7 @@ The interactive OS shell supports a wide range of commands:
 - **Identity & privilege:** `whoami`, `id`, `groups`, `users`, `useradd`, `userdel`, `passwd`, `sudo`, `lock`, `logout`
 - **Networking:** `netinfo`, `ifconfig` (interface config, saved to `/etc`), `ping`, `trace`, `ports`, `download`, `browse`, `webx` (ring-3 web browser), `upload`, `wifi`, `firewall`, `share`, `scan`, `nstest` (NetSurf library test)
 - **Names & time:** `hosts` (local name table), `dns` (resolve / show / flush the cache), `ntp` (clock sync)
+- **Serving:** `serve` (HTTP file server over real accepted connections), `netget` (fetch a URL from a ring-3 socket program)
 - **Language:** `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the **Code** app compiles C / C++ / C#
 - **Bonus / Unique:** `focus`, `snapshot`, `timeline`, `vault`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
 - **Core:** `help`, `echo`, `clear`, `mem`
@@ -815,14 +882,14 @@ The interactive OS shell supports a wide range of commands:
 +-- kernel/
 |   +-- main.c   boot.asm  shell.c        console.c   gui.c       hw.c
 |   +-- sched.c  proc.c    syscall.c/.asm  elf.c       pe.c        idt.c
-|   +-- interrupts.c  isr.asm  pic.c  pit.c  pci.c  serial.c  settings.c  vfs.c
+|   +-- interrupts.c  isr.asm  pic.c  pit.c  pci.c  serial.c  settings.c  vfs.c  socket.c
 |   +-- acpi.c   apic.c    smp.c   ap_boot.asm   hpet.c  gdt.c  stackguard.c
 |   +-- blk.c             Generic block layer (ATA/AHCI/NVMe registry + MBR helpers)
 |   +-- dom.c   layout.c  html.c          Browser engine: DOM tree, CSS cascade, box/flex/grid layout
 |   +-- js.c    cmd_js.c  boltcc.c  boltpy.c   JavaScript, C/C++/C#, Python
 |   +-- image.c  font8x8.c  kprintf.c  sysreg.c  user.asm
 |   +-- ttf.c    clipboard.c  users.c  pkg.c
-|   +-- cmd_extra.c  cmd_fs.c  cmd_net.c  cmd_netcfg.c  cmd_proc.c  cmd_python.c  cmd_sys.c  cmd_hw.c
+|   +-- cmd_extra.c  cmd_fs.c  cmd_net.c  cmd_netcfg.c  cmd_serve.c  cmd_proc.c  cmd_python.c  cmd_sys.c  cmd_hw.c
 |   +-- cmd_js.c  cmd_libctest.c  cmd_nstest.c
 |   \-- app_*.c           24 desktop apps (browser, files, ide, taskmgr, doom, paint, games, ...)
 +-- libc/
@@ -838,7 +905,7 @@ The interactive OS shell supports a wide range of commands:
 +-- netsurf/              Vendored NetSurf libraries (libhubbub, libparserutils, libwapcaplet)
 +-- vendor/               Vendored libcss-0.9.2 (CSS parsing/selection)
 \-- user/
-    +-- crt0.asm  hello.c  winhello.c  boltrt.c    Ring-3 ELF64 + PE32+ demos
+    +-- crt0.asm  hello.c  winhello.c  boltrt.c  netget.c   Ring-3 ELF64 + PE32+ demos
     +-- js_main.c  browser_main.c  kheap.h         Ring-3 JS interpreter + web browser (DOM+layout+JS)
     +-- ulibc.c/.h  stdlib_ext.c  libm.c
     +-- stdio.h  stdlib.h  math.h  ctype.h
