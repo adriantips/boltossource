@@ -170,6 +170,8 @@ const command_t commands[] = {
     { "ntp",      "Network",          "clock sync: ntp [sync|on|off|server]",cmd_ntp },
     { "serve",    "Network",          "HTTP file server: serve [PORT] [DIR]",cmd_serve },
     { "netget",   "Network",          "fetch a URL over a ring-3 socket",    cmd_netget },
+    { "sshd",     "Network",          "SSH server: sshd [PORT] (sudo for 22)",cmd_sshd },
+    { "sshkey",   "Network",          "show the SSH host key fingerprint",   cmd_sshkey },
     { "ping",     "Network",          "connectivity test",                  cmd_ping },
     { "trace",    "Network",          "route tracing",                      cmd_trace },
     { "ports",    "Network",          "open port viewer",                   cmd_ports },

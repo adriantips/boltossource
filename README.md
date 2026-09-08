@@ -24,7 +24,8 @@ UEFI), own kernel.
 > support for running real **Windows PE32+ executables**, **PC-speaker + AC97
 > audio**, **TrueType font** rendering, a **system-wide clipboard**, **stack
 > canary** protection, **multi-user** support, a **package manager**, a full
-> **freestanding libc**, **BSD-style sockets** reaching ring 3, and image decoding.
+> **freestanding libc**, **BSD-style sockets** reaching ring 3, an **SSH server**,
+> and image decoding.
 
 ## Image Preview
 
@@ -431,6 +432,59 @@ Two commands exercise both directions:
 `test/t_socket.py` drives both ends for real: the host fetches a file and a
 directory index from the guest through a QEMU port forward, checks a traversal
 is refused, and then runs the ring-3 client against a server on the host.
+
+### SSH
+
+`net/ssh.c` is an **SSH-2 server** (RFC 4251-4254). It is what makes the machine
+administrable without sitting in front of it, and for a machine meant to be
+developed on, that is most of the difference between a demo and a box you can
+work on.
+
+One algorithm per slot, all of them ones the crypto already had:
+
+| | |
+| --- | --- |
+| key exchange | `curve25519-sha256` (X25519 + SHA-256) |
+| host key     | `ecdsa-sha2-nistp256` (P-256; signing added for this) |
+| cipher       | `aes128-ctr` |
+| MAC          | `hmac-sha2-256` |
+
+Offering exactly one of each is deliberate: every extra name is more negotiation
+surface facing a peer who has not authenticated yet, and this set is still in a
+current OpenSSH's default proposal, so real clients connect without being told
+to relax anything.
+
+The **host key** is generated on first use and kept in `/etc/ssh/host_ecdsa_key`
+with mode 0600. A key that changed every boot would warn the user on every
+connection, which teaches them to click through the one warning that means
+somebody is intercepting them. `sshkey` prints the fingerprint in the same
+`SHA256:` form the client shows, so the two can be compared by eye;
+`sshkey selftest` signs and verifies with a throwaway key.
+
+**Authentication** is password auth against the real account table
+(`users_auth`), so the same PBKDF2 hashing, the same admin group and the same
+exponential backoff apply as at the console. **The shell it hands out is the
+real one**: a session runs commands through `shell_exec_line()` with `kputc`
+redirected into the channel by `console_set_sink()` — the same mechanism the GUI
+terminal window uses — so an SSH session sees exactly what the console sees, and
+no command needs to know it is being run remotely. Both `ssh host command` and an
+interactive `ssh host` work, and the channel is closed with a real `exit-status`,
+without which a client reports 255 and cannot tell success from a dropped link.
+
+```
+sudo sshd            listen on port 22 (privileged, like every well-known port)
+sshd 2222            listen on an unprivileged port
+sshkey               show the host key fingerprint
+```
+
+`test/t_ssh.py` drives the **actual OpenSSH client** rather than a second
+BoltOS. That distinction is the point: an implementation can be perfectly
+self-consistent and still wrong in every way that matters — a mis-encoded
+exchange hash verifies flawlessly against its own verifier — and only a peer
+written independently from the RFCs will tell you so. It caught exactly that
+bug: ECDSA signs the *digest* of its message, so what is signed is SHA-256(H)
+rather than H, and signing H directly produced a signature this code was happy
+with and OpenSSH rejected as "incorrect signature".
 
 ### The clock: SNTP
 
@@ -854,6 +908,7 @@ The interactive OS shell supports a wide range of commands:
 - **Networking:** `netinfo`, `ifconfig` (interface config, saved to `/etc`), `ping`, `trace`, `ports`, `download`, `browse`, `webx` (ring-3 web browser), `upload`, `wifi`, `firewall`, `share`, `scan`, `nstest` (NetSurf library test)
 - **Names & time:** `hosts` (local name table), `dns` (resolve / show / flush the cache), `ntp` (clock sync)
 - **Serving:** `serve` (HTTP file server over real accepted connections), `netget` (fetch a URL from a ring-3 socket program)
+- **Remote access:** `sshd` (SSH-2 server: real shell, password auth, encrypted), `sshkey` (host key fingerprint)
 - **Language:** `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the **Code** app compiles C / C++ / C#
 - **Bonus / Unique:** `focus`, `snapshot`, `timeline`, `vault`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
 - **Core:** `help`, `echo`, `clear`, `mem`
@@ -889,7 +944,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- js.c    cmd_js.c  boltcc.c  boltpy.c   JavaScript, C/C++/C#, Python
 |   +-- image.c  font8x8.c  kprintf.c  sysreg.c  user.asm
 |   +-- ttf.c    clipboard.c  users.c  pkg.c
-|   +-- cmd_extra.c  cmd_fs.c  cmd_net.c  cmd_netcfg.c  cmd_serve.c  cmd_proc.c  cmd_python.c  cmd_sys.c  cmd_hw.c
+|   +-- cmd_extra.c  cmd_fs.c  cmd_net.c  cmd_netcfg.c  cmd_serve.c  cmd_ssh.c  cmd_proc.c  cmd_python.c  cmd_sys.c  cmd_hw.c
 |   +-- cmd_js.c  cmd_libctest.c  cmd_nstest.c
 |   \-- app_*.c           24 desktop apps (browser, files, ide, taskmgr, doom, paint, games, ...)
 +-- libc/
@@ -902,6 +957,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- arp.c   eth.c    ip.c    icmp.c  udp.c   tcp.c   dns.c   netif.c  dhcp.c
 |   +-- http.c  inflate.c  firewall.c  driver.c  firmware.c  wifi.c  netcfg.c  ntp.c
 |   +-- tls.c   crypto.c  rsa.c   x509.c  p256.c  p384.c     TLS 1.2/1.3 + cert verification
+|   +-- ssh.c                                                SSH-2 server (KEX, auth, channels)
 +-- netsurf/              Vendored NetSurf libraries (libhubbub, libparserutils, libwapcaplet)
 +-- vendor/               Vendored libcss-0.9.2 (CSS parsing/selection)
 \-- user/
