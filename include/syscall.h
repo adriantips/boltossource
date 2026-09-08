@@ -24,6 +24,14 @@
 #define SYS_GETPID  39  /* ()                        -> pid                  */
 #define SYS_EXIT    60  /* (code)                    -> (no return)          */
 
+/* Sockets. A socket is an ordinary fd (kernel/socket.c), so read/write/close
+ * above operate on one -- these calls only cover what a plain file cannot say.
+ * Addresses are IPv4 in HOST order, matching the rest of the stack. */
+#define SYS_SOCKET  41  /* (domain, type)            -> fd / -1               */
+#define SYS_CONNECT 42  /* (fd, ip, port, timeo_ms)  -> 0 / -1                */
+#define SYS_ACCEPT  43  /* (fd, ip*, port*, timeo_ms)-> fd / -1               */
+#define SYS_LISTEN  50  /* (fd, port)                -> 0 / -1                */
+
 /* ---- BoltOS device syscalls (private; let a ring-3 program own the screen,
  *      read the keyboard, and fetch over the network -- the substrate the
  *      ring-3 web browser /bin/browser runs on). The drivers stay in ring 0;
@@ -33,6 +41,7 @@
 #define SYS_HTTPGET 102 /* (url, buf, cap, status*)  -> body len / -1         */
 #define SYS_FBEND   103 /* ()                        -> 0; release the screen  */
 #define SYS_FBPRESENT 104 /* (xrgb w*h buffer)       -> 0/-1; blit to panel    */
+#define SYS_RESOLVE 105 /* (name, uint32_t *ip)      -> 0/-1; DNS + /etc/hosts */
 
 /* Filled by SYS_FBINFO: the panel geometry. The renderer draws a packed w*h
  * xRGB image into its own buffer and hands it to SYS_FBPRESENT each frame; the

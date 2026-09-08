@@ -21,6 +21,11 @@
 #define SYS_HTTPGET 102
 #define SYS_FBEND 103
 #define SYS_FBPRESENT 104
+#define SYS_SOCKET 41
+#define SYS_CONNECT 42
+#define SYS_ACCEPT 43
+#define SYS_LISTEN 50
+#define SYS_RESOLVE 105
 
 static long __syscall(long n, long a, long b, long c, long d, long e) {
     long ret;
@@ -54,6 +59,18 @@ void fb_present(const void *buf)    { __syscall(SYS_FBPRESENT, (long)buf, 0, 0, 
 int  getkey(void)                   { return (int)__syscall(SYS_GETKEY, 0, 0, 0, 0, 0); }
 long http_get_u(const char *url, char *buf, unsigned long cap, int *status)
                                     { return __syscall(SYS_HTTPGET, (long)url, (long)buf, (long)cap, (long)status, 0); }
+
+/* Sockets. The returned descriptor is an ordinary fd, so read()/write()/close()
+ * above are what you use on it -- there is no send()/recv() here because there
+ * would be nothing for them to do that write()/read() do not already do. */
+int socket(int domain, int type)    { return (int)__syscall(SYS_SOCKET, domain, type, 0, 0, 0); }
+int connect_ip(int fd, uint32_t ip, uint16_t port, uint32_t timeout_ms)
+                                    { return (int)__syscall(SYS_CONNECT, fd, (long)ip, port, (long)timeout_ms, 0); }
+int listen_port(int fd, uint16_t port) { return (int)__syscall(SYS_LISTEN, fd, port, 0, 0, 0); }
+int accept_conn(int fd, uint32_t *peer_ip, uint16_t *peer_port, uint32_t timeout_ms)
+                                    { return (int)__syscall(SYS_ACCEPT, fd, (long)peer_ip, (long)peer_port, (long)timeout_ms, 0); }
+int resolve_host(const char *name, uint32_t *ip_out)
+                                    { return (int)__syscall(SYS_RESOLVE, (long)name, (long)ip_out, 0, 0, 0); }
 
 /* --------------------------------------------------------------- heap ------
  * First-fit free list backed by SYS_BRK. Each block carries a header with its

@@ -28,6 +28,11 @@ typedef struct proc {
 void    proc_init(void);
 int     proc_exec(const char *path);       /* load ELF + run; pid or -1 */
 int     proc_exec_argv(const char *path, const char *arg1); /* with argv[1] */
+/* The general form: `argv` is the whole vector, argv[0] included. A program
+ * that can only be handed one argument cannot take an option and an operand at
+ * once, which is most of them. */
+#define PROC_MAX_ARGV 16
+int     proc_exec_vec(const char *path, int argc, const char **argv);
 proc_t *proc_current(void);                /* running process, or 0     */
 int     proc_pid_of(proc_t *p);            /* pid, or -1 for 0          */
 

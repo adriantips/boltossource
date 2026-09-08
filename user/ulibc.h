@@ -44,6 +44,17 @@ void  fb_present(const void *buf);       /* blit a packed w*h xRGB backbuffer   
 int   getkey(void);                      /* next key, or -1 if none (non-blocking) */
 long  http_get_u(const char *url, char *buf, unsigned long cap, int *status);
 
+/* ---- sockets (see include/socket.h) --------------------------------------
+ * A socket is an ordinary fd: read()/write()/close() work on it directly.
+ * Addresses are IPv4 in host order, as everywhere else in the stack. */
+#define AF_INET     2
+#define SOCK_STREAM 1
+int   socket(int domain, int type);
+int   connect_ip(int fd, uint32_t ip, uint16_t port, uint32_t timeout_ms);
+int   listen_port(int fd, uint16_t port);      /* ports < 1024 need root */
+int   accept_conn(int fd, uint32_t *peer_ip, uint16_t *peer_port, uint32_t timeout_ms);
+int   resolve_host(const char *name, uint32_t *ip_out);   /* /etc/hosts, cache, DNS */
+
 /* heap */
 void *malloc(unsigned long n);
 void *calloc(unsigned long nm, unsigned long sz);

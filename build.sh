@@ -117,6 +117,7 @@ echo "[2b2/6] RING-3 engines: JS interpreter + web browser (DOM+layout+JS) -> EL
 "$CLANG" "${UCFLAGS[@]}" kernel/layout.c    -o build/u_layout.o
 "$CLANG" "${UCFLAGS[@]}" kernel/font8x8.c   -o build/u_font8x8.o
 "$CLANG" "${UCFLAGS[@]}" user/crashme.c      -o build/u_crashme.o
+"$CLANG" "${UCFLAGS[@]}" user/netget.c       -o build/u_netget.o
 "$CLANG" "${UCFLAGS[@]}" user/js_main.c      -o build/u_js_main.o
 "$CLANG" "${UCFLAGS[@]}" user/browser_main.c -o build/u_browser_main.o
 UCORE=(build/u_ulibc.o build/u_stdlib.o build/u_libm.o build/u_string.o build/u_string_ext.o)
@@ -134,6 +135,10 @@ UCORE=(build/u_ulibc.o build/u_stdlib.o build/u_libm.o build/u_string.o build/u_
 "$LLD" -m elf_x86_64 -T user/user.ld -no-pie -o build/crashme.elf \
        build/u_crt0.o build/u_crashme.o "${UCORE[@]}"
 ( cd build && "$OBJCOPY" -I binary -O elf64-x86-64 crashme.elf crashme_blob.o )
+# /bin/netget -- fetches a URL over a ring-3 socket, so the socket syscalls are
+# exercised by a real user program rather than only from the kernel.
+"$LLD" -m elf_x86_64 -T user/user.ld -no-pie -o build/netget.elf build/u_crt0.o build/u_netget.o "${UCORE[@]}"
+( cd build && "$OBJCOPY" -I binary -O elf64-x86-64 netget.elf netget_blob.o )
 
 echo "[2c/6] windows program (user/winhello.c) -> real PE32+ EXE -> embed blob"
 # A genuine Windows x86-64 console .exe: freestanding, imports kernel32, linked
@@ -171,7 +176,7 @@ SRCS=(
     net/tcp.c net/dns.c net/crypto.c net/tls.c net/p256.c net/p384.c net/rsa.c net/x509.c net/inflate.c net/http.c
     net/wifi.c net/firmware.c net/firewall.c net/dhcp.c net/netcfg.c net/ntp.c
     drivers/e1000.c drivers/virtio_net.c
-    kernel/cmd_netcfg.c kernel/cmd_fs.c kernel/cmd_sys.c kernel/cmd_proc.c kernel/cmd_net.c kernel/cmd_extra.c kernel/cmd_hw.c kernel/cmd_user.c
+    kernel/socket.c kernel/cmd_netcfg.c kernel/cmd_serve.c kernel/cmd_fs.c kernel/cmd_sys.c kernel/cmd_proc.c kernel/cmd_net.c kernel/cmd_extra.c kernel/cmd_hw.c kernel/cmd_user.c
     kernel/html.c kernel/dom.c kernel/layout.c kernel/image.c kernel/ttf.c
     kernel/gui.c kernel/app_terminal.c kernel/app_taskmgr.c kernel/app_settings.c kernel/app_browser.c kernel/app_files.c
     kernel/app_oldbrowser.c oldbrowser/ob_nsurl.c oldbrowser/ob_llcache.c oldbrowser/ob_content.c oldbrowser/ob_window.c oldbrowser/ob_hotlist.c oldbrowser/ob_fbtk.c oldbrowser/ob_gui.c
@@ -190,7 +195,7 @@ LIBC_SRCS=(
     libc/string.c libc/string_ext.c libc/malloc.c libc/printf.c libc/scanf.c
     libc/stdlib.c libc/support.c libc/math.c libc/stdio_file.c libc/time.c
 )
-KOBJS=(build/kboot.o build/isr.o build/sc_entry.o build/ap_boot_blob.o build/hello_blob.o build/js_blob.o build/browser_blob.o build/winhello_blob.o build/boltrt_blob.o build/crashme_blob.o
+KOBJS=(build/kboot.o build/isr.o build/sc_entry.o build/ap_boot_blob.o build/hello_blob.o build/js_blob.o build/browser_blob.o build/winhello_blob.o build/boltrt_blob.o build/crashme_blob.o build/netget_blob.o
        build/stage1_blob.o build/stage2_blob.o build/bootx64_blob.o)
 # libc non-local jump (asm); clang's integrated assembler handles the .S
 "$CLANG" --target=x86_64-elf -mcmodel=kernel -c libc/setjmp.S -o build/setjmp.o

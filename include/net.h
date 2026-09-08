@@ -115,8 +115,8 @@ typedef void (*udp_listener_fn)(uint32_t src_ip, uint16_t sport,
 void udp_listen(uint16_t port, udp_listener_fn fn);
 void udp_unlisten(uint16_t port);
 
-/* TCP (active-open client). Blocking, poll-driven -- same model as arp_resolve.
- * Connections are opaque; one heap allocation per connection. */
+/* TCP. Blocking, poll-driven -- same model as arp_resolve. Connections are
+ * opaque; one heap allocation per connection. */
 struct tcp_conn;
 void tcp_input(struct netif *nif, uint32_t src_ip, const uint8_t *pkt, uint16_t len);
 struct tcp_conn *tcp_connect(uint32_t dst_ip, uint16_t dport, uint32_t timeout_ms);
@@ -124,6 +124,18 @@ int  tcp_send(struct tcp_conn *c, const void *data, uint32_t len);
 /* Blocks until some bytes arrive, the peer closes (returns 0), or timeout (-1). */
 int  tcp_recv(struct tcp_conn *c, void *buf, uint32_t cap, uint32_t timeout_ms);
 void tcp_close(struct tcp_conn *c);
+
+/* Passive open (server sockets). tcp_listen registers a port; SYNs arriving on
+ * it are answered automatically, and tcp_accept hands over the next established
+ * connection nobody has claimed (0 on timeout). The result is an ordinary
+ * tcp_conn, so send/recv/close are the same calls a client uses. */
+int  tcp_listen(uint16_t port);
+void tcp_unlisten(uint16_t port);
+struct tcp_conn *tcp_accept(uint16_t port, uint32_t timeout_ms);
+
+uint32_t tcp_peer_ip(struct tcp_conn *c);
+uint16_t tcp_peer_port(struct tcp_conn *c);
+int      tcp_is_open(struct tcp_conn *c);   /* 1 while it can still carry data */
 
 /* DNS: resolve a hostname to an IPv4 address (host order). 1 = ok, 0 = failed.
  * Answers from /etc/hosts and a TTL-honouring cache before going to the wire. */

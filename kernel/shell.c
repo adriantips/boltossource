@@ -168,6 +168,8 @@ const command_t commands[] = {
     { "hosts",    "Network",          "local name table: hosts add NAME IP", cmd_hosts },
     { "dns",      "Network",          "resolver cache: dns [NAME|flush]",    cmd_dns },
     { "ntp",      "Network",          "clock sync: ntp [sync|on|off|server]",cmd_ntp },
+    { "serve",    "Network",          "HTTP file server: serve [PORT] [DIR]",cmd_serve },
+    { "netget",   "Network",          "fetch a URL over a ring-3 socket",    cmd_netget },
     { "ping",     "Network",          "connectivity test",                  cmd_ping },
     { "trace",    "Network",          "route tracing",                      cmd_trace },
     { "ports",    "Network",          "open port viewer",                   cmd_ports },

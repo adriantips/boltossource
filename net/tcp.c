@@ -15,7 +15,7 @@
  *  doesn't need them, and we keep transfers short and bounded by timeouts.
  * ===========================================================================*/
 
-enum { CLOSED, SYN_SENT, ESTABLISHED, CLOSE_WAIT, FIN_WAIT, DONE };
+enum { CLOSED, LISTEN, SYN_SENT, SYN_RCVD, ESTABLISHED, CLOSE_WAIT, FIN_WAIT, DONE };
 
 #define RXBUF 65536                 /* per-connection receive ring */
 
@@ -31,12 +31,25 @@ struct tcp_conn {
     int           fin_seen;         /* peer sent FIN                  */
     uint8_t      *rx;               /* receive ring (RXBUF bytes)     */
     uint32_t      rx_head, rx_tail; /* ring indices; count = head-tail*/
+    int           passive;          /* arrived on a listening port     */
+    int           accepted;         /* already handed to tcp_accept    */
 };
 
-#define MAX_CONNS 4
+#define MAX_CONNS   16          /* a server needs more than a browser did */
+#define MAX_LISTEN  4
 static struct tcp_conn *conns[MAX_CONNS];
 static uint16_t next_port = 49152;
 static uint32_t isn_seed;
+
+/* Ports we answer a SYN on. A listener is just a port number: the connection it
+ * produces is an ordinary tcp_conn, so everything downstream -- send, recv,
+ * close -- is the code that already existed for the client side. */
+static uint16_t listeners[MAX_LISTEN];
+
+static int is_listening(uint16_t port) {
+    for (int i = 0; i < MAX_LISTEN; i++) if (listeners[i] == port) return 1;
+    return 0;
+}
 
 static uint32_t rx_count(struct tcp_conn *c) { return c->rx_head - c->rx_tail; }
 static uint32_t rx_space(struct tcp_conn *c) { return RXBUF - rx_count(c); }
@@ -91,7 +104,36 @@ void tcp_input(struct netif *nif, uint32_t src_ip, const uint8_t *pkt, uint16_t 
     for (int i = 0; i < MAX_CONNS; i++)
         if (conns[i] && conns[i]->local_port == dport &&
             conns[i]->peer_port == sport && conns[i]->peer_ip == src_ip) { c = conns[i]; break; }
-    if (!c) return;
+
+    /* No connection yet: a bare SYN to a listening port opens one. This is the
+     * passive-open half of the handshake -- the client side has always been
+     * here, but without this the machine could only ever make connections, not
+     * take them, which is what a server (ssh, a file share) needs. */
+    if (!c) {
+        if (!(h->flags & TCP_SYN) || (h->flags & TCP_ACK) || !is_listening(dport)) return;
+
+        int slot = -1;
+        for (int i = 0; i < MAX_CONNS; i++) if (!conns[i]) { slot = i; break; }
+        if (slot < 0) return;                       /* backlog full: drop the SYN */
+
+        c = (struct tcp_conn *)kmalloc(sizeof(*c));
+        if (!c) return;
+        memset(c, 0, sizeof(*c));
+        c->rx = (uint8_t *)kmalloc(RXBUF);
+        if (!c->rx) { kfree(c); return; }
+        c->nif        = nif ? nif : netif_default();
+        c->peer_ip    = src_ip;
+        c->peer_port  = sport;
+        c->local_port = dport;
+        c->passive    = 1;
+        c->rcv_nxt    = ntohl(h->seq) + 1;           /* their SYN takes one seq */
+        isn_seed += (uint32_t)pit_ticks() * 2654435761u + 0x9E3779B9u;
+        c->snd_nxt = c->snd_una = isn_seed;
+        c->state   = SYN_RCVD;
+        conns[slot] = c;
+        tcp_xmit(c, TCP_SYN | TCP_ACK, 0, 0);
+        return;
+    }
     (void)nif;
 
     uint16_t thl = (uint16_t)((h->data_off >> 4) * 4);
@@ -111,6 +153,15 @@ void tcp_input(struct netif *nif, uint32_t src_ip, const uint8_t *pkt, uint16_t 
             tcp_xmit(c, TCP_ACK, 0, 0);               /* complete handshake */
         }
         return;
+    }
+
+    /* The third leg of a passive-open handshake: their ACK of our SYN|ACK. */
+    if (c->state == SYN_RCVD) {
+        if (!(fl & TCP_ACK) || ack != c->snd_nxt) return;
+        c->snd_una = ack;
+        c->state   = ESTABLISHED;
+        /* fall through: this segment may already carry data (TCP fast open
+         * aside, a client that writes immediately piggybacks on the ACK). */
     }
 
     if (fl & TCP_ACK) { if ((int32_t)(ack - c->snd_una) > 0) c->snd_una = ack; }
@@ -182,6 +233,61 @@ struct tcp_conn *tcp_connect(uint32_t dst_ip, uint16_t dport, uint32_t timeout_m
     }
     tcp_close(c);
     return 0;
+}
+
+/* ---------------------------------------------------------------------------
+ *  Passive open: listen on a port, then accept the connections that arrive.
+ *
+ *  There is no separate listening-socket object. `tcp_listen` records a port
+ *  number; tcp_input answers SYNs for it and leaves a fully-established
+ *  tcp_conn in the table; `tcp_accept` hands over the first one nobody has
+ *  claimed. That keeps a server connection identical to a client connection, so
+ *  tcp_send/tcp_recv/tcp_close need no server-side variants.
+ * ------------------------------------------------------------------------- */
+int tcp_listen(uint16_t port) {
+    if (!port) return -1;
+    if (is_listening(port)) return 0;
+    for (int i = 0; i < MAX_LISTEN; i++)
+        if (!listeners[i]) { listeners[i] = port; return 0; }
+    return -1;                                        /* listener table full */
+}
+
+void tcp_unlisten(uint16_t port) {
+    for (int i = 0; i < MAX_LISTEN; i++) if (listeners[i] == port) listeners[i] = 0;
+
+    /* Drop connections that arrived on this port and were never accepted.
+     * Nothing else can reach them once the listener is gone -- tcp_accept only
+     * looks at live listeners -- so without this each one holds its 64 KiB
+     * receive ring for the rest of the boot, and a port that is opened and
+     * closed repeatedly leaks the heap away. */
+    for (int i = 0; i < MAX_CONNS; i++) {
+        struct tcp_conn *c = conns[i];
+        if (c && c->passive && !c->accepted && c->local_port == port) tcp_close(c);
+    }
+}
+
+struct tcp_conn *tcp_accept(uint16_t port, uint32_t timeout_ms) {
+    if (!is_listening(port)) return 0;
+    uint64_t start = pit_ticks();
+    for (;;) {
+        for (int i = 0; i < MAX_CONNS; i++) {
+            struct tcp_conn *c = conns[i];
+            if (c && c->passive && !c->accepted && c->local_port == port &&
+                (c->state == ESTABLISHED || c->state == CLOSE_WAIT)) {
+                c->accepted = 1;
+                return c;
+            }
+        }
+        if (pit_ticks() - start >= timeout_ms) return 0;
+        netif_poll_all();
+        __asm__ volatile("hlt");
+    }
+}
+
+uint32_t tcp_peer_ip(struct tcp_conn *c)   { return c ? c->peer_ip   : 0; }
+uint16_t tcp_peer_port(struct tcp_conn *c) { return c ? c->peer_port : 0; }
+int      tcp_is_open(struct tcp_conn *c) {
+    return c && !c->reset && (c->state == ESTABLISHED || c->state == CLOSE_WAIT);
 }
 
 int tcp_send(struct tcp_conn *c, const void *data, uint32_t len) {

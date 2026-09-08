@@ -10,6 +10,8 @@
 #include "framebuffer.h"
 #include "keyboard.h"
 #include "http.h"
+#include "socket.h"
+#include "net.h"
 
 #define IA32_EFER  0xC0000080
 #define IA32_STAR  0xC0000081
@@ -184,6 +186,53 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
         if (a4 && uok(a4)) *(int *)a4 = status;
         return (uint64_t)(int64_t)n;
     }
+    /* ---- sockets ---------------------------------------------------------
+     * The stack was reachable from ring 0 only: a program could ask for a URL
+     * through SYS_HTTPGET and nothing else, so no ring-3 program could speak
+     * any other protocol. These give it the connection itself. Because a socket
+     * is a `file`, SYS_READ/SYS_WRITE/SYS_CLOSE above already work on the fd. */
+    case SYS_SOCKET: {
+        if (!p) return (uint64_t)-1;
+        file *f = sock_create((int)a1, (int)a2);
+        if (!f) return (uint64_t)-1;
+        int fd = proc_fd_alloc(p, f);
+        if (fd < 0) { vfs_close(f); return (uint64_t)-1; }
+        return (uint64_t)fd;
+    }
+    case SYS_CONNECT: {
+        if (!p) return (uint64_t)-1;
+        file *f = proc_fd_get(p, (int)a1);
+        if (!f) return (uint64_t)-1;
+        return (uint64_t)(int64_t)sock_connect(f, (uint32_t)a2, (uint16_t)a3, (uint32_t)a4);
+    }
+    case SYS_LISTEN: {
+        if (!p) return (uint64_t)-1;
+        file *f = proc_fd_get(p, (int)a1);
+        if (!f) return (uint64_t)-1;
+        return (uint64_t)(int64_t)sock_listen(f, (uint16_t)a2);
+    }
+    case SYS_ACCEPT: {
+        if (!p) return (uint64_t)-1;
+        file *f = proc_fd_get(p, (int)a1);
+        if (!f) return (uint64_t)-1;
+        if ((a2 && !uok(a2)) || (a3 && !uok(a3))) return (uint64_t)-1;
+        uint32_t ip = 0; uint16_t port = 0;
+        file *nf = sock_accept(f, &ip, &port, (uint32_t)a4);
+        if (!nf) return (uint64_t)-1;
+        int fd = proc_fd_alloc(p, nf);
+        if (fd < 0) { vfs_close(nf); return (uint64_t)-1; }
+        if (a2) *(uint32_t *)a2 = ip;
+        if (a3) *(uint16_t *)a3 = port;
+        return (uint64_t)fd;
+    }
+    case SYS_RESOLVE: {
+        if (!p || !uok(a1) || !uok(a2)) return (uint64_t)-1;
+        uint32_t ip = 0;
+        if (!dns_resolve((const char *)a1, &ip, 3000)) return (uint64_t)-1;
+        *(uint32_t *)a2 = ip;
+        return 0;
+    }
+
     case SYS_FBPRESENT:                        /* blit a ring-3 backbuffer       */
         return do_fbpresent(a1);
     case SYS_FBEND:                            /* hand the panel back to the GUI */
