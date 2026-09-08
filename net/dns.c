@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include "net.h"
 #include "netif.h"
+#include "netcfg.h"
 #include "pit.h"
 #include "string.h"
 
@@ -8,11 +9,86 @@
  *  Tiny DNS resolver: one A-record query over UDP/53 to net_dns, blocking until
  *  the reply arrives or we time out. Handles name compression in the answer
  *  section by skipping compressed/literal names; returns the first A record.
+ *
+ *  A lookup is answered from the cheapest source that can answer it:
+ *      1. a literal dotted quad      -- no lookup at all
+ *      2. /etc/hosts                 -- so a machine can name its own peers,
+ *                                       and a local name never leaves the wire
+ *      3. the cache, if not expired  -- honours the record's own TTL
+ *      4. the wire
+ *  Before the cache existed every image on a page re-resolved the same host,
+ *  which put a full DNS round trip in front of each one; loading a page over a
+ *  slow link spent more time resolving than fetching.
  * ===========================================================================*/
 
 static volatile uint32_t dns_result;
 static volatile int      dns_done;
 static volatile uint16_t dns_want_id;
+static volatile uint32_t dns_ttl;          /* TTL of the answer we accepted */
+
+/* ------------------------------------------------------------------ cache --*/
+#define DNS_CACHE_N    16
+#define DNS_NAME_MAX   64
+#define DNS_TTL_MIN    30u      /* clamp: a 0-TTL record would never cache    */
+#define DNS_TTL_MAX    3600u    /* and a 30-day one would outlive its truth   */
+
+struct dns_entry {
+    char     name[DNS_NAME_MAX];
+    uint32_t ip;
+    uint64_t expires_tick;      /* pit_ticks() value after which it is stale  */
+};
+static struct dns_entry cache[DNS_CACHE_N];
+static int              cache_next;         /* round-robin eviction cursor    */
+
+static int name_eq(const char *a, const char *b) {
+    for (; *a && *b; a++, b++) {
+        char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
+        char cb = (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
+        if (ca != cb) return 0;
+    }
+    return *a == 0 && *b == 0;
+}
+
+static int cache_get(const char *host, uint32_t *ip_out) {
+    for (int i = 0; i < DNS_CACHE_N; i++) {
+        if (!cache[i].ip || !name_eq(cache[i].name, host)) continue;
+        if (pit_ticks() >= cache[i].expires_tick) { cache[i].ip = 0; return 0; }
+        *ip_out = cache[i].ip;
+        return 1;
+    }
+    return 0;
+}
+
+static void cache_put(const char *host, uint32_t ip, uint32_t ttl_secs) {
+    if (!ip) return;
+    if (ttl_secs < DNS_TTL_MIN) ttl_secs = DNS_TTL_MIN;
+    if (ttl_secs > DNS_TTL_MAX) ttl_secs = DNS_TTL_MAX;
+
+    int slot = -1;
+    for (int i = 0; i < DNS_CACHE_N && slot < 0; i++)
+        if (!cache[i].ip || name_eq(cache[i].name, host)) slot = i;
+    if (slot < 0) { slot = cache_next; cache_next = (cache_next + 1) % DNS_CACHE_N; }
+
+    strncpy(cache[slot].name, host, DNS_NAME_MAX - 1);
+    cache[slot].name[DNS_NAME_MAX - 1] = 0;
+    cache[slot].ip           = ip;
+    /* The PIT runs at 1000 Hz, so a second is 1000 ticks. */
+    cache[slot].expires_tick = pit_ticks() + (uint64_t)ttl_secs * 1000ull;
+}
+
+void dns_cache_flush(void) {
+    for (int i = 0; i < DNS_CACHE_N; i++) cache[i].ip = 0;
+}
+
+int dns_cache_dump(int i, const char **name, uint32_t *ip, uint32_t *secs_left) {
+    if (i < 0 || i >= DNS_CACHE_N || !cache[i].ip) return 0;
+    uint64_t now = pit_ticks();
+    *name = cache[i].name;
+    *ip   = cache[i].ip;
+    *secs_left = now >= cache[i].expires_tick ? 0
+               : (uint32_t)((cache[i].expires_tick - now) / 1000ull);
+    return 1;
+}
 
 /* encode "www.example.com" as length-prefixed labels into out; return length */
 static int encode_qname(const char *host, uint8_t *out) {
@@ -63,6 +139,9 @@ static void dns_recv(uint32_t src_ip, uint16_t sport, const uint8_t *msg, uint16
         if (type == 1 && rdlen == 4 && rdata + 4 <= len) {     /* A record */
             dns_result = ((uint32_t)msg[rdata] << 24) | ((uint32_t)msg[rdata + 1] << 16) |
                          ((uint32_t)msg[rdata + 2] << 8) | (uint32_t)msg[rdata + 3];
+            /* TTL is the 32-bit field at off+4, after TYPE and CLASS. */
+            dns_ttl    = ((uint32_t)msg[off + 4] << 24) | ((uint32_t)msg[off + 5] << 16) |
+                         ((uint32_t)msg[off + 6] << 8)  |  (uint32_t)msg[off + 7];
             dns_done = 1;
             return;
         }
@@ -72,13 +151,21 @@ static void dns_recv(uint32_t src_ip, uint16_t sport, const uint8_t *msg, uint16
 }
 
 int dns_resolve(const char *host, uint32_t *ip_out, uint32_t timeout_ms) {
-    struct netif *nif = netif_default();
-    if (!nif) return 0;
+    if (!host || !host[0]) return 0;
 
     /* a literal dotted quad needs no lookup */
     int ok = 0;
     uint32_t lit = net_parse_ipv4(host, &ok);
     if (ok) { *ip_out = lit; return 1; }
+
+    /* /etc/hosts, then the cache -- both answer without touching the network,
+     * which is also what makes them work when the network is down. */
+    uint32_t hip = netcfg_hosts_lookup(host);
+    if (hip) { *ip_out = hip; return 1; }
+    if (cache_get(host, ip_out)) return 1;
+
+    struct netif *nif = netif_default();
+    if (!nif) return 0;
 
     uint8_t q[300];
     static uint16_t seq = 0x1000;
@@ -94,7 +181,7 @@ int dns_resolve(const char *host, uint32_t *ip_out, uint32_t timeout_ms) {
     q[o++] = 0; q[o++] = 1;         /* QCLASS = IN */
 
     uint16_t sport = 50000 + (id & 0x0FFF);
-    dns_done = 0; dns_result = 0; dns_want_id = id;
+    dns_done = 0; dns_result = 0; dns_want_id = id; dns_ttl = 0;
     udp_listen(sport, dns_recv);
 
     int got = 0;
@@ -109,6 +196,10 @@ int dns_resolve(const char *host, uint32_t *ip_out, uint32_t timeout_ms) {
     }
 
     udp_unlisten(sport);
-    if (got && dns_result) { *ip_out = dns_result; return 1; }
+    if (got && dns_result) {
+        *ip_out = dns_result;
+        cache_put(host, dns_result, dns_ttl);
+        return 1;
+    }
     return 0;
 }

@@ -125,5 +125,10 @@ int  tcp_send(struct tcp_conn *c, const void *data, uint32_t len);
 int  tcp_recv(struct tcp_conn *c, void *buf, uint32_t cap, uint32_t timeout_ms);
 void tcp_close(struct tcp_conn *c);
 
-/* DNS: resolve a hostname to an IPv4 address (host order). 1 = ok, 0 = failed. */
+/* DNS: resolve a hostname to an IPv4 address (host order). 1 = ok, 0 = failed.
+ * Answers from /etc/hosts and a TTL-honouring cache before going to the wire. */
 int  dns_resolve(const char *host, uint32_t *ip_out, uint32_t timeout_ms);
+
+void dns_cache_flush(void);
+/* Walk the cache for `netinfo dns`. Returns 0 when slot `i` is empty or stale. */
+int  dns_cache_dump(int i, const char **name, uint32_t *ip, uint32_t *secs_left);

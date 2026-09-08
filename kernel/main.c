@@ -44,6 +44,8 @@
 #include "ext2.h"
 #include "audio.h"
 #include "dhcp.h"
+#include "netcfg.h"
+#include "ntp.h"
 #include "hw.h"
 #include "users.h"
 #include "ttf.h"
@@ -307,8 +309,28 @@ void kmain(struct bootinfo *bi) {
     if (boot_is_safe()) {
         kprintf("[--] safe mode: skipping network + audio bring-up\n");
     } else {
-        net_init();      /* netif core + NIC driver probe (e1000 under QEMU) */
-        dhcp_configure(2000);  /* lease IP/mask/gw/DNS; falls back to static on timeout */
+        net_init();      /* netif core + NIC driver probe (e1000, virtio-net) */
+
+        /* A saved configuration wins over DHCP, and is loaded first so a static
+         * setup does not pay for a DHCP round trip that will be thrown away.
+         * Without this every boot re-leased and forgot, so a fixed address or a
+         * chosen DNS server had to be re-entered by hand every single time. */
+        int saved = netcfg_load();
+        if (saved && !g_netcfg.use_dhcp)
+            kprintf("[ok] network: static configuration from %s\n", NETCFG_PATH);
+        else
+            dhcp_configure(2000);  /* lease IP/mask/gw/DNS; static on timeout */
+        netcfg_apply();            /* static values, and a chosen DNS either way */
+
+        /* The RTC is usually wrong on a VM, and a wrong clock fails TLS
+         * certificate validity checks -- which looks like "HTTPS is broken"
+         * rather than "the year is wrong". One UDP round trip, best effort. */
+        if (g_netcfg.ntp_enabled && ntp_sync(g_netcfg.ntp_server, 3000) == 0) {
+            struct rtc_time nt; ntp_now(&nt);
+            kprintf("[ok] clock synced by NTP: %u-%02u-%02u %02u:%02u:%02u UTC\n",
+                    nt.year, nt.mon, nt.day, nt.hour, nt.min, nt.sec);
+        }
+
         audio_init();    /* AC97 / Intel HDA codec (PC speaker fallback) */
     }
 

@@ -15,8 +15,9 @@ UEFI), own kernel.
 > and FAT32** standard filesystem support, hardware interrupts, keyboard and
 > mouse drivers, an **xHCI USB** host-controller driver with **HID** support,
 > an **AC97 audio** driver, an interactive shell, a full **IPv4/TCP/UDP/TLS
-> 1.2+1.3 network stack** (with X.509 certificate verification and **DHCP**)
-> on an e1000 NIC, a **standards-ish web browser** with a real DOM tree, CSS
+> 1.2+1.3 network stack** (with X.509 certificate verification, **DHCP**,
+> persistent configuration, a DNS cache and an **SNTP** clock)
+> on **e1000** and **virtio-net** NICs, a **standards-ish web browser** with a real DOM tree, CSS
 > cascade, box/flex/grid layout engine and a from-scratch **JavaScript
 > interpreter**, a **multi-language IDE** with from-scratch **C / C++ / C#
 > compilers** and a **Python interpreter**, a **GPU / display-adapter driver**,
@@ -315,12 +316,70 @@ Pages load over the kernel's own stack (DNS → TCP → TLS → HTTP/1.1):
 - **local HTML files** from the filesystem (e.g. the bundled `/web/index.html`).
 
 Click links to navigate, type a URL in the address bar, `<` goes back, and the
-scrollbar / Space / `b` / `j` / `k` scroll. The data path rides the **e1000 NIC**
-driver (`drivers/e1000.c`) over QEMU/VirtualBox NAT, with a from-scratch stack:
+scrollbar / Space / `b` / `j` / `k` scroll. The data path rides an **e1000** or
+**virtio-net** NIC over QEMU/VirtualBox NAT, with a from-scratch stack:
 ARP, IPv4, ICMP, UDP, TCP, DNS, HTTP, a **firewall** (`net/firewall.c`), and TLS
 (`net/*.c`). Wi-Fi association is scaffolded in the kernel but still needs a radio
 driver — see the `wifi` command. The shell also has `browse URL` (render a page as
 text), `download URL` (save to the FS), and `nstest` (exercise NetSurf libraries).
+
+### Adapters: e1000 and virtio-net
+
+The e1000 is what QEMU offers by default, but **virtio-net** (`drivers/virtio_net.c`)
+is what almost everything else offers — it is the default on KVM/libvirt, Proxmox,
+VirtualBox's virtio adapter and every mainstream cloud hypervisor. Without it
+BoltOS has no network at all on most machines anyone would actually run it on.
+
+The driver speaks the **legacy VIRTIO 0.9.5 PCI transport** deliberately: a
+handful of I/O ports rather than the modern capability-walking BAR layout, which
+QEMU still presents by default and which is the same virtqueue model underneath
+— the smallest amount of code that reaches the most hypervisors. It sets up the
+receive and transmit virtqueues in one contiguous DMA allocation, reads the MAC
+from the device configuration, and takes completions on a PCI interrupt.
+`test/t_net.py` boots the same system on both adapters and expects a DHCP lease
+on each.
+
+### Configuration that survives the reboot
+
+Every boot used to run DHCP and forget everything afterwards, so a static
+address, a chosen resolver or a hostname had to be re-entered by hand every
+single time. Configuration now lives in `/etc/network.conf` (`net/netcfg.c`) as
+plain `key value` lines — deliberately readable, because a machine whose network
+is broken is exactly the machine where you want to fix the settings with `cat`
+and a text editor rather than a binary blob and a tool that needs the network to
+download. It is loaded *before* DHCP, so a static setup does not pay for a lease
+it will discard, and the installer carries it to a new machine with the rest of
+the tree. Wi-Fi credentials live beside it in `/etc/wifi.conf`, mode 0600.
+
+`ifconfig` shows and sets all of it: `ifconfig dhcp`, `ifconfig IP MASK GW [DNS]`,
+`ifconfig dns SERVER`, `ifconfig hostname NAME`, `ifconfig renew`. A resolver
+chosen explicitly wins even under DHCP — picking a DNS server is a decision about
+privacy and filtering as much as reachability, and a lease renewal silently
+undoing it is not what anyone means by "saved".
+
+### Names: `/etc/hosts` and a DNS cache
+
+A lookup is answered by the cheapest source that can answer it: a literal dotted
+quad, then **`/etc/hosts`**, then a **TTL-honouring cache**, and only then the
+wire. Before the cache existed, every image on a page re-resolved the same host,
+putting a full DNS round trip in front of each one. `hosts add NAME IP` names a
+peer locally (and that lookup never leaves the machine); `dns NAME` resolves one,
+`dns` shows the cache with each entry's remaining TTL, and `dns flush` empties it.
+
+### The clock: SNTP
+
+`net/ntp.c` is a minimal **SNTP client** (RFC 4330). The RTC is the only time
+source this machine has and on a VM it is often wrong from the moment it boots,
+which quietly breaks the things that matter most — TLS certificate validity
+windows, file timestamps, and any reasoning about when something happened in the
+log. One UDP round trip on boot fixes all of it.
+
+SNTP rather than full NTP on purpose: no discipline loop, no drift estimation, no
+peer selection. The machine asks what the time is and believes it, which is the
+right trade for a client that just needs the year to be right. The RTC hardware
+is never written — that needs CMOS bank juggling that differs between chipsets —
+so the correction is an offset every clock read goes through. `ntp` shows the
+state, `ntp sync` forces one, `ntp server IP` / `ntp on|off` are saved.
 
 ## OldBrowser — a NetSurf port
 
@@ -680,7 +739,7 @@ doom/           Vendored doomgeneric port + in-house libc shim + BoltOS platform
 oldbrowser/     NetSurf port (OldBrowser): nsurl, content cache + handlers, browser_window, fbtk frontend,
                 libhubbub HTML parsing, libcss selector integration
 drivers/        Hardware drivers (framebuffer, GPU/display, keyboard, mouse, ATA HDD/SSD, AHCI SATA,
-                NVMe, xHCI USB, e1000 NIC, PC speaker, AC97 audio)
+                NVMe, xHCI USB, e1000 + virtio-net NICs, PC speaker, AC97 audio)
 fs/             Filesystems: BoltFS (in-RAM tree, persisted), EXT2 (read-only), FAT32 (read/write)
 include/        80+ kernel/system headers (blk, dom, layout, js, acpi, apic, smp, ahci, ext2, fat32,
                 ttf, clipboard, users, audio, dhcp, nvme, xhci, rsa, x509, ...)
@@ -689,8 +748,8 @@ kernel/         Core kernel: scheduler, processes, syscalls, ELF + PE loaders, b
                 interpreters, package manager, multi-user, clipboard, TTF renderer, stack canaries
 libc/           Freestanding C library (string, malloc, printf, scanf, stdlib, math, stdio, time, setjmp)
 mm/             Memory management (PMM, heap, virtual memory, DMA, swap)
-net/            Network stack (ARP, IP, ICMP, UDP, TCP, DNS, DHCP, HTTP, TLS 1.2/1.3, crypto, RSA,
-                X.509, inflate, firewall, e1000 glue, Wi-Fi)
+net/            Network stack (ARP, IP, ICMP, UDP, TCP, DNS + cache, DHCP, SNTP, HTTP, TLS 1.2/1.3,
+                crypto, RSA, X.509, inflate, firewall, persistent netcfg, e1000 glue, Wi-Fi)
 netsurf/        Vendored NetSurf libraries (libhubbub HTML parser, libparserutils, libwapcaplet)
 user/           Ring-3 userland program (crt0, ulibc, boltrt) -> static ELF64 + PE32+ runtime stub
 vendor/         Vendored libraries (libcss-0.9.2 CSS parsing/selection)
@@ -726,7 +785,8 @@ The interactive OS shell supports a wide range of commands:
 - **Process Management:** `ps`, `kill`, `top`, `freeze`, `resume`, `services`, `service`, `jobs`, `priority`, `monitor`
 - **System (cont.):** `winrun` (Windows PE32+ loader), `compile` (BoltRT: compile a source file into a real PE32+ `.exe`), `pkg` (package manager), `libctest` (libc validation)
 - **Identity & privilege:** `whoami`, `id`, `groups`, `users`, `useradd`, `userdel`, `passwd`, `sudo`, `lock`, `logout`
-- **Networking:** `netinfo`, `ping`, `trace`, `ports`, `download`, `browse`, `webx` (ring-3 web browser), `upload`, `wifi`, `firewall`, `share`, `scan`, `nstest` (NetSurf library test)
+- **Networking:** `netinfo`, `ifconfig` (interface config, saved to `/etc`), `ping`, `trace`, `ports`, `download`, `browse`, `webx` (ring-3 web browser), `upload`, `wifi`, `firewall`, `share`, `scan`, `nstest` (NetSurf library test)
+- **Names & time:** `hosts` (local name table), `dns` (resolve / show / flush the cache), `ntp` (clock sync)
 - **Language:** `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the **Code** app compiles C / C++ / C#
 - **Bonus / Unique:** `focus`, `snapshot`, `timeline`, `vault`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
 - **Core:** `help`, `echo`, `clear`, `mem`
@@ -744,7 +804,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- stage1.asm  stage2.asm  uefi_boot.c
 +-- doom/                  Full doomgeneric port (~150 files, includes libc shim)
 +-- drivers/
-|   +-- ac97.c     ahci.c    ata.c     e1000.c
+|   +-- ac97.c     ahci.c    ata.c     e1000.c   virtio_net.c
 |   +-- framebuffer.c  gpu.c  keyboard.c  mouse.c
 |   +-- nvme.c     pcspk.c   xhci.c
 +-- fs/
@@ -762,7 +822,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- js.c    cmd_js.c  boltcc.c  boltpy.c   JavaScript, C/C++/C#, Python
 |   +-- image.c  font8x8.c  kprintf.c  sysreg.c  user.asm
 |   +-- ttf.c    clipboard.c  users.c  pkg.c
-|   +-- cmd_extra.c  cmd_fs.c  cmd_net.c  cmd_proc.c  cmd_python.c  cmd_sys.c  cmd_hw.c
+|   +-- cmd_extra.c  cmd_fs.c  cmd_net.c  cmd_netcfg.c  cmd_proc.c  cmd_python.c  cmd_sys.c  cmd_hw.c
 |   +-- cmd_js.c  cmd_libctest.c  cmd_nstest.c
 |   \-- app_*.c           24 desktop apps (browser, files, ide, taskmgr, doom, paint, games, ...)
 +-- libc/
@@ -773,7 +833,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- dma.c  kheap.c  pmm.c  vmm.c
 +-- net/
 |   +-- arp.c   eth.c    ip.c    icmp.c  udp.c   tcp.c   dns.c   netif.c  dhcp.c
-|   +-- http.c  inflate.c  firewall.c  driver.c  firmware.c  wifi.c
+|   +-- http.c  inflate.c  firewall.c  driver.c  firmware.c  wifi.c  netcfg.c  ntp.c
 |   +-- tls.c   crypto.c  rsa.c   x509.c  p256.c  p384.c     TLS 1.2/1.3 + cert verification
 +-- netsurf/              Vendored NetSurf libraries (libhubbub, libparserutils, libwapcaplet)
 +-- vendor/               Vendored libcss-0.9.2 (CSS parsing/selection)

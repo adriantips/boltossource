@@ -77,6 +77,10 @@ int cmd_wifi(int, char **);   int cmd_firewall(int, char **);int cmd_share(int, 
 int cmd_scan(int, char **);   int cmd_browse(int, char **); int cmd_domq(int, char **);
 int cmd_domlayout(int, char **);
 
+/* ---- handlers: network configuration (kernel/cmd_netcfg.c) -------------- */
+int cmd_ifconfig(int, char **);int cmd_hosts(int, char **);  int cmd_dns(int, char **);
+int cmd_ntp(int, char **);
+
 /* ---- handlers: Bonus / Unique ------------------------------------------- */
 int cmd_focus(int, char **);  int cmd_snapshot(int, char **);int cmd_timeline(int, char **);
 int cmd_vault(int, char **);  int cmd_doctor(int, char **); int cmd_assistant(int, char **);
