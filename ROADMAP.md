@@ -92,8 +92,8 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 - [ ] 56. Linker producing ELF64 executables
 - [ ] 57. `make` with dependency rules
 - [ ] 58. Static library archiver
-- [ ] 59. BoltVCS: init / add / commit / log
-- [ ] 60. BoltVCS: diff / checkout / branch
+- [x] 59. BoltVCS: init / add / commit / log / status / show
+- [x] 60. BoltVCS: diff (LCS, not a line compare) / checkout / branch
 - [x] 61. Terminal text editor (`edit`)
 - [ ] 62. Core dumps written on a ring-3 crash
 - [ ] 63. Post-mortem inspector: registers, stack, ELF symbols

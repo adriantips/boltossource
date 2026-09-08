@@ -710,6 +710,63 @@ inside a GUI callback cannot take the compositor down with it.
 > the compositor replays a click it would otherwise have missed, press and
 > release both, so nothing is left half-dragged.
 
+## Version control -- `vcs`
+
+A machine you can write software on is not one you can only write software on
+once. Most of writing software is trying something, finding out it was wrong,
+and getting back what worked, and BoltOS could do the first two: `snapshot`
+copies the whole filesystem, which is not a project's history -- it cannot say
+what changed, or why, or put one directory back without putting everything
+back.
+
+**BoltVCS** (`kernel/cmd_vcs.c`) is a local version control system with the
+model everybody already knows, kept to what it needs:
+
+```
+vcs init                 start a repository in the working directory
+vcs add FILE... | .      stage files (`.` stages everything below the root)
+vcs status               what is staged, what changed, what is untracked
+vcs commit -m MESSAGE    record the staged files
+vcs log [-n N]           the branch's history, newest first
+vcs show N               one commit: its message, and every file in it
+vcs diff [FILE]          the working tree against the last commit
+vcs checkout N | BRANCH  restore a commit's files, or switch branch
+vcs branch [NAME]        list branches, or start one here and switch to it
+```
+
+The repository is a `.bvcs` directory beside the work, found by walking up from
+wherever you are:
+
+```
+.bvcs/objects/<hash>   file contents addressed by their FNV-1a hash, so an
+                       unchanged file is stored once however many commits name it
+.bvcs/commits/<n>      parent, branch, author, time, message, and the
+                       (hash, size, path) of every file in the commit
+.bvcs/refs/<branch>    the commit a branch points at
+.bvcs/HEAD             the branch that is checked out
+.bvcs/index            what `add` has staged
+```
+
+Commits are numbered rather than named by a hash. A content hash buys
+distributed identity and nothing here is distributed; a number you can type is
+worth more than one you cannot. Because the repository is ordinary files, it is
+committed to disk by the same atomic mechanism as the rest of the tree and
+survives a power cut with it.
+
+`vcs diff` is a real diff, not the line-by-line compare the `diff` command
+does: common head and tail are trimmed (which is most of a real edit) and the
+changed middle goes through an **LCS**, so inserting a line at the top does not
+make every line below it look changed. Past 800 lines a side the table stops
+being worth its memory and the file is reported as changed without a body.
+
+A commit whose staged files are identical to its parent's is refused --
+an empty commit is noise in a history somebody has to read.
+
+`test/t_vcs.py` runs the whole round trip: init, add, commit, change a file,
+see it in `status`, see the single added line in `diff`, commit again, walk the
+log, check out the first commit and find the file as it was, branch, and reboot
+the machine to confirm the history is still there.
+
 ## The debugger -- `cc -g`
 
 Building a program and running it is half of writing software. The other half is
@@ -1133,7 +1190,8 @@ The interactive OS shell supports a wide range of commands:
 - **Names & time:** `hosts` (local name table), `dns` (resolve / show / flush the cache), `ntp` (clock sync)
 - **Serving:** `serve` (HTTP file server over real accepted connections), `netget` (fetch a URL from a ring-3 socket program)
 - **Remote access:** `sshd` (SSH-2 server: real shell, password auth, encrypted), `sshkey` (host key fingerprint)
-- **Language:** `cc` (multi-file C/C++/C# via the preprocessor + BoltCC; `-g` runs it under the source-level debugger), `build` (build a project's target from its `build.txt`), `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the **Code** app compiles C / C++ / C#
+- **Development:** `build` (build a project's target from its `build.txt`), `vcs` (local version control: init / add / commit / log / diff / checkout / branch)
+- **Language:** `cc` (multi-file C/C++/C# via the preprocessor + BoltCC; `-g` runs it under the source-level debugger), `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the **Code** app compiles C / C++ / C#
 - **Bonus / Unique:** `focus`, `snapshot`, `timeline`, `vault`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
 - **Core:** `help`, `echo`, `clear`, `mem`
 
@@ -1167,6 +1225,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- dom.c   layout.c  html.c          Browser engine: DOM tree, CSS cascade, box/flex/grid layout
 |   +-- js.c    cmd_js.c  boltcc.c  cpp.c  cmd_cc.c  boltpy.c   JavaScript, C preprocessor, C/C++/C#, Python
 |   +-- ccbuild.c  cmd_build.c    Build targets (build.txt) shared by cc, `build` and the IDE
+|   +-- cmd_vcs.c               BoltVCS: local version control (.bvcs objects/commits/refs)
 |   +-- image.c  font8x8.c  kprintf.c  sysreg.c  user.asm
 |   +-- ttf.c    clipboard.c  users.c  pkg.c
 |   +-- cmd_extra.c  cmd_fs.c  cmd_net.c  cmd_netcfg.c  cmd_serve.c  cmd_ssh.c  cmd_edit.c  cmd_proc.c  cmd_python.c  cmd_sys.c  cmd_hw.c

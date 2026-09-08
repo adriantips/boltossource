@@ -96,6 +96,9 @@ int cmd_cc(int, char **);
 /* ---- handlers: the project builder (kernel/cmd_build.c) ----------------- */
 int cmd_build(int, char **);
 
+/* ---- handlers: local version control (kernel/cmd_vcs.c) ----------------- */
+int cmd_vcs(int, char **);
+
 /* ---- handlers: Bonus / Unique ------------------------------------------- */
 int cmd_focus(int, char **);  int cmd_snapshot(int, char **);int cmd_timeline(int, char **);
 int cmd_vault(int, char **);  int cmd_doctor(int, char **); int cmd_assistant(int, char **);
