@@ -90,6 +90,9 @@ int cmd_sshd(int, char **);    int cmd_sshkey(int, char **);
 /* ---- handlers: terminal editor (kernel/cmd_edit.c) ---------------------- */
 int cmd_edit(int, char **);
 
+/* ---- handlers: the C compiler driver (kernel/cmd_cc.c) ------------------ */
+int cmd_cc(int, char **);
+
 /* ---- handlers: Bonus / Unique ------------------------------------------- */
 int cmd_focus(int, char **);  int cmd_snapshot(int, char **);int cmd_timeline(int, char **);
 int cmd_vault(int, char **);  int cmd_doctor(int, char **); int cmd_assistant(int, char **);

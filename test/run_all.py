@@ -42,7 +42,15 @@ def main(argv):
         print("RUN  %s" % name)
         print("=" * 70)
         t0 = time.time()
-        rc = subprocess.call([sys.executable, os.path.join(HERE, name)])
+        sys.stdout.flush()
+        # Children inherit this stdout. When the suite's own output is a file
+        # (CI, or a background run) Python buffers both ends, and a failing
+        # test's diagnostics are then lost behind the summary -- which is the
+        # one moment they are actually needed.
+        env = dict(os.environ)
+        env["PYTHONUNBUFFERED"] = "1"
+        rc = subprocess.call([sys.executable, "-u", os.path.join(HERE, name)], env=env)
+        sys.stdout.flush()
         dt = time.time() - t0
         results.append((name, rc, dt))
         print("%-16s %s  (%.0fs)" % (name, "ok" if rc == 0 else "FAILED rc=%d" % rc, dt))

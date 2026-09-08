@@ -227,6 +227,7 @@ const command_t commands[] = {
     { "echo",     "Core",             "print text back",                    cmd_echo },
     { "clear",    "Core",             "clear the screen",                   cmd_clear },
     { "python",   "Core",             "BoltPython REPL / run a .py file",    cmd_python },
+    { "cc",       "Core",             "compile + run C/C++/C#: cc FILE...",  cmd_cc },
     { "js",       "Core",             "run JavaScript in ring 3 (BoltJS)",  cmd_js },
     { "webx",     "Networking",       "ring-3 web browser (DOM+layout+JS)", cmd_webx },
     { "libctest", "Core",             "self-test the freestanding C library", cmd_libctest },
@@ -243,16 +244,57 @@ const command_t *cmd_lookup(const char *name) {
 /* ===========================================================================
  *  Line editor / REPL
  * ===========================================================================*/
+/* Split a line into arguments, honouring "double" and 'single' quotes and a
+ * backslash escape.
+ *
+ * Without quoting there was no way to pass an argument containing a space or a
+ * semicolon, which meant no way to write a line of C from the shell at all:
+ * `write f.c "int x;"` split at the semicolon and lost half the line. Quotes
+ * are removed as they are consumed, in place, so argv still points into the
+ * caller's buffer and nothing is allocated. */
 static int tokenize(char *line, char **argv) {
-    int argc = 0; char *p = line;
+    int argc = 0;
+    char *p = line;
     for (;;) {
-        while (*p == ' ') p++;
+        while (*p == ' ' || *p == '\t') p++;
         if (!*p) break;
-        if (argc < MAXARG) argv[argc++] = p;
-        while (*p && *p != ' ') p++;
-        if (*p) *p++ = 0;
+        if (argc >= MAXARG) break;
+
+        char *out = p;                 /* the unquoted text is written back here */
+        argv[argc++] = out;
+        int quote = 0;
+        while (*p) {
+            char c = *p;
+            if (!quote && (c == ' ' || c == '\t')) break;
+            if (!quote && (c == '"' || c == '\'')) { quote = c; p++; continue; }
+            if (quote && c == quote) { quote = 0; p++; continue; }
+            /* Inside double quotes a backslash escapes only a quote or another
+             * backslash, exactly as a POSIX shell does. Consuming every escape
+             * here would eat the ones that belong to the argument itself --
+             * writing a line of C containing \\n would silently store a bare n. */
+            if (c == '\\' && p[1] &&
+                (quote != '"' || p[1] == '"' || p[1] == '\\')) {
+                p++; *out++ = *p++; continue;
+            }
+            *out++ = *p++;
+        }
+        if (*p) p++;                   /* step over the separator */
+        *out = 0;
     }
     return argc;
+}
+
+/* Is the character at `p` inside a quoted run that began at `start`? The `;`
+ * and `|` splitters use this so they do not cut a line apart in the middle of
+ * a quoted argument. */
+static int in_quotes(const char *start, const char *p) {
+    int quote = 0;
+    for (const char *q = start; q < p; q++) {
+        if (*q == '\\' && q[1]) { q++; continue; }
+        if (!quote && (*q == '"' || *q == '\'')) quote = *q;
+        else if (quote && *q == quote) quote = 0;
+    }
+    return quote != 0;
 }
 
 /* output-capture sink for `>`/`>>` redirection */
@@ -313,7 +355,7 @@ static void run_segment(char *seg) {
     char *stages[8]; int ns = 0; char *p = seg;
     while (*p && ns < 8) {
         stages[ns++] = p;
-        while (*p && *p != '|') p++;
+        while (*p && !(*p == '|' && !in_quotes(seg, p))) p++;
         if (*p == '|') *p++ = 0;
     }
     if (ns <= 1) { char *argv[MAXARG]; exec_argv(argv, tokenize(seg, argv), 0); return; }
@@ -346,7 +388,7 @@ static void dispatch(char *line) {
     char *p = line;
     while (*p) {
         char *seg = p;
-        while (*p && *p != ';') p++;
+        while (*p && !(*p == ';' && !in_quotes(line, p))) p++;
         if (*p == ';') *p++ = 0;
         run_segment(seg);
     }

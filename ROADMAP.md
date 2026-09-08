@@ -80,11 +80,11 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 
 - [ ] 48. IDE project tree for real multi-file projects
 - [ ] 49. Build targets in the IDE, run through BoltCC
-- [ ] 50. BoltCC: C preprocessor (`#include`, `#define`, conditionals)
-- [ ] 51. BoltCC: structs, pointers, arrays
+- [x] 50. BoltCC: C preprocessor (`#include`, `#define`, conditionals)
+- [~] 51. BoltCC: arrays (structs and pointers still to come)
 - [ ] 52. BoltCC: native x86-64 code generation
 - [ ] 53. BoltCC: emit linkable objects
-- [ ] 54. `cc` command producing a runnable ring-3 ELF
+- [~] 54. `cc` command (builds + runs multi-file C; bytecode, not yet an ELF)
 - [ ] 55. Assembler for `.asm` sources
 - [ ] 56. Linker producing ELF64 executables
 - [ ] 57. `make` with dependency rules
