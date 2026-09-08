@@ -58,9 +58,13 @@ static char shift_nav(char e) {
         default:        return e;
     }
 }
-/* Ctrl+letter -> editing shortcut control byte, or 0 to swallow the combo. */
+/* Ctrl+letter -> editing shortcut control byte, or 0 to swallow the combo.
+ * Ctrl+Alt+L is separate: locking the screen must not be something an app can
+ * intercept, so it is delivered as its own code the GUI handles before any
+ * window sees it. */
 static char ctrl_shortcut(char c) {
     if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+    if (alt && c == 'l') return KEY_LOCK;
     switch (c) {
         case 'a': return KEY_SELALL;
         case 'c': return KEY_COPY;

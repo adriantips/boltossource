@@ -1,6 +1,8 @@
 #include <stdint.h>
 #include "commands.h"
 #include "fs.h"
+#include "vfs.h"
+#include "users.h"
 #include "kprintf.h"
 #include "string.h"
 #include "pit.h"
@@ -17,7 +19,38 @@ static fs_node *need(const char *p, const char *cmd) {
 static fs_node *need_file(const char *p, const char *cmd) {
     fs_node *n = need(p, cmd);
     if (n && n->is_dir) { kprintf("%s: %s: is a directory\n", cmd, p); return 0; }
+    if (n && !fs_may(n, FS_PERM_READ)) {
+        kprintf("%s: %s: permission denied\n", cmd, p);
+        return 0;
+    }
     return n;
+}
+
+/* The write-side counterpart. Every command that modifies a node's *contents*
+ * goes through this, so "readable but not writable" means the same thing
+ * everywhere. (Commands that add or remove directory entries check the parent
+ * with fs_may_create_in / may_create instead, since that is what changes.) */
+__attribute__((unused))
+static fs_node *need_writable(const char *p, const char *cmd) {
+    fs_node *n = need(p, cmd);
+    if (n && !fs_may(n, FS_PERM_WRITE)) {
+        kprintf("%s: %s: permission denied\n", cmd, p);
+        return 0;
+    }
+    return n;
+}
+
+/* May a new entry be created at `path`? Checks write permission on the parent
+ * directory, which is where the entry actually lands. */
+static int may_create(const char *path, const char *cmd) {
+    char leaf[FS_NAME_MAX];
+    fs_node *parent = fs_parent_of(path, leaf, sizeof leaf);
+    if (!parent) { kprintf("%s: %s: bad path\n", cmd, path); return 0; }
+    if (!fs_may_create_in(parent)) {
+        kprintf("%s: %s: permission denied\n", cmd, path);
+        return 0;
+    }
+    return 1;
 }
 static int contains(const char *hay, const char *needle) {
     if (!*needle) return 1;
@@ -32,16 +65,35 @@ static void put_n(const uint8_t *d, uint32_t n) { while (n--) kputc((char)*d++);
 static int is_printable(uint8_t c) { return (c >= 32 && c < 127) || c == '\n' || c == '\t' || c == '\r'; }
 
 /* ------------------------------- ls -------------------------------------- */
+/* One row of `ls -l`: mode string, owner, size, name. */
+static void ls_long_row(fs_node *c) {
+    char perm[12], sz[12];
+    fs_mode_string(c, perm);
+    const user_t *u = users_find_uid(c->uid);
+    kprintf("%s ", perm);
+    sh_pad(u ? u->name : (c->uid ? "?" : "root"), 10);
+    if (c->is_dir) sh_pad("<dir>", 9);
+    else { sh_human(c->size, sz); sh_pad(sz, 9); }
+    kprintf(" %s%s\n", c->name, c->is_dir ? "/" : "");
+}
+
 int cmd_ls(int argc, char **argv) {
-    fs_node *d = (argc > 1) ? fs_lookup(argv[1]) : fs_cwd();
-    if (!d) { kprintf("ls: %s: not found\n", argv[1]); return 1; }
+    int lng = 0, ai = 1;
+    if (argc > 1 && strcmp(argv[1], "-l") == 0) { lng = 1; ai = 2; }
+
+    fs_node *d = (argc > ai) ? fs_lookup(argv[ai]) : fs_cwd();
+    if (!d) { kprintf("ls: %s: not found\n", argv[ai]); return 1; }
     if (!d->is_dir) {
-        char sz[12]; sh_human(d->size, sz);
-        kprintf("- "); sh_pad(sz, 8); kprintf(" %s\n", d->name);
+        if (lng) ls_long_row(d);
+        else { char sz[12]; sh_human(d->size, sz); kprintf("- "); sh_pad(sz, 8); kprintf(" %s\n", d->name); }
         return 0;
     }
+    /* Listing a directory needs read permission on it, like anywhere else. */
+    if (!fs_may(d, FS_PERM_READ)) { kprintf("ls: permission denied\n"); return 1; }
+
     int n = 0;
     for (fs_node *c = d->child; c; c = c->next) {
+        if (lng) { ls_long_row(c); n++; continue; }
         char sz[12];
         if (c->is_dir) { kprintf("d "); sh_pad("<dir>", 8); }
         else           { sh_human(c->size, sz); kprintf("- "); sh_pad(sz, 8); }
@@ -86,8 +138,10 @@ int cmd_pwd(int argc, char **argv) {
 /* ------------------------------ mkdir ------------------------------------ */
 int cmd_mkdir(int argc, char **argv) {
     if (argc < 2) { kprintf("usage: mkdir DIR...\n"); return 1; }
-    for (int i = 1; i < argc; i++)
+    for (int i = 1; i < argc; i++) {
+        if (!may_create(argv[i], "mkdir")) continue;
         if (!fs_create(argv[i], 1)) kprintf("mkdir: %s: cannot create\n", argv[i]);
+    }
     return 0;
 }
 
@@ -99,6 +153,12 @@ int cmd_rm(int argc, char **argv) {
     for (int i = first; i < argc; i++) {
         fs_node *n = need(argv[i], "rm");
         if (!n) continue;
+        /* Removing an entry is a write to the directory that holds it, which is
+         * what actually changes -- so that is what gets checked. */
+        if (!fs_may_create_in(n->parent)) {
+            kprintf("rm: %s: permission denied\n", argv[i]);
+            continue;
+        }
         if (n->is_dir && n->child && !rec) {
             kprintf("rm: %s: directory not empty (use -r)\n", argv[i]);
             continue;
@@ -113,6 +173,14 @@ int cmd_cp(int argc, char **argv) {
     if (argc != 3) { kprintf("usage: cp SRC DST\n"); return 1; }
     fs_node *src = need_file(argv[1], "cp");
     if (!src) return 1;
+    {   /* the copy has to be creatable where it is going */
+        fs_node *dd = fs_lookup(argv[2]);
+        if (dd && dd->is_dir) {
+            if (!fs_may_create_in(dd)) { kprintf("cp: %s: permission denied\n", argv[2]); return 1; }
+        } else if (dd) {
+            if (!fs_may(dd, FS_PERM_WRITE)) { kprintf("cp: %s: permission denied\n", argv[2]); return 1; }
+        } else if (!may_create(argv[2], "cp")) return 1;
+    }
 
     fs_node *d = fs_lookup(argv[2]);
     fs_node *dst;
@@ -140,15 +208,20 @@ int cmd_mv(int argc, char **argv) {
     if (argc != 3) { kprintf("usage: mv SRC DST\n"); return 1; }
     fs_node *src = need(argv[1], "mv");
     if (!src) return 1;
+    /* A move unlinks from one directory and links into another, so both need
+     * to be writable. */
+    if (!fs_may_create_in(src->parent)) { kprintf("mv: %s: permission denied\n", argv[1]); return 1; }
 
     fs_node *d = fs_lookup(argv[2]);
     if (d && d->is_dir) {                      /* move into directory */
+        if (!fs_may_create_in(d)) { kprintf("mv: %s: permission denied\n", argv[2]); return 1; }
         if (fs_move(src, d, src->name) != 0) { kprintf("mv: failed\n"); return 1; }
         return 0;
     }
     char leaf[FS_NAME_MAX];
     fs_node *parent = fs_parent_of(argv[2], leaf, sizeof(leaf));
     if (!parent) { kprintf("mv: %s: bad destination\n", argv[2]); return 1; }
+    if (!fs_may_create_in(parent)) { kprintf("mv: %s: permission denied\n", argv[2]); return 1; }
     if (fs_move(src, parent, leaf) != 0) { kprintf("mv: failed\n"); return 1; }
     return 0;
 }
@@ -224,8 +297,14 @@ int cmd_touch(int argc, char **argv) {
     if (argc < 2) { kprintf("usage: touch FILE...\n"); return 1; }
     for (int i = 1; i < argc; i++) {
         fs_node *n = fs_lookup(argv[i]);
-        if (!n) { if (!fs_create(argv[i], 0)) kprintf("touch: %s: cannot create\n", argv[i]); }
-        else      n->mtime = pit_ticks();
+        if (!n) {
+            if (!may_create(argv[i], "touch")) continue;
+            if (!fs_create(argv[i], 0)) kprintf("touch: %s: cannot create\n", argv[i]);
+        } else if (fs_may(n, FS_PERM_WRITE)) {
+            n->mtime = pit_ticks();
+        } else {
+            kprintf("touch: %s: permission denied\n", argv[i]);
+        }
     }
     return 0;
 }
@@ -234,7 +313,13 @@ int cmd_touch(int argc, char **argv) {
 int cmd_write(int argc, char **argv) {
     if (argc < 2) { kprintf("usage: write FILE [TEXT...]\n"); return 1; }
     fs_node *n = fs_lookup(argv[1]);
-    if (!n) n = fs_create(argv[1], 0);
+    if (!n) {
+        if (!may_create(argv[1], "write")) return 1;
+        n = fs_create(argv[1], 0);
+    } else if (!fs_may(n, FS_PERM_WRITE)) {
+        kprintf("write: %s: permission denied\n", argv[1]);
+        return 1;
+    }
     if (!n || n->is_dir) { kprintf("write: %s: not a writable file\n", argv[1]); return 1; }
 
     char buf[512]; uint32_t len = 0;
@@ -249,9 +334,28 @@ int cmd_write(int argc, char **argv) {
 
 /* =========================== File Inspection ============================== */
 
+/* Print a VFS-only path (/proc/..., /dev/...). Those are generated on read and
+ * have no fs_node behind them, so the shell could not see them at all --
+ * `cat /proc/meminfo` failed even though a ring-3 program could open it. 1 if
+ * the path was handled here. */
+static int cat_vfs(const char *path) {
+    if (strncmp(path, "/proc", 5) != 0 && strncmp(path, "/dev/", 5) != 0) return 0;
+    file *f = vfs_open(path, O_RDONLY);
+    if (!f) { kprintf("cat: %s: not found\n", path); return 1; }
+    char buf[512];
+    for (;;) {
+        int64_t got = vfs_read(f, buf, sizeof buf);
+        if (got <= 0) break;
+        for (int64_t i = 0; i < got; i++) kputc(buf[i]);
+    }
+    vfs_close(f);
+    return 1;
+}
+
 int cmd_cat(int argc, char **argv) {
     if (argc < 2) { kprintf("usage: cat FILE...\n"); return 1; }
     for (int i = 1; i < argc; i++) {
+        if (cat_vfs(argv[i])) continue;
         fs_node *n = need_file(argv[i], "cat");
         if (n) put_n(n->data, n->size);
     }

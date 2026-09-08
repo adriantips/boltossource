@@ -180,46 +180,8 @@ int cmd_ext2(int argc, char **argv) {
 }
 
 /* whoami / users / logout: multi-user account management. */
-int cmd_whoami(int argc, char **argv) {
-    (void)argc; (void)argv;
-    const char *u = users_current();
-    kprintf("%s%s\n", u[0] ? u : "(not logged in)", users_is_root() ? "  [root]" : "");
-    return 0;
-}
-
-int cmd_users(int argc, char **argv) {
-    const char *sub = argc > 1 ? argv[1] : "list";
-    if (strcmp(sub, "list") == 0) {
-        kprintf("Accounts (%d):\n", users_count());
-        for (int i = 0; i < users_count(); i++) {
-            const user_t *u = users_get(i);
-            kprintf("  %-16s uid=%d%s\n", u->name, u->uid,
-                    strcmp(u->name, users_current()) == 0 ? "  (current)" : "");
-        }
-        return 0;
-    }
-    if (strcmp(sub, "add") == 0 && argc > 3) {
-        if (!users_is_root() && users_current_uid() != -1) { kprintf("users: must be root to add\n"); return 1; }
-        int uid = 1000 + users_count();
-        if (users_add(argv[2], argv[3], uid) != 0) { kprintf("users: add failed (exists?)\n"); return 1; }
-        kprintf("added '%s' (uid %d)\n", argv[2], uid);
-        return 0;
-    }
-    if (strcmp(sub, "passwd") == 0 && argc > 3) {
-        if (users_set_password(argv[2], argv[3]) != 0) { kprintf("users: no such user\n"); return 1; }
-        kprintf("password changed for '%s'\n", argv[2]);
-        return 0;
-    }
-    if (strcmp(sub, "su") == 0 && argc > 3) {
-        int uid = users_auth(argv[2], argv[3]);
-        if (uid < 0) { kprintf("su: authentication failed\n"); return 1; }
-        users_login(uid);
-        kprintf("now acting as '%s'\n", argv[2]);
-        return 0;
-    }
-    kprintf("usage: users list | add NAME PASS | passwd NAME PASS | su NAME PASS\n");
-    return 1;
-}
+/* whoami / users and the rest of the identity commands live in
+ * kernel/cmd_user.c, alongside sudo, passwd, chmod and chown. */
 
 int cmd_logout(int argc, char **argv) {
     (void)argc; (void)argv;

@@ -170,11 +170,11 @@ SRCS=(
     net/netif.c net/driver.c net/eth.c net/arp.c net/ip.c net/icmp.c net/udp.c
     net/tcp.c net/dns.c net/crypto.c net/tls.c net/p256.c net/p384.c net/rsa.c net/x509.c net/inflate.c net/http.c
     net/wifi.c net/firmware.c net/firewall.c net/dhcp.c drivers/e1000.c
-    kernel/cmd_fs.c kernel/cmd_sys.c kernel/cmd_proc.c kernel/cmd_net.c kernel/cmd_extra.c kernel/cmd_hw.c
+    kernel/cmd_fs.c kernel/cmd_sys.c kernel/cmd_proc.c kernel/cmd_net.c kernel/cmd_extra.c kernel/cmd_hw.c kernel/cmd_user.c
     kernel/html.c kernel/dom.c kernel/layout.c kernel/image.c kernel/ttf.c
     kernel/gui.c kernel/app_terminal.c kernel/app_taskmgr.c kernel/app_settings.c kernel/app_browser.c kernel/app_files.c
     kernel/app_oldbrowser.c oldbrowser/ob_nsurl.c oldbrowser/ob_llcache.c oldbrowser/ob_content.c oldbrowser/ob_window.c oldbrowser/ob_hotlist.c oldbrowser/ob_fbtk.c oldbrowser/ob_gui.c
-    kernel/app_ide.c kernel/app_calc.c kernel/app_clock.c kernel/app_notes.c kernel/app_tasks.c kernel/app_contacts.c kernel/app_sheets.c kernel/app_imgview.c kernel/app_music.c kernel/app_calendar.c kernel/app_piano.c kernel/app_paint.c kernel/app_mines.c kernel/app_snake.c kernel/app_2048.c kernel/app_stopwatch.c kernel/app_sysinfo.c kernel/app_life.c kernel/app_ttt.c kernel/app_colorpick.c kernel/app_memory.c kernel/app_matrix.c kernel/app_doom.c kernel/app_installer.c
+    kernel/app_ide.c kernel/app_calc.c kernel/app_clock.c kernel/app_notes.c kernel/app_tasks.c kernel/app_contacts.c kernel/app_sheets.c kernel/app_imgview.c kernel/app_music.c kernel/app_calendar.c kernel/app_piano.c kernel/app_paint.c kernel/app_mines.c kernel/app_snake.c kernel/app_2048.c kernel/app_stopwatch.c kernel/app_sysinfo.c kernel/app_life.c kernel/app_ttt.c kernel/app_colorpick.c kernel/app_memory.c kernel/app_matrix.c kernel/app_doom.c kernel/app_installer.c kernel/app_security.c
     kernel/settings.c kernel/clipboard.c kernel/stackguard.c kernel/users.c kernel/pkg.c kernel/install.c kernel/klog.c
     kernel/boltpy.c kernel/cmd_python.c kernel/boltcc.c kernel/js.c kernel/cmd_js.c
     fs/ramfs.c fs/fat32.c fs/ext2.c

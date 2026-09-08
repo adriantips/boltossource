@@ -33,6 +33,13 @@ int cmd_fat(int, char **);    int cmd_power(int, char **);  int cmd_cpus(int, ch
 int cmd_acpiinfo(int, char **);int cmd_play(int, char **);  int cmd_dhcp(int, char **);
 int cmd_clip(int, char **);   int cmd_crash(int, char **);
 int cmd_whoami(int, char **); int cmd_users(int, char **);  int cmd_logout(int, char **);
+
+/* ---- handlers: identity & permissions (kernel/cmd_user.c) --------------- */
+int cmd_id(int, char **);      int cmd_groups(int, char **);
+int cmd_useradd(int, char **); int cmd_userdel(int, char **);
+int cmd_passwd(int, char **);  int cmd_sudo(int, char **);
+int cmd_chmod(int, char **);   int cmd_chown(int, char **);
+int cmd_lock(int, char **);
 int cmd_pkg(int, char **);    int cmd_ext2(int, char **);
 
 /* ---- handlers: File & Directory ----------------------------------------- */

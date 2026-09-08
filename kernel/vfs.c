@@ -168,8 +168,23 @@ file *vfs_open(const char *path, int flags) {
 
     /* default backend: ramfs */
     fs_node *n = fs_lookup(path);
-    if (!n && (flags & O_CREAT)) n = fs_create(path, 0);
+    if (!n && (flags & O_CREAT)) {
+        /* Creating requires write permission on the parent directory. */
+        char leaf[FS_NAME_MAX];
+        fs_node *parent = fs_parent_of(path, leaf, sizeof leaf);
+        if (!fs_may_create_in(parent)) return 0;
+        n = fs_create(path, 0);
+    }
     if (!n || n->is_dir) return 0;
+
+    /* The same permission model the shell applies, applied here too: a ring-3
+     * program opening a file it may not read must be refused exactly as `cat`
+     * would refuse it, or the account table is decoration. */
+    int want = (flags & (O_WRONLY | O_RDWR | O_APPEND | O_TRUNC)) ? FS_PERM_WRITE
+                                                                  : FS_PERM_READ;
+    if (!fs_may(n, want)) return 0;
+    if ((flags & O_RDWR) && !fs_may(n, FS_PERM_READ)) return 0;
+
     if (flags & O_TRUNC) fs_write(n, "", 0);
     file *f = file_new(&ramfs_ops, n, flags);
     if (f && (flags & O_APPEND)) f->pos = n->size;

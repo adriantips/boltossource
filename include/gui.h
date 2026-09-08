@@ -89,7 +89,7 @@ struct window {
 };
 
 enum { ICON_NONE = 0, ICON_TERMINAL, ICON_TASKMGR, ICON_START, ICON_FILES, ICON_SETTINGS,
-       ICON_BROWSER, ICON_FOLDER, ICON_FILE, ICON_TRASH, ICON_CALC, ICON_CLOCK, ICON_NOTES, ICON_CALENDAR, ICON_PIANO, ICON_PAINT, ICON_MINES, ICON_SNAKE, ICON_2048, ICON_STOPWATCH, ICON_SYSINFO, ICON_LIFE, ICON_TTT, ICON_COLOR, ICON_MEMORY, ICON_MATRIX, ICON_CODE, ICON_DOOM, ICON_OLDBROWSER, ICON_SHEETS, ICON_IMAGE, ICON_MUSIC, ICON_TASKS, ICON_CONTACTS, ICON_INSTALL };
+       ICON_BROWSER, ICON_FOLDER, ICON_FILE, ICON_TRASH, ICON_CALC, ICON_CLOCK, ICON_NOTES, ICON_CALENDAR, ICON_PIANO, ICON_PAINT, ICON_MINES, ICON_SNAKE, ICON_2048, ICON_STOPWATCH, ICON_SYSINFO, ICON_LIFE, ICON_TTT, ICON_COLOR, ICON_MEMORY, ICON_MATRIX, ICON_CODE, ICON_DOOM, ICON_OLDBROWSER, ICON_SHEETS, ICON_IMAGE, ICON_MUSIC, ICON_TASKS, ICON_CONTACTS, ICON_INSTALL, ICON_SECURITY };
 
 window_t *gui_add_window(const char *title, int w, int h, uint32_t accent, int icon);
 void      gui_open(window_t *win);          /* show + focus + raise           */
@@ -104,6 +104,14 @@ int       gui_window_focused(window_t *win);
 void      gui_run(void);                    /* enter the desktop; never returns*/
 void      gui_pump(void);                   /* force one composite+blit (re-entrant)*/
 void      gui_logout(void);                 /* return to the sign-in screen */
+
+/* Lock the running session behind a password prompt. The desktop is left
+ * exactly as it was; only the current user's password gets back in. Armed by
+ * Ctrl+Alt+L, by the idle timer, and by the `lock` shell command. */
+void      gui_lock(void);
+int       gui_locked(void);
+void      gui_set_idle_lock(int minutes);   /* 0 disables the idle auto-lock */
+int       gui_idle_lock(void);
 
 /* Re-read the live settings: relayout the logical desktop / letterbox, retint
  * the theme and re-render the wallpaper. Called by the Settings app on change. */
@@ -125,6 +133,7 @@ void oldbrowser_app_init(void);
 void taskmgr_app_init(void);
 void settings_app_init(void);
 void installer_app_init(void);
+void security_app_init(void);
 void browser_app_init(void);
 void files_app_init(void);
 void ide_app_init(void);

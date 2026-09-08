@@ -9,6 +9,18 @@
 #define FS_TRASH_MAX  120
 #define FS_MAX_DEPTH  32
 
+/* Permission bits, POSIX layout so the numbers people already know work:
+ *   0400 owner read   0200 owner write   0100 owner execute
+ *   0040 group read   0020 group write   0010 group execute
+ *   0004 other read   0002 other write   0001 other execute
+ * Defaults are 0644 for files and 0755 for directories. */
+#define FS_MODE_MASK   0777
+#define FS_MODE_FILE   0644
+#define FS_MODE_DIR    0755
+#define FS_PERM_READ   4
+#define FS_PERM_WRITE  2
+#define FS_PERM_EXEC   1
+
 typedef struct fs_node {
     char            name[FS_NAME_MAX];
     int             is_dir;
@@ -19,8 +31,25 @@ typedef struct fs_node {
     uint32_t        size;
     uint32_t        cap;
     uint64_t        mtime;          /* pit ticks at last write */
+    uint16_t        mode;           /* permission bits (see FS_MODE_*)        */
+    uint16_t        uid;            /* owner                                   */
+    uint16_t        gid;            /* owning group                            */
     char            tpath[FS_TRASH_MAX]; /* original abs path while trashed */
 } fs_node;
+
+/* ---- ownership and permissions ------------------------------------------ *
+ *  Enforcement is centralised in fs_may(): the shell, the VFS and the GUI all
+ *  ask the same question, so a path cannot be reached through one of them that
+ *  another refuses. The current identity comes from users_current_uid(), which
+ *  sudo temporarily reports as 0.
+ * ------------------------------------------------------------------------- */
+int      fs_may(fs_node *n, int want);          /* want = FS_PERM_* bits; 1 = allowed */
+int      fs_may_path(const char *path, int want);
+int      fs_may_create_in(fs_node *dir);        /* write permission on a directory   */
+void     fs_chown_node(fs_node *n, int uid, int gid, int mode);
+int      fs_chmod(const char *path, int mode);
+int      fs_chown(const char *path, int uid, int gid);
+void     fs_mode_string(fs_node *n, char *out);  /* "-rw-r--r--"; out >= 11 */
 
 void     fs_init(void);
 fs_node *fs_root(void);
