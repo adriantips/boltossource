@@ -11,6 +11,7 @@
 #include "string.h"
 #include "kprintf.h"
 #include "pit.h"
+#include "shell.h"
 
 static user_t users[USER_MAX];
 static int    nuser;
@@ -287,6 +288,11 @@ const user_t *users_find_uid(int uid) {
 void users_login(int uid) {
     for (int i = 0; i < nuser; i++) {
         if (users[i].uid != uid) continue;
+        if (cur_uid != uid) {
+            sh_history_save();
+            sh_history_reset();
+            sh_script_reset();
+        }
         cur_uid = uid;
         cur_gid = users[i].gid;
         strncpy(cur_name, users[i].name, sizeof cur_name - 1);
@@ -298,6 +304,9 @@ void users_login(int uid) {
 }
 
 void users_logout(void) {
+    sh_history_save();
+    sh_history_reset();
+    sh_script_reset();
     cur_uid = -1; cur_gid = GID_USER;
     cur_name[0] = 0; cur_home[0] = 0;
     sudo_depth = 0; sudo_auth_tick = 0;

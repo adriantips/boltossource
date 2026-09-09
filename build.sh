@@ -171,7 +171,7 @@ echo "[2d/6] BoltRT stub: BoltCC + BoltPython baked into a PE32+ EXE -> embed bl
 
 echo "[3/6] kernel C sources"
 SRCS=(
-    kernel/cmd_run.c
+    kernel/cmd_run.c kernel/manpages.c kernel/shline.c kernel/shscript.c
     kernel/main.c kernel/serial.c kernel/console.c kernel/shell.c kernel/kprintf.c kernel/font8x8.c
     kernel/gdt.c kernel/idt.c kernel/interrupts.c kernel/pic.c kernel/pit.c
     kernel/acpi.c kernel/apic.c kernel/hpet.c kernel/smp.c

@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "commands.h"
+#include "shell.h"
 #include "hw.h"
 #include "fs.h"
 #include "fat32.h"
@@ -229,6 +230,9 @@ int cmd_fsck(int argc, char **argv) {
  *  makes the next boot run a full fsck.
  * -------------------------------------------------------------------------- */
 static void shutdown_prepare(const char *what) {
+    /* The shell keeps its history in memory and writes it here, so a day's
+     * commands survive the reboot without paying a disk commit per command. */
+    sh_history_save();
     kprintf("%s: flushing filesystems...\n", what);
     if (fs_persist_active() && !fs_persist_readonly()) {
         if (fs_shutdown() == 0)

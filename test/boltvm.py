@@ -16,7 +16,7 @@ non-blocking reads.
 Keyboard and mouse input go through QMP `input-send-event`, so a test can drive
 the GUI exactly the way shot.py does.
 """
-import json, os, shutil, socket, subprocess, time
+import json, os, re, shutil, socket, subprocess, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -277,11 +277,21 @@ class BoltVM:
         after a command, applied to the first one.
         """
         end = time.time() + timeout
+        reprompted = False
         while time.time() < end:
-            if self.serial().rstrip().endswith(">"):
+            # The boot-time ring-3 demo can print between the prompt's `>`
+            # and its space. The delimiter itself proves the shell is ready.
+            if re.search(r"(?:^|\n)bolt:[^\r\n>]*>", self.serial()):
                 return True
+            # It may also interrupt the middle of "bolt:". After that demo
+            # exits, submit one empty line to get an uninterrupted prompt.
+            # Do not type the actual test command until that prompt arrives.
+            if (not reprompted and "BoltShell ready." in self.serial() and
+                    "[exit] pid=1 code=0" in self.serial()):
+                self.key("ret")
+                reprompted = True
             time.sleep(0.25)
-        return False
+        raise AssertionError("shell prompt did not arrive:\n" + self.serial()[-3000:])
 
     # ---- input -----------------------------------------------------------
     def _keyev(self, qcode, down):

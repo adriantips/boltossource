@@ -48,13 +48,37 @@ def main():
         assert ppm_is_interesting(shot), "the desktop frame is blank after sign-in"
         print("  ok: signed in and the desktop composited a frame")
 
-        # Desktop launcher icons are laid out in a grid from the top-left; the
-        # first cell is the Terminal. Double-click opens it.
-        vm.click(40, 50, double=True)
+        # Open Terminal through Start search. This avoids depending on saved
+        # desktop icon positions or double-click timing under software rendering.
+        vm.key("meta_l")
+        vm.type("Terminal")
+        vm.key("ret")
         time.sleep(2.0)
         shot = vm.screenshot("terminal.ppm")
         assert ppm_is_interesting(shot), "no frame after opening a window"
         print("  ok: an app window opened and drew")
+
+        # The GUI paints its prompt straight into its grid, not to COM1.
+        # Wait for command output rather than the serial-shell prompt.
+        vm.clear()
+        vm.type("TERM=world ; echo gui-$TERM\n")
+        vm.expect("gui-world")
+        vm.clear()
+        vm.type("echo gui-XZ")
+        vm.key("left")
+        vm.type("Y\n")
+        vm.expect("gui-XYZ")
+        vm.clear()
+        vm.key("up")
+        vm.key("ret")
+        vm.expect("gui-XYZ")
+        vm.clear()
+        vm.type("upti")
+        vm.key("tab")
+        vm.key("ret")
+        vm.expect("ticks")
+        vm.screenshot("terminal-shell.ppm")
+        print("  ok: GUI Terminal runs scripts and shares caret editing, history and completion")
 
         vm.expect_absent("KERNEL PANIC")
 

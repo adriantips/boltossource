@@ -115,9 +115,12 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 - [x] 69. Curated catalogue: headers for `cc`, and a starter project `build` runs
 - [x] 70. Documented syscall ABI v1, shared SDK headers, external ELF build
         helper and `run` with exit status (SDK.md)
-- [ ] 71. Man pages for every shell command
-- [ ] 72. Shell scripting: variables, conditionals, loops, functions
-- [ ] 73. Shell history and tab completion
+- [x] 71. Man pages for every registered command (`man`, `help COMMAND`,
+        `man -k`, coverage checked by `man -c`)
+- [x] 72. Shell scripting: variables, conditionals, loops, functions;
+        bounded execution and nested redirection (SHELL.md)
+- [x] 73. Per-account history, tab completion and caret editing in the text
+        shell and GUI Terminal; clean-exit persistence
 
 ## Phase 5 — Desktop UX
 
