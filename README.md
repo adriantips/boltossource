@@ -239,15 +239,30 @@ one command runs at a time out of slot 0. Polled completions keep the code
 synchronous.
 
 The native filesystem (**BoltFS**, `fs/ramfs.c`) is reached through a **VFS layer**
-(`kernel/vfs.c`). It is no longer RAM-only: `fs_persist_init()` attaches the first
-non-boot disk (preferring NVMe, then SSD, then HDD), **loads a saved image on
-boot** (or formats the seed tree if none), and autosaves the whole tree on every
-mutation, so files survive reboots. `diskinfo` lists detected disks + media type;
+(`kernel/vfs.c`). `fs_persist_init()` prefers the installed boot disk's BoltFS
+partition, then existing BoltFS on data disks (NVMe, SSD, HDD), and **loads a
+saved image on boot**. Existing data takes priority over a faster empty disk.
+For the small scratch disks shipped by `build.sh`, first boot may initialise a
+wholly zero-filled disk of at most 64 MiB; every sector is read before that
+decision. Larger or unknown disks require the installer. Foreign partitions,
+GPT/hybrid tables, overlapping partitions and unreadable disks are not adopted.
+Autosave commits the whole tree on every mutation. `diskinfo` lists disks and
+whether writes are persistent or confined to RAM;
 `sync` forces a commit. QEMU exposes data disks (`run.sh`) across both transports.
+
+A failed image load **never triggers formatting**. The loader builds a detached
+tree and replaces the live tree only after every record and allocation succeeds.
+If no copy can load, the original disk is protected read-only and the seed tree
+remains available in RAM. `fsck` diagnoses it; `sync` and `fsck -r` cannot replace
+the unreadable image with seed files. For protected or volatile storage, File
+Explorer warns that changes will not be saved to disk, and System Info identifies
+protected storage.
+See [STORAGE_UPGRADE.md](STORAGE_UPGRADE.md)
+for the recovery behavior, tests and remaining storage limitations.
 
 ### Crash safety: atomic commits, flush barriers, fsck
 
-Saves are **atomic**, so a power cut can never leave a half-written filesystem.
+BoltFS uses **atomic commits** with device cache-flush barriers.
 The partition holds **two blob slots and a mirrored superblock**, and a commit is
 a shadow-page swap: serialise the tree into the slot that is *not* live, write
 it, **flush the device's write cache**, then swap the superblock generation (and
@@ -271,13 +286,25 @@ blob, names terminate) — and `fsck -r` rewrites the image from the live tree.
 
 `poweroff` and `reboot` commit the filesystem and mark it clean *before* touching
 ACPI, so an ordinary shutdown never costs the next boot a check. Older v1 images
-are migrated on first mount rather than reformatted.
+are migrated into the opposite half of the partition before their old records
+are overwritten. Images too large for that migration remain read-only.
 
-**FAT32** writes are power-loss safe too: `fat32_write` used to free the old
+If a write or flush fails during a BoltFS commit, further commits are disabled
+until reboot. A failed flush may still have persisted the primary superblock;
+retrying against the previous slot number could overwrite the image it now
+names. `diskinfo` reports this protected state and `sync` refuses to claim
+success. Allocation failures before disk I/O leave the previous image intact
+and can be retried after memory is freed.
+
+**FAT32** overwrites use safer ordering: `fat32_write` used to free the old
 cluster chain and delete the directory entry *first*, so a crash mid-write
 destroyed the file outright. It now writes the new data to freshly allocated
 clusters while the old copy is still intact, switches the directory entry over in
-a single sector write, and only then releases the old chain.
+a single sector write, and only then releases the old chain. FAT32 still needs
+complete I/O-error propagation and protection against torn directory sectors;
+it does not have BoltFS's mirrored commit protocol. Startup never treats a
+failed FAT32 mount as permission to format an unknown disk, and recovery mode
+blocks FAT32 formatting, writes and directory creation.
 
 ### Standard filesystems (EXT2 / FAT32)
 
@@ -1335,6 +1362,7 @@ The interactive OS shell supports a wide range of commands:
 ```text
 +-- README.md
 +-- BROWSER_UPGRADE.md     Browser engine upgrade plan + status log
++-- STORAGE_UPGRADE.md     Mount safety, failure handling and storage tests
 +-- build.sh  run.sh  run-uefi.sh    Build and QEMU launchers (legacy + UEFI)
 +-- build-and-run-vbox.bat  rebuild-all.ps1  rebuild-vdi.ps1  read-serial.ps1
 +-- shot.py  testnet.py  shot_uefi.py    GUI screendump + network test harnesses

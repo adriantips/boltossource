@@ -82,7 +82,9 @@ static void si_draw(window_t *win, int cx, int cy, int cw, int ch) {
 
     const char *media = fs_persist_media();
     buf[0] = 0;
-    if (media && media[0]) {
+    if (fs_persist_readonly()) {
+        kstrlcat(buf, "Read-only (RAM)", sizeof(buf));
+    } else if (media && media[0]) {
         kstrlcat(buf, media, sizeof(buf));
         const char *model = fs_persist_model();
         if (model && model[0]) { kstrlcat(buf, "  ", sizeof(buf)); kstrlcat(buf, model, sizeof(buf)); }

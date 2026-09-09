@@ -275,14 +275,16 @@ void kmain(struct bootinfo *bi) {
     fs_persist_init();/* back the tree with a real disk + load saved image */
     vfs_init();      kprintf("[ok] VFS (ramfs + /dev + /proc)\n");
 
-    /* FAT32: mount the SATA volume; format it on first boot. Kept separate from
-     * the NVMe-backed BoltFS persistence so removable FAT media interoperates
-     * with Windows/Linux. */
+    /* FAT32: a mount failure says nothing about whether a disk is empty.
+     * Only initialise a verified-empty scratch disk, and never in recovery or
+     * on the disk BoltFS has already attached. */
     for (int i = 0; i < blk_count(); i++) {
         blkdev_t *d = blk_get(i);
-        if (d->is_boot || d->name[0] != 's' || d->name[1] != 'd') continue;
+        if (d->is_boot || d == fs_persist_disk() ||
+            d->name[0] != 's' || d->name[1] != 'd') continue;
         if (fat32_mount(d) != 0) {
-            if (fat32_format(d, "BOLTFAT") == 0) {
+            if (!boot_is_recovery() && blk_is_blank_scratch(d) &&
+                fat32_format(d, "BOLTFAT") == 0) {
                 const char *welcome =
                     "BoltOS FAT32 volume.\r\n"
                     "Read/written by the in-kernel FAT32 driver, and by any PC.\r\n";
@@ -290,7 +292,7 @@ void kmain(struct bootinfo *bi) {
                 fat32_mkdir("/DOCS");
             }
         }
-        break;
+        if (fat32_mounted()) break;
     }
     /* ext2: mount the first non-boot disk that carries an ext2 superblock, so a
      * Linux-formatted volume (e.g. a USB stick) can be read. Skipped for the
