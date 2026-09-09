@@ -161,8 +161,9 @@ int cmd_diskinfo(int argc, char **argv) {
 
     char sz[12]; sh_human(fs_total_bytes(), sz);
     if (fs_persist_active())
-        kprintf("mounted: BoltFS on %s '%s'  %d nodes  %s (persistent)\n",
-                fs_persist_media(), fs_persist_model(), fs_count_nodes(), sz);
+        kprintf("mounted: BoltFS on %s '%s'  %d nodes  %s (%s)\n",
+                fs_persist_media(), fs_persist_model(), fs_count_nodes(), sz,
+                fs_persist_readonly() ? "disk READ-ONLY; changes are RAM-only" : "persistent");
     else
         kprintf("mounted: ramfs (in-RAM, volatile)  %d nodes  %s\n",
                 fs_count_nodes(), sz);
@@ -173,7 +174,7 @@ int cmd_diskinfo(int argc, char **argv) {
 int cmd_sync(int argc, char **argv) {
     (void)argc; (void)argv;
     if (!fs_persist_active()) { kprintf("sync: no persistent disk; FS is RAM-only\n"); return 1; }
-    if (fs_persist_readonly()) { kprintf("sync: filesystem is mounted read-only (recovery)\n"); return 1; }
+    if (fs_persist_readonly()) { kprintf("sync: disk protected read-only (recovery or storage failure)\n"); return 1; }
     int rc = fs_sync();
     kprintf(rc == 0 ? "sync: committed FS to %s '%s' (generation %lu)\n" : "sync: FAILED\n",
             fs_persist_media(), fs_persist_model(), (unsigned long)fs_generation());
@@ -191,7 +192,7 @@ int cmd_fsck(int argc, char **argv) {
         return 0;
     }
     if (repair && fs_persist_readonly()) {
-        kprintf("fsck: cannot repair a read-only mount (booted in recovery)\n");
+        kprintf("fsck: cannot repair a protected read-only disk; original contents preserved\n");
         return 1;
     }
 
@@ -215,7 +216,8 @@ int cmd_fsck(int argc, char **argv) {
         kprintf("  ... and %d more\n", r.nissue - FS_CHECK_MAX_ISSUES);
 
     if (r.repaired) kprintf("  repaired: rewrote both superblocks and marked the image clean.\n");
-    else if (r.nissue && !repair) kprintf("  run 'fsck -r' to rewrite the image from the live tree.\n");
+    else if (r.nissue && !repair && !fs_persist_readonly())
+        kprintf("  run 'fsck -r' to rewrite the image from the live tree.\n");
 
     return rc < 0 ? 2 : (rc > 0 ? 1 : 0);
 }

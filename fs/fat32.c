@@ -4,6 +4,7 @@
 #include "blk.h"
 #include "string.h"
 #include "kprintf.h"
+#include "boot.h"
 
 /* ===========================================================================
  *  FAT32 implementation. Synchronous, single-volume, one open operation at a
@@ -376,7 +377,7 @@ int fat32_flush(void) {
 }
 
 int fat32_write(const char *path, const void *data, uint32_t len) {
-    if (!fs.mounted) return -1;
+    if (!fs.mounted || boot_is_recovery()) return -1;
     uint32_t parent; char leaf[256];
     uint32_t old_clus, old_size; uint8_t old_attr;
     int exists = (resolve(path, &old_clus, &old_size, &old_attr, &parent, leaf) == 0);
@@ -436,7 +437,7 @@ int fat32_write(const char *path, const void *data, uint32_t len) {
 }
 
 int fat32_mkdir(const char *path) {
-    if (!fs.mounted) return -1;
+    if (!fs.mounted || boot_is_recovery()) return -1;
     uint32_t parent; char leaf[256];
     uint32_t cc, cs; uint8_t ca;
     if (resolve(path, &cc, &cs, &ca, &parent, leaf) == 0) return -1;  /* exists */
@@ -527,7 +528,8 @@ int fat32_format(blkdev_t *dev, const char *label) {
 }
 
 int fat32_format_at(blkdev_t *dev, uint64_t base, uint64_t span, const char *label) {
-    if (!dev || base + span > dev->sectors) return -1;
+    if (!dev || boot_is_recovery() || base > dev->sectors ||
+        span > dev->sectors - base) return -1;
     uint32_t total = (uint32_t)span;
     /* FAT32 needs >= 65525 clusters to be a legal FAT32 (below that a strict
      * driver -- UEFI firmware included -- reads it as FAT16 and rejects it). */

@@ -545,6 +545,11 @@ static void draw_status(files_t *st, int cx, int cy, int cw, int ch) {
     g_fill(cx, y, cw, STATUS_H, COL_PANEL_2);
     g_hline(cx, y, cw, 0x33333F);
 
+    if (!fs_persist_active() || fs_persist_readonly()) {
+        g_text(cx + 12, y + 8, "Changes will not be saved to disk", 0xEEC85E, 1);
+        return;
+    }
+
     int items = 0;
     for (fs_node *c = st->dir ? st->dir->child : 0; c; c = c->next) items++;
 

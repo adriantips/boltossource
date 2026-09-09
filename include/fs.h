@@ -1,8 +1,8 @@
 #pragma once
 #include <stdint.h>
 
-/* In-RAM filesystem: a tree of directories and byte-buffer files living in the
- * kernel heap. No backing store - state is lost on reboot (see `snapshot`). */
+/* Filesystem tree in the kernel heap, backed by the BoltFS persistence layer
+ * below when eligible storage is attached. Otherwise changes remain in RAM. */
 
 #define FS_NAME_MAX   32
 #define FS_PATH_MAX   256
@@ -73,10 +73,11 @@ int      fs_count_nodes(void);
 
 /* --------------------------------------------------------------------------
  *  Persistence: back the tree with a real disk (ATA / AHCI / NVMe).
- *  fs_persist_init attaches the data disk, loads a saved image if one is
- *  present (else formats the current seeded tree onto it), and enables autosave
- *  so every mutation is committed. Without a data disk the FS stays RAM-only
- *  and these are no-ops.
+ *  fs_persist_init selects existing BoltFS storage, loads its saved image,
+ *  and enables autosave. Only a completely zero-filled scratch disk of at most
+ *  64 MiB may be initialised automatically. Failed loads never trigger format;
+ *  the disk is protected read-only and the seed tree remains live in RAM.
+ *  Autosave commits each mutation. Without a data disk the FS stays RAM-only.
  *
  *  Commits are atomic: the partition holds two blob slots plus a mirrored
  *  superblock, and a commit writes the inactive slot, flushes the device cache,
@@ -133,4 +134,5 @@ int      fs_check(int repair, fs_check_report *rep);
  * leaving this system's own mount alone. `base`/`cap` are the target partition
  * in sectors. Used by the installer to seed the machine being installed to. */
 struct blkdev;
+struct blkdev *fs_persist_disk(void);        /* actual attachment, including read-only */
 int      fs_export_image(struct blkdev *dev, uint64_t base, uint64_t cap);

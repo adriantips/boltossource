@@ -262,7 +262,7 @@ int install_run(install_req *r) {
     /* If we are about to erase the disk this system persists to, let go of it
      * first. The in-RAM tree is untouched -- and it is what gets exported to the
      * target below, so nothing is lost. */
-    if (d == blk_fs_disk()) {
+    if (d == fs_persist_disk()) {
         kprintf("[install] %s currently backs this system's filesystem;\n"
                 "[install] detaching it (the live tree stays in RAM and is what\n"
                 "[install] gets copied to the target)\n", d->name);

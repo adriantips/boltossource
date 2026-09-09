@@ -299,12 +299,14 @@ fs_node *fs_lookup(const char *path) {
  * the final name into leaf_out. */
 fs_node *fs_parent_of(const char *path, char *leaf_out, uint32_t leaf_cap) {
     char buf[FS_PATH_MAX];
+    if (!path || !leaf_cap || strlen(path) >= sizeof buf) return 0;
     strncpy(buf, path, sizeof(buf));
     /* strip a single trailing slash */
     uint32_t L = (uint32_t)strlen(buf);
     if (L > 1 && buf[L - 1] == '/') buf[L - 1] = 0;
 
     char *slash = strrchr(buf, '/');
+    if (strlen(slash ? slash + 1 : buf) >= leaf_cap) return 0;
     if (!slash) {                               /* bare name -> cwd */
         strncpy(leaf_out, buf, leaf_cap);
         return cwd_;
@@ -315,11 +317,32 @@ fs_node *fs_parent_of(const char *path, char *leaf_out, uint32_t leaf_cap) {
     return fs_lookup(buf);
 }
 
+static int subtree_fits(fs_node *n, unsigned depth, unsigned pathlen) {
+    if (depth > FS_MAX_DEPTH || pathlen >= FS_PATH_MAX) return 0;
+    if (n)
+        for (fs_node *c = n->child; c; c = c->next)
+            if (!subtree_fits(c, depth + 1, pathlen + 1 + (unsigned)strlen(c->name))) return 0;
+    return 1;
+}
+
+/* Mutations must respect the limits the disk parser enforces. Otherwise a
+ * perfectly successful mkdir/move could create an image we cannot load back. */
+static int location_fits(fs_node *tree, fs_node *parent, const char *name) {
+    if (!name || !name[0] || strlen(name) >= FS_NAME_MAX || strchr(name, '/') ||
+        !strcmp(name, ".") || !strcmp(name, "..")) return 0;
+    unsigned depth = 1, pathlen = 1 + (unsigned)strlen(name);
+    for (fs_node *p = parent; p && p->parent; p = p->parent) {
+        depth++;
+        pathlen += 1 + (unsigned)strlen(p->name);
+    }
+    return subtree_fits(tree, depth, pathlen);
+}
+
 fs_node *fs_create(const char *path, int is_dir) {
     char leaf[FS_NAME_MAX];
     fs_node *parent = fs_parent_of(path, leaf, sizeof(leaf));
     if (!parent || !parent->is_dir) return 0;
-    if (leaf[0] == 0) return 0;
+    if (!location_fits(0, parent, leaf)) return 0;
     if (fs_child(parent, leaf)) return 0;       /* already exists */
     fs_node *n = node_new(leaf, is_dir, parent);
     if (n) fs_autosave();
@@ -405,6 +428,7 @@ static int is_ancestor(fs_node *anc, fs_node *n) {
 int fs_move(fs_node *n, fs_node *newparent, const char *newname) {
     if (!n || n == root_ || !newparent || !newparent->is_dir) return -1;
     if (is_ancestor(n, newparent)) return -1;   /* no moving into own subtree */
+    if (!location_fits(n, newparent, newname)) return -1;
     if (fs_child(newparent, newname)) return -1;
 
     fs_node *op = n->parent;                     /* unlink from old parent */
@@ -564,6 +588,7 @@ static uint64_t g_gen;                 /* live generation */
 static uint64_t g_mounts;
 static int      g_readonly;            /* recovery mode: never write */
 static int      g_unclean;             /* mounted after an unclean shutdown */
+static const char bfs_oom[] = "out of memory while loading filesystem";
 
 /* FNV-1a/32. Stronger than the old byte sum, which could not tell a torn write
  * (a run of stale sectors mixed into fresh ones) from the real thing. */
@@ -614,7 +639,7 @@ static uint8_t *serialise(uint32_t *cnt_out, uint64_t *blob_out, uint64_t *secto
         return 0;
     }
     uint8_t *buf = (uint8_t *)kmalloc(sectors ? sectors * BLK_SECTOR : BLK_SECTOR);
-    if (!buf) return 0;
+    if (!buf) { kprintf("[--] fs: out of memory; commit not written\n"); return 0; }
     memset(buf, 0, (sectors ? sectors : 1) * BLK_SECTOR);
 
     uint8_t *p = buf;
@@ -657,7 +682,10 @@ static int sb_read(uint64_t lba, struct bfs_super *out) {
     if (memcmp(sb->magic, BFS_MAGIC2, 8) != 0) return -1;
     if (sb->version != 2 && sb->version != BFS_VERSION) return -1;
     if (fnv32(sec, sizeof *sb - 2 * sizeof(uint32_t)) != sb->hdr_sum) return -1;
-    if (sb->blob_bytes == 0 || sb->node_count == 0) return -1;
+    uint32_t recsz = sb->version == 2 ? sizeof(struct bfs_rec2) : sizeof(struct bfs_rec);
+    if (sb->slot > 1 || sb->clean > 1 || sb->slot_sectors != g_slot_sectors ||
+        sb->blob_bytes < recsz || sb->blob_bytes > g_slot_sectors * BLK_SECTOR ||
+        !sb->node_count || sb->node_count > sb->blob_bytes / recsz) return -1;
     *out = *sb;
     return 0;
 }
@@ -676,26 +704,36 @@ static int fs_commit(int clean) {
     uint32_t next = g_slot ^ 1u;
     int rc = blk_write(g_disk, slot_lba(next), (uint32_t)(sectors ? sectors : 1), buf);
     kfree(buf);
-    if (rc != 0) return -1;
+    if (rc != 0) goto io_fail;
 
     /* Barrier. Without it a caching disk may still be holding the blob when the
      * superblock naming it lands, and a power cut in between would leave a
      * superblock pointing at garbage -- the exact failure this design exists to
      * prevent. */
-    if (blk_flush(g_disk) != 0) return -1;
+    if (blk_flush(g_disk) != 0) goto io_fail;
 
     struct bfs_super sb;
     sb_fill(&sb, next, g_gen + 1, cnt, blob, sum, clean);
-    if (sb_write(g_base + BFS_SB_A, &sb) != 0) return -1;
-    if (blk_flush(g_disk) != 0) return -1;
+    if (sb_write(g_base + BFS_SB_A, &sb) != 0) goto io_fail;
+    if (blk_flush(g_disk) != 0) goto io_fail;
     /* B is written only after A is durable, so the two can never be torn in a
      * way that loses both. */
-    if (sb_write(g_base + BFS_SB_B, &sb) != 0) return -1;
-    blk_flush(g_disk);
+    if (sb_write(g_base + BFS_SB_B, &sb) != 0) goto io_fail;
+    if (blk_flush(g_disk) != 0) goto io_fail;
 
     g_slot = next;
     g_gen++;
     return 0;
+
+io_fail:
+    /* The primary might now name the new slot even though its flush failed.
+     * Retrying with stale g_slot would overwrite that live image. Fence all
+     * later commits until a reboot resolves which generation is durable. */
+    g_readonly = 1;
+    g_autosave = 0;
+    kprintf("[--] fs: write/flush failed; disk protected READ-ONLY until reboot.\n"
+            "     Recent changes are only in RAM; save a copy before rebooting.\n");
+    return -1;
 }
 
 int fs_sync(void)     { return fs_commit(0); }
@@ -703,29 +741,22 @@ int fs_shutdown(void) { return fs_commit(1); }
 
 static void fs_autosave(void) { if (g_autosave) fs_commit(0); }
 
-/* free every child of root (used before loading a saved image over the seed) */
-static void fs_clear(void) {
-    fs_node *c = root_->child;
-    while (c) { fs_node *nx = c->next; node_free_tree(c); c = nx; }
-    root_->child = 0;
-    cwd_ = root_;
-}
-
-/* Rebuild the tree from a serialised blob. Every field is bounds-checked before
- * it is trusted: this is the one place a corrupt disk gets to hand the kernel
- * arbitrary numbers. Returns 0 on success. */
-static int rebuild(const uint8_t *buf, uint64_t blob, uint32_t cnt, uint32_t version) {
+/* Build a detached tree. The mount and fsck share this parser, so fsck cannot
+ * approve an image the loader would reject. No live nodes change on corruption
+ * or allocation failure. fsck skips file payload allocations (copy_data = 0). */
+static fs_node *decode_tree(const uint8_t *buf, uint64_t blob, uint32_t cnt,
+                           uint32_t version, int copy_data, const char **error) {
+    uint32_t recsz = version >= 3 ? sizeof(struct bfs_rec) : sizeof(struct bfs_rec2);
+    *error = "invalid record count";
+    if (!cnt || cnt > blob / recsz) return 0;
     fs_node **map = (fs_node **)kmalloc(cnt * sizeof(fs_node *));
-    if (!map) return -1;
-
-    fs_clear();
-
-    uint32_t recsz = (version >= 3) ? (uint32_t)sizeof(struct bfs_rec)
-                                    : (uint32_t)sizeof(struct bfs_rec2);
+    *error = bfs_oom;
+    if (!map) return 0;
+    fs_node *tree = 0;
     uint64_t off = 0;
-    int ok = 1;
-    for (uint32_t i = 0; i < cnt && ok; i++) {
-        if (off + recsz > blob) { ok = 0; break; }
+    for (uint32_t i = 0; i < cnt; i++) {
+        *error = "record list runs past the end of the blob";
+        if (recsz > blob - off) goto fail;
         struct bfs_rec r;
         memset(&r, 0, sizeof r);
         if (version >= 3) {
@@ -741,40 +772,62 @@ static int rebuild(const uint8_t *buf, uint64_t blob, uint32_t cnt, uint32_t ver
             memcpy(r.name, o.name, FS_NAME_MAX);
         }
         off += recsz;
-        r.name[FS_NAME_MAX - 1] = 0;                /* never trust the disk    */
-        uint32_t dsize = r.is_dir ? 0 : r.size;
-        if (off + dsize > blob) { ok = 0; break; }
+        *error = "invalid node type or directory size";
+        if (r.is_dir > 1 || (r.is_dir && r.size)) goto fail;
+        *error = "file data runs past the end of the blob";
+        if (r.size > blob - off) goto fail;
+        *error = "invalid or unterminated node name";
+        if (!memchr(r.name, 0, FS_NAME_MAX) || !r.name[0]) goto fail;
 
-        fs_node *n;
-        if (i == 0) {                               /* record 0 is the root */
-            n = root_;
-            strncpy(n->name, "/", FS_NAME_MAX);
-            n->is_dir = 1;
-            n->mtime  = r.mtime;
-            n->mode   = r.mode ? r.mode : FS_MODE_DIR;
-            n->uid    = r.uid; n->gid = r.gid;
+        fs_node *parent = 0;
+        if (!i) {
+            *error = "invalid root record";
+            if (r.parent != BFS_NOPAR || !r.is_dir || strcmp(r.name, "/")) goto fail;
         } else {
-            if (r.parent >= i) { ok = 0; break; }   /* parents precede children */
-            if (!map[r.parent] || !map[r.parent]->is_dir) { ok = 0; break; }
-            n = node_new(r.name, r.is_dir ? 1 : 0, map[r.parent]);
-            if (!n) { ok = 0; break; }
-            n->mtime = r.mtime;
-            n->mode  = r.mode;                      /* 0 for a v2 image */
-            n->uid   = r.uid; n->gid = r.gid;
-            if (!r.is_dir && dsize) {
-                n->data = (uint8_t *)kmalloc(dsize);
-                if (!n->data) { ok = 0; break; }
-                memcpy(n->data, buf + off, dsize);
-                n->size = dsize;
-                n->cap  = dsize;
-            }
+            *error = "parent is missing, not a directory, or follows its child";
+            if (r.parent >= i || !map[r.parent]->is_dir) goto fail;
+            parent = map[r.parent];
+            *error = "invalid or duplicate child name";
+            if (strchr(r.name, '/') || !strcmp(r.name, ".") || !strcmp(r.name, "..") ||
+                fs_child(parent, r.name)) goto fail;
+            *error = "tree depth or path length exceeds filesystem limits";
+            if (!location_fits(0, parent, r.name)) goto fail;
+        }
+        *error = bfs_oom;
+        fs_node *n = node_new(r.name, (int)r.is_dir, parent);
+        if (!n) goto fail;
+        if (!i) tree = n;
+        n->mtime = r.mtime;
+        n->mode = !i && !r.mode ? FS_MODE_DIR : r.mode;
+        n->uid = r.uid; n->gid = r.gid;
+        n->size = r.size;
+        if (copy_data && r.size) {
+            n->data = (uint8_t *)kmalloc(r.size);
+            if (!n->data) goto fail;
+            memcpy(n->data, buf + off, r.size);
+            n->cap = r.size;
         }
         map[i] = n;
-        off += dsize;
+        off += r.size;
     }
-
+    *error = "trailing bytes after the last record";
+    if (off != blob) goto fail;
     kfree(map);
-    if (!ok) { fs_clear(); return -1; }
+    *error = 0;
+    return tree;
+fail:
+    if (tree) node_free_tree(tree);
+    kfree(map);
+    return 0;
+}
+
+static int rebuild(const uint8_t *buf, uint64_t blob, uint32_t cnt, uint32_t version) {
+    const char *error;
+    fs_node *tree = decode_tree(buf, blob, cnt, version, 1, &error);
+    if (!tree) { kprintf("[--] fs: %s\n", error); return error == bfs_oom ? -2 : -1; }
+    fs_node *old = root_;
+    root_ = cwd_ = tree;
+    node_free_tree(old);
     return 0;
 }
 
@@ -784,7 +837,7 @@ static int load_slot(const struct bfs_super *sb) {
     if (sb->slot > 1 || sectors > g_slot_sectors) return -1;
 
     uint8_t *buf = (uint8_t *)kmalloc(sectors * BLK_SECTOR);
-    if (!buf) return -1;
+    if (!buf) { kprintf("[--] fs: out of memory reading filesystem image\n"); return -2; }
     if (blk_read(g_disk, slot_lba(sb->slot), (uint32_t)sectors, buf) != 0) {
         kfree(buf); return -1;
     }
@@ -802,12 +855,15 @@ static int load_v1(void) {
     if (blk_read(g_disk, g_base, 1, sec0) != 0) return -1;
     struct bfs_super1 *sb = (struct bfs_super1 *)sec0;
     if (memcmp(sb->magic, BFS_MAGIC1, 8) != 0) return -1;
-    if (sb->version != 1 || sb->node_count == 0 || sb->blob_bytes == 0) return -1;
+    if (sb->version != 1 || sb->node_count == 0 ||
+        sb->blob_bytes < sizeof(struct bfs_rec2) ||
+        sb->blob_bytes > (g_cap - 1) * BLK_SECTOR ||
+        sb->node_count > sb->blob_bytes / sizeof(struct bfs_rec2)) return -1;
 
     uint64_t sectors = (sb->blob_bytes + BLK_SECTOR - 1) / BLK_SECTOR;
     if (1 + sectors > g_cap) return -1;
     uint8_t *buf = (uint8_t *)kmalloc(sectors * BLK_SECTOR);
-    if (!buf) return -1;
+    if (!buf) return -2;
     if (blk_read(g_disk, g_base + 1, (uint32_t)sectors, buf) != 0) { kfree(buf); return -1; }
 
     uint32_t sum = 0;                                /* v1 used a plain byte sum */
@@ -817,6 +873,12 @@ static int load_v1(void) {
     /* A v1 image predates ownership entirely, so it uses the v2 record layout. */
     int rc = rebuild(buf, sb->blob_bytes, sb->node_count, 2);
     kfree(buf);
+    /* Migration writes slot 1 first, away from the old v1 blob. If that blob
+     * extends into slot 1 there is no safe in-place migration. */
+    if (!rc && 1 + sectors > BFS_SLOT0 + g_slot_sectors) {
+        g_readonly = 1;
+        kprintf("[--] fs: v1 image too large for safe migration; keeping disk READ-ONLY\n");
+    }
     return rc;
 }
 
@@ -881,49 +943,20 @@ int fs_check(int repair, fs_check_report *rep) {
     }
     rep->checksum_ok = 1;
 
-    /* Walk the records with the same bounds rebuild() enforces, in whichever
-     * layout the superblock declares. */
-    uint32_t recsz = (sb->version >= 3) ? (uint32_t)sizeof(struct bfs_rec)
-                                        : (uint32_t)sizeof(struct bfs_rec2);
-    uint64_t off = 0;
-    for (uint32_t i = 0; i < sb->node_count; i++) {
-        if (off + recsz > sb->blob_bytes) {
-            chk_note(rep, "record list runs past the end of the blob");
-            kfree(buf); return -1;
-        }
-        struct bfs_rec r;
-        memset(&r, 0, sizeof r);
-        if (sb->version >= 3) memcpy(&r, buf + off, sizeof r);
-        else {
-            struct bfs_rec2 o;
-            memcpy(&o, buf + off, sizeof o);
-            r.parent = o.parent; r.is_dir = o.is_dir; r.size = o.size;
-            memcpy(r.name, o.name, FS_NAME_MAX);
-        }
-        off += recsz;
-        if (i > 0 && r.parent >= i) {
-            chk_note(rep, "record names a parent that does not precede it");
-            kfree(buf); return -1;
-        }
-        if (!r.is_dir) {
-            if (off + r.size > sb->blob_bytes) {
-                chk_note(rep, "file data runs past the end of the blob");
-                kfree(buf); return -1;
-            }
-            rep->files++;
-            rep->bytes += r.size;
-            off += r.size;
-        } else {
-            rep->dirs++;
-        }
-        int term = 0;
-        for (int k = 0; k < FS_NAME_MAX; k++) if (r.name[k] == 0) { term = 1; break; }
-        if (!term) chk_note(rep, "unterminated name in a record (truncated on load)");
-    }
-    if (off != sb->blob_bytes)
-        chk_note(rep, "trailing bytes after the last record");
-
+    const char *error;
+    fs_node *tree = decode_tree(buf, sb->blob_bytes, sb->node_count, sb->version, 0, &error);
     kfree(buf);
+    if (!tree) { chk_note(rep, error); return -1; }
+    /* Walk without recursion beyond the parser's enforced FS_MAX_DEPTH. */
+    fs_node *n = tree;
+    while (n) {
+        if (n->is_dir) rep->dirs++;
+        else { rep->files++; rep->bytes += n->size; }
+        if (n->child) { n = n->child; continue; }
+        while (n && !n->next) n = n->parent;
+        if (n) n = n->next;
+    }
+    node_free_tree(tree);
     rep->structure_ok = 1;
 
     /* Repair here means: re-establish the invariants a healthy image has --
@@ -941,49 +974,37 @@ void fs_persist_set_readonly(int ro) { g_readonly = ro ? 1 : 0; }
 int  fs_persist_readonly(void) { return g_readonly; }
 uint64_t fs_generation(void) { return g_gen; }
 
-/* Pick (or create) the partition BoltFS lives in. Prefers an existing BoltFS
- * partition, else the first present partition; if the disk has no valid MBR it
- * writes one with a single BoltFS partition aligned at 1 MiB. Sets g_base/g_cap. */
-static void fs_attach_partition(void) {
-    blk_part parts[4];
-    int n = blk_read_mbr(g_disk, parts);
-    int idx = -1;
-
-    if (n > 0) {
-        for (int i = 0; i < 4; i++)                  /* prefer a BoltFS partition */
-            if (parts[i].present && parts[i].type == BLK_PART_BOLTFS) { idx = i; break; }
-        if (idx < 0)
-            for (int i = 0; i < 4; i++)              /* else first present one    */
-                if (parts[i].present) { idx = i; break; }
-    }
-
-    if (idx < 0 && !g_readonly) {                    /* no usable table -> create */
-        uint64_t start = 2048;                       /* 1 MiB alignment           */
-        if (start >= g_disk->sectors) start = 1;     /* tiny disk fallback        */
-        if (blk_write_mbr_single(g_disk, BLK_PART_BOLTFS, start) == 0 &&
-            blk_read_mbr(g_disk, parts) > 0) {
-            idx = 0;
-            kprintf("[ok] fs: wrote MBR, BoltFS partition @ LBA %lu\n",
-                    (unsigned long)start);
-        }
-    }
-
-    if (idx >= 0) {
-        g_base = parts[idx].lba_start;
-        g_cap  = parts[idx].sectors;
-    } else {                                         /* MBR unavailable -> raw disk */
+/* A selected disk is either an existing BoltFS image or a verified-empty
+ * scratch disk. `fresh` is explicit: a failed load must NEVER imply format. */
+static int fs_attach_partition(int *fresh) {
+    blk_part part;
+    *fresh = 0;
+    if (blk_boltfs_partition(g_disk, &part)) {
+        g_base = part.lba_start;
+        g_cap = part.sectors;
+    } else if (blk_is_blank_scratch(g_disk)) {
+        if (g_readonly) return -1;
+        g_base = 2048;
+        g_cap = g_disk->sectors - g_base;
+        if (blk_write_mbr_single(g_disk, BLK_PART_BOLTFS, g_base) != 0 ||
+            blk_flush(g_disk) != 0) return -1;
+        *fresh = 1;
+        kprintf("[ok] fs: wrote MBR, BoltFS partition @ LBA %lu\n", (unsigned long)g_base);
+    } else {
+        /* Legacy raw BoltFS images have no partition table. Their headers are
+         * validated below; nothing may be written unless a complete tree loads. */
         g_base = 0;
-        g_cap  = g_disk->sectors;
-        kprintf("[--] fs: no partition table; using raw disk\n");
+        g_cap = g_disk->sectors;
     }
     /* Two superblock sectors, then the partition split evenly into two slots. */
     g_slot_sectors = g_cap > BFS_SLOT0 ? (g_cap - BFS_SLOT0) / 2 : 0;
+    return 0;
 }
 
 void fs_persist_init(void) {
     g_disk = blk_fs_disk();
     if (!g_disk) {
-        kprintf("[--] fs: no data disk found; RAM-only (volatile)\n");
+        kprintf("[--] fs: no eligible data disk found; RAM-only (volatile). Use `install` for a new disk.\n");
         return;
     }
     if (boot_is_recovery()) {
@@ -991,9 +1012,9 @@ void fs_persist_init(void) {
         kprintf("[--] fs: recovery mode; the image will not be written\n");
     }
 
-    fs_attach_partition();
-    if (g_slot_sectors == 0) {
-        kprintf("[--] fs: partition too small for BoltFS; RAM-only\n");
+    int fresh;
+    if (fs_attach_partition(&fresh) != 0 || g_slot_sectors == 0) {
+        kprintf("[--] fs: cannot attach writable storage; RAM-only\n");
         g_disk = 0;
         return;
     }
@@ -1012,10 +1033,12 @@ void fs_persist_init(void) {
     } else if (oka) cand[0] = &a;
     else if (okb)   cand[0] = &b;
 
-    int loaded = 0;
+    int loaded = 0, oom = 0;
     for (int i = 0; i < 2 && !loaded; i++) {
         if (!cand[i]) continue;
-        if (load_slot(cand[i]) != 0) {
+        int rc = load_slot(cand[i]);
+        if (rc == -2) { oom = 1; break; }
+        if (rc != 0) {
             if (i == 0 && cand[1])
                 kprintf("[--] fs: newest image (gen %lu) is damaged; trying the mirror\n",
                         (unsigned long)cand[i]->generation);
@@ -1032,13 +1055,25 @@ void fs_persist_init(void) {
     }
 
     int migrated = 0;
-    if (!loaded && load_v1() == 0) {
-        loaded = migrated = 1;
-        g_slot = 1; g_gen = 0; g_unclean = 0;   /* the next commit lands in slot 0 */
-        kprintf("[ok] fs: migrated a v1 image from %s '%s' (%d nodes)\n",
-                media, model, fs_count_nodes());
+    if (!loaded && !oom && !fresh) {
+        int rc = load_v1();
+        if (rc == -2) oom = 1;
+        if (!rc) {
+            loaded = migrated = 1;
+            g_slot = 0; g_gen = 0; g_unclean = 0;   /* migrate into slot 1 */
+            kprintf("[ok] fs: loaded a v1 image from %s '%s' (%d nodes); migration pending\n",
+                    media, model, fs_count_nodes());
+        }
     }
-    if (!loaded)
+    if (!loaded && !fresh) {
+        g_autosave = 0;
+        g_readonly = 1;
+        kprintf("[--] fs: cannot load saved filesystem%s; disk protected READ-ONLY.\n"
+                "     Seed files are RAM-only; original disk contents left untouched.\n",
+                oom ? " (out of memory)" : " (invalid or unreadable image)");
+        return;
+    }
+    if (fresh)
         kprintf("[ok] fs: formatting %s '%s' part@LBA%lu with the seed tree\n",
                 media, model, (unsigned long)g_base);
 
@@ -1083,7 +1118,7 @@ void fs_persist_init(void) {
  *  written -- exactly what a first boot on the target expects to find.
  * ------------------------------------------------------------------------- */
 int fs_export_image(blkdev_t *dev, uint64_t base, uint64_t cap) {
-    if (!dev || cap <= BFS_SLOT0) return -1;
+    if (!dev || base > dev->sectors || cap > dev->sectors - base || cap <= BFS_SLOT0) return -1;
     uint64_t slot_sectors = (cap - BFS_SLOT0) / 2;
     if (slot_sectors == 0) return -1;
 
@@ -1128,8 +1163,7 @@ int fs_export_image(blkdev_t *dev, uint64_t base, uint64_t cap) {
     if (blk_write(dev, base + BFS_SB_A, 1, sec) != 0) return -1;
     if (blk_flush(dev) != 0) return -1;
     if (blk_write(dev, base + BFS_SB_B, 1, sec) != 0) return -1;
-    blk_flush(dev);
-    return 0;
+    return blk_flush(dev);
 }
 
 /* Give up the backing disk: stop autosaving and forget it, leaving the tree
@@ -1144,5 +1178,6 @@ void fs_persist_detach(void) {
 }
 
 int fs_persist_active(void) { return g_disk != 0; }
+blkdev_t *fs_persist_disk(void) { return g_disk; }
 const char *fs_persist_media(void) { return g_disk ? blk_media(g_disk) : ""; }
 const char *fs_persist_model(void) { return g_disk ? g_disk->model : ""; }

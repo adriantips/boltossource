@@ -36,9 +36,13 @@ int       blk_register(const blkdev_t *dev);
 int       blk_count(void);
 blkdev_t *blk_get(int i);
 
-/* The disk the filesystem should persist to: the first registered non-boot
- * disk, preferring NVMe/SSD over spinning media. NULL -> FS stays RAM-only. */
+/* Prefer an installed boot disk, then existing BoltFS on a data disk, then a
+ * completely zero-filled scratch disk (at most 64 MiB). Unknown disks are
+ * never adopted. NULL -> FS stays RAM-only; use the installer for a new disk. */
 blkdev_t *blk_fs_disk(void);
+/* Read every sector, not just the signature: 1 only for a wholly empty,
+ * writable, non-boot disk of at most 64 MiB. Larger disks need `install`. */
+int       blk_is_blank_scratch(blkdev_t *d);
 
 const char *blk_media(const blkdev_t *d);   /* "NVMe" / "SSD" / "HDD" */
 
@@ -63,4 +67,6 @@ typedef struct blk_part {
 } blk_part;
 
 int blk_read_mbr(blkdev_t *d, blk_part out[4]);
+/* One unambiguous, in-bounds BoltFS partition; rejects GPT/hybrid tables. */
+int blk_boltfs_partition(blkdev_t *d, blk_part *out);
 int blk_write_mbr_single(blkdev_t *d, uint8_t type, uint64_t start);

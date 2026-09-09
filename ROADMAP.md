@@ -27,21 +27,25 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 - [x] 8. Graphical installer app
 - [x] 9. Graceful `poweroff` / `reboot` (commit + mark clean, then ACPI S5)
 - [x] 10. Filesystem consistency checker (`fsck`, automatic after a crash)
+        Mount hardening: foreign disks preserved, failed loads protected,
+        detached-tree loading and QEMU disk-integrity tests (STORAGE_UPGRADE.md)
 
 ## Phase 1 — Reliability & data safety
 
 - [x] 11. Atomic BoltFS commits (A/B slots + mirrored superblock)
 - [x] 12. Device cache-flush barriers (ATA / AHCI / NVMe)
 - [x] 13. Unclean-shutdown detection and automatic check
-- [x] 14. FAT32 crash-safe write ordering
+- [~] 14. FAT32 overwrite ordering; startup/recovery no longer formats unknown
+        disks. I/O-error propagation and torn directory-sector safety remain.
 - [x] 15. Per-process fault isolation for ring-3 crashes
 - [x] 16. Persistent crash log surviving reboot (`crashlog`)
 - [x] 17. Kernel message ring and `dmesg`
 - [x] 18. Scheduler watchdog: report a starved or wedged thread, and a
         `kill` that really terminates a ring-3 process
 - [x] 19. Free kernel stacks and address spaces on process exit
-- [~] 20. Out-of-memory handling (watchdog warns at 90% heap; allocation
-        failures are still silent in most callers)
+- [~] 20. Out-of-memory handling (watchdog warns at 90% heap; failed BoltFS
+        loads preserve both the live tree and disk, failed commit allocations
+        report failure; other callers still need an audit)
 
 ## Phase 2 — Security & real multi-user
 
