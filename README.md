@@ -145,6 +145,17 @@ ring-3 program could take an option and an argument at the same time —
 rest, which presents as the network being broken rather than as a missing
 argument.
 
+### SDK and third-party executables
+
+[SDK.md](SDK.md) documents the static ELF64 format, syscall ABI version 1,
+public headers and ring-3 C runtime. `sdk/build.sh -o myapp main.c util.c`
+builds an external program with the host toolchain. Download it, set its mode
+with `chmod 755`, then use `run /path/to/myapp [args...]` (or `run myapp` for
+`/bin/myapp`). The shell reports the program's exit status.
+Malformed ELF headers, out-of-bounds segments and kernel-address destinations
+are rejected before loading; failed loads release their allocated pages.
+Native BoltCC code generation and self-hosting remain unfinished.
+
 ## ACPI / APIC / SMP
 
 **ACPI** (`kernel/acpi.c`) discovers the RSDP, RSDT/XSDT, and MADT, and provides
@@ -1355,6 +1366,7 @@ The interactive OS shell supports a wide range of commands:
 - **Development:** `build` (build a project's target from its `build.txt`), `vcs` (local version control: init / add / commit / log / diff / checkout / branch)
 - **Language:** `cc` (multi-file C/C++/C# via the preprocessor + BoltCC; `-g` runs it under the source-level debugger), `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the **Code** app compiles C / C++ / C#
 - **Bonus / Unique:** `focus`, `snapshot`, `timeline`, `vault`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
+- **SDK:** `run` (ELF64 programs with arguments and exit status)
 - **Core:** `help`, `echo`, `clear`, `mem`
 
 ## Full File Tree
@@ -1363,6 +1375,8 @@ The interactive OS shell supports a wide range of commands:
 +-- README.md
 +-- BROWSER_UPGRADE.md     Browser engine upgrade plan + status log
 +-- STORAGE_UPGRADE.md     Mount safety, failure handling and storage tests
++-- SDK.md                 Native program ABI and the external build helper
++-- sdk/                  External ELF64 build helper and sample program
 +-- build.sh  run.sh  run-uefi.sh    Build and QEMU launchers (legacy + UEFI)
 +-- build-and-run-vbox.bat  rebuild-all.ps1  rebuild-vdi.ps1  read-serial.ps1
 +-- shot.py  testnet.py  shot_uefi.py    GUI screendump + network test harnesses
@@ -1389,6 +1403,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- js.c    cmd_js.c  boltcc.c  cpp.c  cmd_cc.c  boltpy.c   JavaScript, C preprocessor, C/C++/C#, Python
 |   +-- ccbuild.c  cmd_build.c    Build targets (build.txt) shared by cc, `build` and the IDE
 |   +-- cmd_vcs.c               BoltVCS: local version control (.bvcs objects/commits/refs)
+|   +-- cmd_run.c              Third-party ELF execution and its exit status
 |   +-- core.c  cmd_core.c       Core dumps on a ring-3 fault + the post-mortem inspector
 |   +-- pkg.c  pkgcat.c          Package manager (format, repository, deps) + its catalogue
 |   +-- image.c  font8x8.c  kprintf.c  sysreg.c  user.asm

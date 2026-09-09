@@ -224,6 +224,7 @@ const command_t commands[] = {
     { "ext2",     "Hardware",         "read an ext2 volume: ext2 ls|cat",   cmd_ext2 },
 
     /* Core */
+    { "run",      "Core",             "run an ELF64 program: run PATH [args]", cmd_run },
     { "help",     "Core",             "show this list",                     cmd_help },
     { "echo",     "Core",             "print text back",                    cmd_echo },
     { "clear",    "Core",             "clear the screen",                   cmd_clear },

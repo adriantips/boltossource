@@ -113,7 +113,8 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 - [x] 68. Binary packages, not just scripts (explicit sizes, verbatim payloads,
         `kind program` exec'd by `pkg run`)
 - [x] 69. Curated catalogue: headers for `cc`, and a starter project `build` runs
-- [ ] 70. Documented, stable syscall ABI and SDK headers
+- [x] 70. Documented syscall ABI v1, shared SDK headers, external ELF build
+        helper and `run` with exit status (SDK.md)
 - [ ] 71. Man pages for every shell command
 - [ ] 72. Shell scripting: variables, conditionals, loops, functions
 - [ ] 73. Shell history and tab completion

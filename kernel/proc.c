@@ -12,6 +12,7 @@
 #include "klog.h"
 #include "core.h"
 #include "framebuffer.h"
+#include "pit.h"
 
 static int next_pid = 1;
 
@@ -66,7 +67,9 @@ static uint64_t setup_user_stack(uint64_t cr3, int argc, const char **argv) {
         uint8_t *kv = (uint8_t *)P2V(fr);
         for (int j = 0; j < (int)PAGE_SIZE; j++) kv[j] = 0;
         uint64_t va = base + (uint64_t)i * PAGE_SIZE;
-        if (vmm_map(cr3, va, fr, PTE_PRESENT | PTE_WRITE | PTE_USER) != 0) return 0;
+        if (vmm_map(cr3, va, fr, PTE_PRESENT | PTE_WRITE | PTE_USER) != 0) {
+            pmm_free_frame(fr); return 0;
+        }
         if (i == USER_STACK_PGS - 1) top_frame = fr;
     }
     /* everything we write lives in the top page: [TOP-PAGE_SIZE, TOP) */
@@ -128,15 +131,16 @@ int proc_exec_vec(const char *path, int argc, const char **argv) {
     if (elf_load(cr3, image, st.size, &entry, &brk_end) != 0) {
         kprintf("[exec] %s: bad ELF\n", path);
         kfree(image);
+        vmm_free_address_space(cr3);
         return -1;
     }
     kfree(image);
 
     uint64_t ustack = setup_user_stack(cr3, argc, argv);
-    if (!ustack) return -1;
+    if (!ustack) { vmm_free_address_space(cr3); return -1; }
 
     proc_t *p = (proc_t *)kmalloc(sizeof(proc_t));
-    if (!p) return -1;
+    if (!p) { vmm_free_address_space(cr3); return -1; }
     memset(p, 0, sizeof(*p));
     p->pid       = next_pid++;
     p->cr3       = cr3;
@@ -150,7 +154,10 @@ int proc_exec_vec(const char *path, int argc, const char **argv) {
     p->fds[1] = vfs_open("/dev/console", O_WRONLY);
     p->fds[2] = vfs_open("/dev/console", O_WRONLY);
 
-    if (sched_add_user(entry, ustack, cr3, p, p->name) < 0) { kfree(p); return -1; }
+    if (!p->fds[0] || !p->fds[1] || !p->fds[2] ||
+        sched_add_user(entry, ustack, cr3, p, p->name) < 0) {
+        proc_release(p); kfree(p); vmm_free_address_space(cr3); return -1;
+    }
     kprintf("[exec] %s pid=%d entry=0x%lx brk=0x%lx\n", path, p->pid, entry, brk_end);
     return p->pid;
 }
@@ -184,6 +191,7 @@ struct registers *proc_fault_kill(struct registers *r) {
     p->exit_code = 128 + (int)r->int_no;
     p->alive = 0;
     proc_release(p);
+    proc_note_exit(p->pid, p->exit_code);
 
     sched_exit_current();
     return schedule(r);              /* pick someone else; never returns here */
@@ -196,6 +204,7 @@ void proc_exit(int code) {
         p->exit_code = code;
         p->alive = 0;
         proc_release(p);
+        proc_note_exit(p->pid, code);
         kprintf("[exit] pid=%d code=%d\n", p->pid, code);
     } else {
         g_fb_exclusive = 0;      /* no proc to release, but free the panel anyway */
@@ -203,4 +212,43 @@ void proc_exit(int code) {
     sched_exit_current();                 /* scheduler will never resume us */
     __asm__ volatile("sti");
     for (;;) __asm__ volatile("hlt");     /* park until the next tick reaps */
+}
+
+/* ---------------------------------------------------- exit status ----------*/
+/* A ring of finished processes. Small on purpose: nothing here needs the whole
+ * history, only "what happened to the program I just started", and a caller
+ * that waits longer than sixteen other programs take to finish has bigger
+ * problems than a lost status. */
+#define EXIT_RING 16
+static struct { int pid, code; } exits[EXIT_RING];
+static int exits_at;
+
+void proc_note_exit(int pid, int code) {
+    uint64_t flags;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) :: "memory");
+    exits[exits_at].pid  = pid;
+    exits[exits_at].code = code;
+    exits_at = (exits_at + 1) % EXIT_RING;
+    __asm__ volatile("pushq %0; popfq" :: "r"(flags) : "memory", "cc");
+}
+
+int proc_exit_status(int pid, int *code) {
+    if (pid <= 0) return 0;
+    uint64_t flags;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) :: "memory");
+    int found = 0;
+    for (int i = 0; i < EXIT_RING; i++)
+        if (exits[i].pid == pid) { if (code) *code = exits[i].code; found = 1; break; }
+    __asm__ volatile("pushq %0; popfq" :: "r"(flags) : "memory", "cc");
+    return found;
+}
+
+int proc_wait(int pid, int *code, uint64_t timeout_ms) {
+    uint32_t hz = pit_hz() ? pit_hz() : 1000;
+    uint64_t until = pit_ticks() + timeout_ms * hz / 1000;
+    for (;;) {
+        if (proc_exit_status(pid, code)) return 0;
+        if (pit_ticks() > until) return -1;
+        __asm__ volatile("hlt");           /* the timer tick reschedules us */
+    }
 }

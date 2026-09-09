@@ -42,6 +42,16 @@
 #define SYS_FBEND   103 /* ()                        -> 0; release the screen  */
 #define SYS_FBPRESENT 104 /* (xrgb w*h buffer)       -> 0/-1; blit to panel    */
 #define SYS_RESOLVE 105 /* (name, uint32_t *ip)      -> 0/-1; DNS + /etc/hosts */
+#define SYS_ABI     106 /* ()                        -> the ABI version below  */
+
+/* ---------------------------------------------------------------------------
+ *  The ABI version. Bumped when a syscall's number, arguments or meaning
+ *  changes -- never when one is added, because a program that does not call a
+ *  new syscall cannot be broken by it. A third-party binary can read it with
+ *  SYS_ABI (see SDK.md) and refuse to run on something it was not built for,
+ *  which is the whole point of publishing a number at all.
+ * ------------------------------------------------------------------------- */
+#define BOLT_ABI_VERSION 1
 
 /* Filled by SYS_FBINFO: the panel geometry. The renderer draws a packed w*h
  * xRGB image into its own buffer and hands it to SYS_FBPRESENT each frame; the

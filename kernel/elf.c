@@ -4,6 +4,7 @@
 #include "pmm.h"
 #include "mm.h"
 #include "kprintf.h"
+#include "proc.h"
 
 #define PG_DN(x) ((x) & ~(PAGE_SIZE - 1))
 #define PG_UP(x) (((x) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1))
@@ -30,9 +31,27 @@ int elf_load(uint64_t cr3, const uint8_t *image, uint64_t size,
     if (eh->e_ident[0] != 0x7f || eh->e_ident[1] != 'E' ||
         eh->e_ident[2] != 'L'  || eh->e_ident[3] != 'F') return -1;
     if (eh->e_ident[4] != ELFCLASS64) return -1;
+    if (eh->e_ident[5] != 1 || eh->e_ident[6] != 1 || eh->e_version != 1) return -1;
     if (eh->e_machine != EM_X86_64)   return -1;
     if (eh->e_type != ET_EXEC)        return -1;
-    if (eh->e_phoff + (uint64_t)eh->e_phnum * eh->e_phentsize > size) return -1;
+    if (eh->e_ehsize != sizeof *eh || eh->e_phentsize != sizeof(Elf64_Phdr)) return -1;
+    if (eh->e_phoff > size || (uint64_t)eh->e_phnum * eh->e_phentsize > size - eh->e_phoff) return -1;
+
+    /* Validate every segment before mapping or copying anything. In particular
+     * an ELF must never name one of the shared kernel mappings as a destination. */
+    int entry_ok = 0;
+    for (uint16_t i = 0; i < eh->e_phnum; i++) {
+        const Elf64_Phdr *ph = (const Elf64_Phdr *)(image + eh->e_phoff + (uint64_t)i * eh->e_phentsize);
+        if (ph->p_type == 3 || ph->p_type == 2) return -1; /* interpreter / dynamic */
+        if (ph->p_type != PT_LOAD) continue;
+        if (ph->p_filesz > ph->p_memsz || ph->p_offset > size || ph->p_filesz > size - ph->p_offset) return -1;
+        if (!ph->p_memsz) continue;
+        if (ph->p_vaddr < PAGE_SIZE || ph->p_vaddr >= USER_MMAP_BASE ||
+            ph->p_memsz > USER_MMAP_BASE - ph->p_vaddr) return -1;
+        if ((ph->p_flags & PF_X) && eh->e_entry >= ph->p_vaddr &&
+            eh->e_entry - ph->p_vaddr < ph->p_memsz) entry_ok = 1;
+    }
+    if (!entry_ok) return -1;
 
     uint64_t hi = 0;
     for (uint16_t i = 0; i < eh->e_phnum; i++) {
@@ -78,7 +97,8 @@ int elf_symbolize(const uint8_t *image, uint64_t size, uint64_t addr,
     if (eh->e_ident[0] != 0x7F || eh->e_ident[1] != 'E' ||
         eh->e_ident[2] != 'L'  || eh->e_ident[3] != 'F') return 0;
     if (!eh->e_shoff || !eh->e_shnum) return 0;
-    if (eh->e_shoff + (uint64_t)eh->e_shnum * eh->e_shentsize > size) return 0;
+    if (eh->e_shentsize != sizeof(Elf64_Shdr) || eh->e_shoff > size ||
+        (uint64_t)eh->e_shnum * eh->e_shentsize > size - eh->e_shoff) return 0;
 
     const Elf64_Shdr *sh = (const Elf64_Shdr *)(image + eh->e_shoff);
     const Elf64_Sym  *syms = 0;
@@ -86,11 +106,13 @@ int elf_symbolize(const uint8_t *image, uint64_t size, uint64_t addr,
     uint64_t          nsym = 0, strsz = 0;
 
     for (uint16_t i = 0; i < eh->e_shnum; i++) {
-        if (sh[i].sh_type != SHT_SYMTAB || !sh[i].sh_entsize) continue;
-        if (sh[i].sh_offset + sh[i].sh_size > size) return 0;
-        uint16_t link = (uint16_t)sh[i].sh_link;
+        if (sh[i].sh_type != SHT_SYMTAB) continue;
+        if (sh[i].sh_entsize != sizeof(Elf64_Sym) || sh[i].sh_offset > size ||
+            sh[i].sh_size > size - sh[i].sh_offset) return 0;
+        uint32_t link = sh[i].sh_link;
         if (link >= eh->e_shnum) return 0;
-        if (sh[link].sh_offset + sh[link].sh_size > size) return 0;
+        if (sh[link].sh_type != SHT_STRTAB || sh[link].sh_offset > size ||
+            sh[link].sh_size > size - sh[link].sh_offset) return 0;
         syms  = (const Elf64_Sym *)(image + sh[i].sh_offset);
         nsym  = sh[i].sh_size / sh[i].sh_entsize;
         strs  = (const char *)(image + sh[link].sh_offset);
@@ -106,12 +128,15 @@ int elf_symbolize(const uint8_t *image, uint64_t size, uint64_t addr,
         const Elf64_Sym *s = &syms[i];
         if (ELF_ST_TYPE(s->st_info) != STT_FUNC || !s->st_value) continue;
         if (s->st_value > addr) continue;
-        if (s->st_size && addr >= s->st_value + s->st_size) continue;
+        if (s->st_size && addr - s->st_value >= s->st_size) continue;
         if (!best || s->st_value > best->st_value) best = s;
     }
     if (!best || best->st_name >= strsz) return 0;
 
     const char *nm = strs + best->st_name;
+    uint64_t maxname = strsz - best->st_name, namelen = 0;
+    while (namelen < maxname && nm[namelen]) namelen++;
+    if (namelen == maxname) return 0;
     uint32_t o = 0;
     while (nm[o] && o < cap - 8) { out[o] = nm[o]; o++; }
     uint64_t off = addr - best->st_value;
