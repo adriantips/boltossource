@@ -134,7 +134,10 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
         and the storage layer post to it.
 - [~] 78. Quick settings: volume slider, network status and a calendar flyout
         exist in the tray. Brightness and battery wait on items 91-92.
-- [ ] 79. Screenshot tool built into the OS
+- [x] 79. Screenshots: a real PNG encoder, the panel read back (so ring-3
+        programs and the text console capture too), `screenshot` for headless
+        and SSH use, Print Screen from the desktop. Replaces an uncompressed
+        BMP of the compositor's backbuffer.
 - [ ] 80. Screen recording
 - [ ] 81. HiDPI / display scaling
 - [ ] 82. Clipboard for images and files, not just text

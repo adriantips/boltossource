@@ -250,6 +250,12 @@ static const manpage_t MAN[] = {
   "still there when you look back. LEVEL is info, success, warn or error;\n"
   "SOURCE is who is speaking. `list` shows unread, `list -a` everything,\n"
   "`read` marks without deleting, `dismiss` removes one, `clear` removes all." },
+{ "screenshot", "screenshot [PATH]",
+  "Capture what is on screen to a PNG. With no PATH it writes the next free\n"
+  "~/Pictures/screenshot-N.png. Print Screen (F12) does the same thing from the\n"
+  "desktop and opens the result in Photos. It reads the panel back rather than\n"
+  "the compositor's buffer, so DOOM, the ring-3 browser and the text console\n"
+  "capture correctly too." },
 
 /* -------------------------------------------------------------- process --- */
 { "ps", "ps",

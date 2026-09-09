@@ -46,6 +46,23 @@ outlines (`kernel/ttf.c`) in addition to the built-in bitmap fonts. A
 **system-wide clipboard** (`kernel/clipboard.c`) enables copy/paste across apps.
 Each app is a `kernel/app_*.c` file exposing `draw/key/click/drag/tick` callbacks.
 
+### Screenshots
+
+Print Screen (F12) or `screenshot [PATH]` captures the screen to a **PNG** in
+the signed-in user's `Pictures`, and opens it in Photos. It reads the **panel**
+back rather than the compositor's backbuffer, so DOOM, the ring-3 browser and
+the plain text console capture correctly too -- and it works in safe mode and
+over SSH, where there is no desktop to press a key in.
+
+The PNG writer (`kernel/png_enc.c`) is real: 8-bit truecolour, per-row None/Sub
+filter selection, LZ77 over a 32 KiB window and fixed-Huffman deflate in a zlib
+stream. A 1024x768 desktop frame comes out around 20 KB against 2.3 MB for the
+uncompressed BMP this replaces. `test/host/png.c` compiles the encoder on the
+host and `test/t_shot.py` decodes its output with Python's own zlib, asserting
+exact pixels on flat, gradient, noise, 1x1 and images longer than the window --
+an encoder only ever read back by its own decoder can be wrong in matching
+pairs and nobody finds out.
+
 ### Notifications
 
 `kernel/notify.c` is a kernel-wide store of what the machine has to say, and the
@@ -1400,7 +1417,7 @@ The interactive OS shell supports a wide range of commands:
 - **Bonus / Unique:** `focus`, `snapshot`, `timeline`, `vault`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
 - **Shell:** `sh`, `source`, `.`, `test`, `[`, `true`, `false`, `set`, `unset`; variables, conditions, loops and functions (see [SHELL.md](SHELL.md))
 - **SDK & help:** `run` (ELF64 programs with arguments and exit status), `man` (pages/search/coverage), `help [COMMAND]`
-- **Desktop:** `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows)
+- **Desktop:** `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG)
 - **Core:** `echo`, `clear`, `mem`
 
 ## Full File Tree
@@ -1438,6 +1455,8 @@ The interactive OS shell supports a wide range of commands:
 |   +-- ccbuild.c  cmd_build.c    Build targets (build.txt) shared by cc, `build` and the IDE
 |   +-- cmd_vcs.c               BoltVCS: local version control (.bvcs objects/commits/refs)
 |   +-- notify.c  cmd_notify.c  Notification store behind toasts and the centre
+|   +-- png_enc.c              PNG writer (LZ77 + fixed-Huffman deflate)
+|   +-- screenshot.c  cmd_shot.c  Panel capture -> PNG in ~/Pictures
 |   +-- cmd_run.c  manpages.c   Third-party ELF execution and command manual
 |   +-- shline.c  shscript.c    History/completion and the shell interpreter
 |   +-- core.c  cmd_core.c       Core dumps on a ring-3 fault + the post-mortem inspector

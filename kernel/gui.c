@@ -30,6 +30,7 @@
 #include "netif.h"
 #include "net.h"
 #include "notify.h"
+#include "screenshot.h"
 
 extern const unsigned char font8x8_basic[128][8];   /* 8x8 retro face   */
 extern const unsigned char font_8x16[95][16];        /* 8x16 Arial face  */
@@ -2134,47 +2135,26 @@ static void handle_mouse(uint8_t b) {
 
 /* Capture the composited desktop (the BB backbuffer) to a 24-bit BMP under
  * /home/Pictures and open it in Photos. Triggered globally by F12. */
+/* Print Screen / F12. The capture, the PNG and the file naming all live in
+ * kernel/screenshot.c so that `screenshot` at a prompt and this key produce
+ * the same file in the same place -- a screenshot you can only take with a
+ * desktop in front of you is not much use over SSH.
+ *
+ * This used to write an uncompressed BMP of the compositor's backbuffer:
+ * 2.3 MB a frame, and blank whenever a ring-3 program owned the panel. */
 static void gui_screenshot(void) {
-    int w = W, h = H;
-    if (w <= 0 || h <= 0) return;
-    uint32_t row = (uint32_t)w * 3, pad = (4 - (row & 3)) & 3, stride = row + pad;
-    uint32_t sz = 54 + stride * (uint32_t)h;
-    uint8_t *bmp = (uint8_t *)kmalloc(sz);
-    if (!bmp) return;
-    memset(bmp, 0, 54);
-    bmp[0] = 'B'; bmp[1] = 'M';
-    bmp[2] = (uint8_t)sz; bmp[3] = (uint8_t)(sz >> 8); bmp[4] = (uint8_t)(sz >> 16); bmp[5] = (uint8_t)(sz >> 24);
-    bmp[10] = 54; bmp[14] = 40;
-    bmp[18] = (uint8_t)w; bmp[19] = (uint8_t)(w >> 8); bmp[20] = (uint8_t)(w >> 16); bmp[21] = (uint8_t)(w >> 24);
-    bmp[22] = (uint8_t)h; bmp[23] = (uint8_t)(h >> 8); bmp[24] = (uint8_t)(h >> 16); bmp[25] = (uint8_t)(h >> 24);
-    bmp[26] = 1; bmp[28] = 24;
-    for (int y = 0; y < h; y++) {
-        uint8_t  *dst = bmp + 54 + (uint32_t)(h - 1 - y) * stride;   /* bottom-up */
-        uint32_t *src = &BB[(uint32_t)y * w];
-        for (int x = 0; x < w; x++) {
-            uint32_t p = src[x];
-            dst[x * 3 + 0] = (uint8_t)(p);          /* B */
-            dst[x * 3 + 1] = (uint8_t)(p >> 8);     /* G */
-            dst[x * 3 + 2] = (uint8_t)(p >> 16);    /* R */
-        }
+    char saved[FS_PATH_MAX];
+    int rc = shot_take(0, saved, sizeof saved);
+    if (rc != 0) {
+        char msg[NOTE_TEXT_MAX];
+        snprintf(msg, sizeof msg, "Screenshot failed: %s", shot_strerror(rc));
+        notify_error("Screenshot", msg);
+        return;
     }
-    /* pick the first free /home/Pictures/screenshot-N.bmp */
-    if (!fs_lookup("/home/Pictures")) fs_create("/home/Pictures", 1);
-    char path[FS_PATH_MAX];
-    for (int n = 1; n <= 999; n++) {
-        const char *pre = "/home/Pictures/screenshot-";
-        int i = 0; for (; pre[i]; i++) path[i] = pre[i];
-        char num[8]; int t = 0, v = n; while (v) { num[t++] = (char)('0' + v % 10); v /= 10; }
-        while (t) path[i++] = num[--t];
-        const char *suf = ".bmp"; for (int j = 0; suf[j]; j++) path[i++] = suf[j];
-        path[i] = 0;
-        if (!fs_lookup(path)) break;
-    }
-    fs_node *f = fs_create(path, 0);
-    if (f) fs_write(f, bmp, sz);
-    kfree(bmp);
-    gui_toast("Screenshot saved to Pictures");
-    imgview_open_path(path);
+    char msg[NOTE_TEXT_MAX];
+    snprintf(msg, sizeof msg, "Saved %s", saved);
+    notify_success("Screenshot", msg);
+    imgview_open_path(saved);      /* and show it, which also proves it decodes */
 }
 
 static void handle_key(char c) {

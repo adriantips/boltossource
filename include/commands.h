@@ -115,8 +115,9 @@ int cmd_js(int, char **);     int cmd_libctest(int, char **);
 int cmd_webx(int, char **);
 int cmd_nstest(int, char **);
 
-/* Notifications */
+/* Notifications and screen capture */
 int cmd_notify(int, char **);
+int cmd_screenshot(int, char **);
 
 /* SDK, manual and shell language */
 int cmd_run(int, char **);   int cmd_man(int, char **);
