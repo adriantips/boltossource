@@ -67,6 +67,21 @@ def shell(vm, line, expect=None, timeout=60):
         vm.expect(expect, timeout=timeout)
 
 
+def cat(vm, path, want, timeout=60):
+    """Read a file and assert on THIS command's output.
+
+    Not vm.expect(): the serial log carries the echo of every line typed, so
+    waiting for a marker after typing `write FILE marker` matches the echo and
+    passes whatever the filesystem actually did. Asserting on the output of a
+    `cat` that has run through to its next prompt is the only form of this
+    check that can fail.
+    """
+    out = vm.run("cat " + path, timeout=timeout)
+    assert want in out.split(path, 1)[-1], (
+        "%s did not read back as expected:\n%s" % (path, out))
+    return out
+
+
 def main():
     vm = BoltVM(name="persist", snapshot=False, data_disks=scratch_disks(), net=False)
     vm.start()
@@ -77,7 +92,7 @@ def main():
             return 0
 
         # --- 1. write + sync + a clean reboot ---------------------------------
-        shell(vm, "write /home/dur1.txt " + MARK1)
+        vm.run("write /home/dur1.txt " + MARK1)
         shell(vm, "sync", "sync: committed FS")
 
         vm.clear()
@@ -86,12 +101,15 @@ def main():
         vm.expect("fs: loaded image", timeout=40)
         # A clean shutdown must not cost the next boot a filesystem check.
         vm.expect_absent("last shutdown was unclean")
-        shell(vm, "cat /home/dur1.txt", MARK1)
+        cat(vm, "/home/dur1.txt", MARK1)
         print("  ok: file survived a clean reboot, and the image stayed clean")
 
         # --- 2. write, then yank the power ------------------------------------
-        shell(vm, "write /home/dur2.txt " + MARK2)
-        shell(vm, "cat /home/dur2.txt", MARK2)
+        # vm.run waits for the prompt, so autosave has really committed the
+        # write before the plug is pulled. Typing it and killing QEMU in the
+        # same breath measures how fast the host is, not whether BoltFS is safe.
+        vm.run("write /home/dur2.txt " + MARK2)
+        cat(vm, "/home/dur2.txt", MARK2)
         # No sync and no shutdown: autosave has committed it, and the machine now
         # dies with no chance to flush anything.
         vm.power_cycle()
@@ -103,8 +121,8 @@ def main():
         assert "fsck: " in log, "no fsck ran after the unclean shutdown"
         print("  ok: unclean shutdown detected and checked at mount")
 
-        shell(vm, "cat /home/dur1.txt", MARK1)
-        shell(vm, "cat /home/dur2.txt", MARK2)
+        cat(vm, "/home/dur1.txt", MARK1)
+        cat(vm, "/home/dur2.txt", MARK2)
         print("  ok: both files intact after the power cut")
 
         shell(vm, "fsck", "structure   : ok")
