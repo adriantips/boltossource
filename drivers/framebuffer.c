@@ -100,6 +100,27 @@ void fb_blit(const uint32_t *src) {
     }
 }
 
+/* The other direction: read the panel back into a packed fw*fh buffer.
+ *
+ * A screenshot taken from the compositor's backbuffer would be a picture of
+ * what the compositor drew, which is not the same thing as what is on screen
+ * -- DOOM and the ring-3 browser own the panel outright, the text console
+ * never goes through the compositor at all, and the letterbox bars belong to
+ * the panel. Reading VRAM is slower than reading the backbuffer, and it is the
+ * only version of this that is telling the truth.
+ *
+ * Alpha is forced opaque: the panel is xRGB and a PNG writer would otherwise
+ * see whatever the hardware leaves in the top byte. */
+int fb_capture(uint32_t *dst) {
+    if (!fb || !dst) return -1;
+    for (uint32_t y = 0; y < fh; y++) {
+        const volatile uint32_t *s = fb + (uint64_t)y * pitch_px;
+        uint32_t *d = dst + (uint64_t)y * fw;
+        for (uint32_t x = 0; x < fw; x++) d[x] = s[x] | 0xFF000000u;
+    }
+    return 0;
+}
+
 /* Scale a logical sw*sh desktop into the (dx,dy,dw,dh) rect of the panel and
  * paint black bars around it. A per-column source-index map is built once so
  * the inner loop is array lookups, not a divide per pixel. */
