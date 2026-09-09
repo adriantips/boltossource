@@ -243,6 +243,13 @@ static const manpage_t MAN[] = {
   "Print the arguments back, separated by spaces." },
 { "clear", "clear",
   "Clear the screen." },
+{ "notify", "notify [-l LEVEL] [-s SOURCE] TEXT | notify list [-a] | read ID | dismiss ID | clear",
+  "Post a notification, or read the ones already posted. A notification is a\n"
+  "toast bottom-right now and a row in the desktop's notification centre\n"
+  "afterwards, so something that finished while you were looking elsewhere is\n"
+  "still there when you look back. LEVEL is info, success, warn or error;\n"
+  "SOURCE is who is speaking. `list` shows unread, `list -a` everything,\n"
+  "`read` marks without deleting, `dismiss` removes one, `clear` removes all." },
 
 /* -------------------------------------------------------------- process --- */
 { "ps", "ps",

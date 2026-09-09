@@ -124,17 +124,23 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 
 ## Phase 5 — Desktop UX
 
-- [ ] 74. Window snapping and tiling
+- [~] 74. Window snapping: Aero-snap to halves on drag, maximise at the top
+        edge and Win+arrow, all in the base compositor. Quarter tiling and a
+        drop preview remain.
 - [ ] 75. Virtual desktops / workspaces
 - [ ] 76. Configurable keyboard shortcuts
-- [ ] 77. Notification system: toasts and a notification centre
-- [ ] 78. Quick-settings panel (volume, brightness, network, battery)
+- [x] 77. Notification system: a kernel-wide store, stacked toasts, a tray
+        notification centre with unread counts, and `notify`. The crash path
+        and the storage layer post to it.
+- [~] 78. Quick settings: volume slider, network status and a calendar flyout
+        exist in the tray. Brightness and battery wait on items 91-92.
 - [ ] 79. Screenshot tool built into the OS
 - [ ] 80. Screen recording
 - [ ] 81. HiDPI / display scaling
 - [ ] 82. Clipboard for images and files, not just text
 - [ ] 83. Software centre GUI over the package manager
-- [ ] 84. Start-menu search across apps and files
+- [~] 84. Start-menu type-to-search filters the app grid. Searching files
+        from the same box remains.
 
 ## Phase 6 — Peripherals & media
 

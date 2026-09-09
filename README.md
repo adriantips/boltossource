@@ -46,6 +46,30 @@ outlines (`kernel/ttf.c`) in addition to the built-in bitmap fonts. A
 **system-wide clipboard** (`kernel/clipboard.c`) enables copy/paste across apps.
 Each app is a `kernel/app_*.c` file exposing `draw/key/click/drag/tick` callbacks.
 
+### Notifications
+
+`kernel/notify.c` is a kernel-wide store of what the machine has to say, and the
+desktop is one reader of it. A notification is a stacked toast bottom-right for
+about three seconds *and* a row in the tray's **notification centre** afterwards,
+so something that finishes while you are looking at another window is still there
+when you look back. The bell carries an unread badge; rows show level, source and
+time, scroll, and can be read, dismissed one at a time, or cleared.
+
+The store is a fixed ring in `.bss` with no allocation, which matters because the
+things most worth saying -- a failed commit, a disk gone read-only, a crash --
+happen when allocation is a bad bet. Anything in the kernel can post
+(`notify_post`, or `notify_error`/`notify_warn`/…) without knowing whether a GUI
+exists; the compositor registers a hook and draws what is there. Every
+notification is mirrored into the kernel log, so `dmesg`, the serial console and
+a headless test see them too. `gui_toast()` still works and is now the
+plain-information case.
+
+From the shell, `notify` posts (`notify -l error -s Disk "the disk is full"`) and
+reads (`notify list -a`, `notify read`, `notify dismiss ID`, `notify clear`) --
+a machine administered over SSH has no taskbar. Today the ring-3 crash path posts
+where the core dump is, and the storage layer posts when a disk has been
+protected read-only and changes are RAM-only.
+
 Bundled apps (26):
 
 - **Terminal** — the full interactive shell in a window
@@ -1376,6 +1400,7 @@ The interactive OS shell supports a wide range of commands:
 - **Bonus / Unique:** `focus`, `snapshot`, `timeline`, `vault`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
 - **Shell:** `sh`, `source`, `.`, `test`, `[`, `true`, `false`, `set`, `unset`; variables, conditions, loops and functions (see [SHELL.md](SHELL.md))
 - **SDK & help:** `run` (ELF64 programs with arguments and exit status), `man` (pages/search/coverage), `help [COMMAND]`
+- **Desktop:** `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows)
 - **Core:** `echo`, `clear`, `mem`
 
 ## Full File Tree
@@ -1412,6 +1437,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- js.c    cmd_js.c  boltcc.c  cpp.c  cmd_cc.c  boltpy.c   JavaScript, C preprocessor, C/C++/C#, Python
 |   +-- ccbuild.c  cmd_build.c    Build targets (build.txt) shared by cc, `build` and the IDE
 |   +-- cmd_vcs.c               BoltVCS: local version control (.bvcs objects/commits/refs)
+|   +-- notify.c  cmd_notify.c  Notification store behind toasts and the centre
 |   +-- cmd_run.c  manpages.c   Third-party ELF execution and command manual
 |   +-- shline.c  shscript.c    History/completion and the shell interpreter
 |   +-- core.c  cmd_core.c       Core dumps on a ring-3 fault + the post-mortem inspector
