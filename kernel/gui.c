@@ -5,6 +5,7 @@
  *  menu and clock, and the mouse cursor. One backbuffer, one blit per frame.
  * ===========================================================================*/
 #include <stdint.h>
+#include <stdio.h>
 #include "gui.h"
 #include "xhci.h"
 #include "ttf.h"
@@ -28,6 +29,7 @@
 #include "audio.h"
 #include "netif.h"
 #include "net.h"
+#include "notify.h"
 
 extern const unsigned char font8x8_basic[128][8];   /* 8x8 retro face   */
 extern const unsigned char font_8x16[95][16];        /* 8x16 Arial face  */
@@ -62,8 +64,16 @@ static uint32_t *BG;            /* prerendered desktop wallpaper (W*H) or 0 */
 static image_t  *wall_img;      /* user-chosen image wallpaper, or 0 (procedural) */
 static char      wall_img_path[FS_PATH_MAX];
 static int       dirty = 1;     /* a frame needs recompositing                  */
-static char      toast_msg[72];          /* transient bottom-right notification  */
-static uint64_t  toast_until;            /* pit tick the toast disappears at      */
+/* Toasts are a view of the notification store (kernel/notify.c), not a message
+ * of their own: whatever pops up bottom-right is still in the centre after it
+ * fades. `toast_from` is the id of the oldest notification still allowed to
+ * toast -- dismissing a toast raises it past the ones on screen rather than
+ * deleting anything. */
+#define TOAST_MS      3200                /* how long one stays up            */
+#define TOAST_STACK   3                   /* how many can share the corner    */
+static uint32_t  toast_from = 1;
+static int       notes_open;              /* notification centre popup shown  */
+static int       notes_scroll;            /* first visible row in the centre  */
 
 /* Modal text prompt (Save As, rename, ...). One at a time; apps call gui_prompt
  * with a callback that receives the entered string when the user confirms. */
@@ -992,6 +1002,129 @@ static void draw_net_tray(void) {
     }
 }
 
+/* ---- notifications: toasts and the centre ------------------------------- */
+static uint32_t note_colour(int level) {
+    switch (level) {
+        case NOTE_SUCCESS: return COL_GOOD;
+        case NOTE_WARN:    return COL_WARN;
+        case NOTE_ERROR:   return COL_BAD;
+        default:           return COL_ACCENT;
+    }
+}
+
+/* ---- tray bell + notification centre ------------------------------------ */
+#define NC_W      330
+#define NC_ROW    52
+#define NC_ROWS   5           /* visible rows before scrolling */
+#define NC_HEAD   38
+
+static void tray_bell_rect(int *bx, int *by) {
+    *bx = W - 168;                               /* left of the network button */
+    *by = H - TASKBAR_H + (TASKBAR_H - 28) / 2;
+}
+
+static void draw_bell_glyph(int x, int y, uint32_t col) {
+    g_fill(x + 6, y + 1, 4, 2, col);                       /* crown */
+    g_fill(x + 4, y + 3, 8, 2, col);
+    g_fill(x + 3, y + 5, 10, 4, col);                      /* body  */
+    g_fill(x + 2, y + 9, 12, 2, col);
+    g_fill(x + 1, y + 11, 14, 2, col);                     /* rim   */
+    g_fill(x + 6, y + 13, 4, 2, col);                      /* clapper */
+}
+
+static void nc_rect(int *x, int *y, int *w, int *h) {
+    int rows = notify_count() < NC_ROWS ? notify_count() : NC_ROWS;
+    if (rows < 1) rows = 1;
+    *w = NC_W;
+    *h = NC_HEAD + rows * NC_ROW + 8;
+    int bx, by; tray_bell_rect(&bx, &by);
+    *x = bx + 14 - *w / 2;
+    if (*x + *w > W - 6) *x = W - 6 - *w;
+    if (*x < 6) *x = 6;
+    *y = H - TASKBAR_H - *h - 8;
+    if (*y < 6) *y = 6;
+}
+
+/* "Clear all" sits in the header, right-aligned. */
+static void nc_clear_rect(int px, int py, int pw, int *cx, int *cy, int *cw, int *ch) {
+    *cw = 68; *ch = 22;
+    *cx = px + pw - *cw - 10; *cy = py + 8;
+    (void)py;
+}
+
+static void draw_note_centre(void) {
+    if (!notes_open) return;
+    int px, py, pw, ph; nc_rect(&px, &py, &pw, &ph);
+    g_round(px - 2, py - 2, pw + 4, ph + 4, 14, 0x000000, 80);
+    g_round(px, py, pw, ph, 11, 0x16161E, 250);
+    g_fill(px, py, pw, 3, COL_ACCENT);
+
+    g_text(px + 14, py + 12, "Notifications", COL_TEXT, 1);
+    int mxp = mlx(), myp = mly();
+    if (notify_count()) {
+        int cx, cy, cw, ch; nc_clear_rect(px, py, pw, &cx, &cy, &cw, &ch);
+        int hot = mxp >= cx && mxp < cx + cw && myp >= cy && myp < cy + ch;
+        g_round(cx, cy, cw, ch, 6, hot ? 0x33334A : 0x24242F, 255);
+        g_text(cx + 9, cy + 7, "Clear", hot ? 0xFFFFFF : COL_TEXT_DIM, 1);
+    }
+    g_hline(px + 8, py + NC_HEAD - 6, pw - 16, 0x2A2A38);
+
+    if (!notify_count()) {
+        g_text(px + 14, py + NC_HEAD + 16, "Nothing to catch up on.", COL_TEXT_DIM, 1);
+        return;
+    }
+
+    for (int r = 0; r < NC_ROWS; r++) {
+        int i = notes_scroll + r;
+        const notification_t *e = notify_at(i);
+        if (!e) break;
+        int ry = py + NC_HEAD + r * NC_ROW;
+        int hot = mxp >= px && mxp < px + pw && myp >= ry && myp < ry + NC_ROW;
+        if (hot) g_round(px + 6, ry, pw - 12, NC_ROW - 2, 7, 0x1F1F2B, 255);
+        g_round(px + 12, ry + 8, 3, NC_ROW - 18, 1, note_colour(e->level), 255);
+        if (!e->read) g_round(px + 20, ry + NC_ROW / 2 - 9, 5, 5, 2, COL_ACCENT, 255);
+
+        char hm[6];
+        hm[0] = '0' + (e->hour / 10) % 10; hm[1] = '0' + e->hour % 10; hm[2] = ':';
+        hm[3] = '0' + (e->min / 10) % 10;  hm[4] = '0' + e->min % 10;  hm[5] = 0;
+        g_text(px + 30, ry + 7, e->source, COL_TEXT_DIM, 1);
+        g_text(px + pw - g_text_width(hm, 1) - 30, ry + 7, hm, COL_TEXT_DIM, 1);
+
+        int cap = (pw - 66) / 8;
+        char line[64];
+        int k = 0; for (; e->text[k] && k < cap && k < (int)sizeof(line) - 1; k++) line[k] = e->text[k];
+        if (e->text[k]) { if (k > 3) k -= 3; line[k++] = '.'; line[k++] = '.'; line[k++] = '.'; }
+        line[k] = 0;
+        g_text(px + 30, ry + 25, line, COL_TEXT, 1);
+
+        if (hot) {                                   /* per-row dismiss */
+            int dx = px + pw - 24, dy = ry + NC_ROW / 2 - 6;
+            g_text(dx, dy, "x", COL_TEXT_DIM, 1);
+        }
+    }
+    if (notify_count() > NC_ROWS) {
+        char sc[24]; snprintf(sc, sizeof sc, "%d of %d", notes_scroll + 1, notify_count());
+        g_text(px + pw / 2 - g_text_width(sc, 1) / 2, py + ph - 3 - 10, sc, COL_TEXT_DIM, 1);
+    }
+}
+
+static void draw_bell_tray(void) {
+    int bx, by; tray_bell_rect(&bx, &by);
+    int mxp = mlx(), myp = mly();
+    int hot = mxp >= bx && mxp < bx + 28 && myp >= by && myp < by + 28;
+    if (notes_open || hot) g_round(bx, by, 28, 28, 7, 0x2A2A38, 255);
+    int unread = notify_unread();
+    draw_bell_glyph(bx + 6, by + 6, unread ? COL_ACCENT : COL_TEXT_DIM);
+    if (unread) {                                    /* count badge */
+        char n[4];
+        if (unread > 9) { n[0] = '9'; n[1] = '+'; n[2] = 0; }
+        else            { n[0] = '0' + unread; n[1] = 0; }
+        int nw = g_text_width(n, 1) + 6;
+        g_round(bx + 28 - nw, by + 1, nw, 12, 5, COL_BAD, 255);
+        g_text(bx + 28 - nw + 3, by + 3, n, 0xFFFFFF, 1);
+    }
+}
+
 /* ---- clock calendar flyout ---------------------------------------------- */
 static int cal_is_leap(int y) { return (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0); }
 static int cal_days_in(int y, int m) {
@@ -1072,10 +1205,12 @@ static void draw_taskbar(void) {
             g_round(bx + TB_BTN / 2 - 1, by + TB_BTN - 3, 3, 3, 1, COL_TEXT_DIM, 200);
         }
     }
+    draw_bell_tray();
     draw_net_tray();
     draw_volume_tray();
     draw_clock();
     draw_clock_flyout();
+    draw_note_centre();
 }
 
 /* ---- right-click context menu (window or desktop) ----------------------- */
@@ -1494,25 +1629,63 @@ static void dnd_drop(int x, int y) {
 /* ===========================================================================
  *  Compositor
  * ===========================================================================*/
-/* A transient notification toast, bottom-right above the taskbar. */
-static void draw_toast(void) {
-    if (!toast_msg[0] || pit_ticks() >= toast_until) return;
-    int tw = g_text_width(toast_msg, 1);
-    int bw = tw + 28, bh = 30;
-    int bx = W - bw - 18, by = H - TASKBAR_H - bh - 14;
-    g_round(bx, by, bw, bh, 8, COL_PANEL_2, 245);
-    g_round(bx, by, 4, bh, 8, COL_ACCENT, 255);          /* accent edge */
-    g_text(bx + 16, by + 11, toast_msg, COL_TEXT, 1);
+/* Newest-first indices of the notifications currently entitled to a toast:
+ * posted recently enough, not scrolled past by a dismiss, and no more than
+ * TOAST_STACK of them. */
+static int toast_live(int *out) {
+    uint64_t now = pit_ticks();
+    int n = 0;
+    for (int i = 0; i < notify_count() && n < TOAST_STACK; i++) {
+        const notification_t *e = notify_at(i);
+        if (!e || e->id < toast_from) break;         /* older still: all dismissed */
+        if (now - e->posted >= TOAST_MS) break;      /* older still: all expired   */
+        out[n++] = i;
+    }
+    return n;
 }
 
-/* Show `msg` as a ~2.5 s toast (called by apps + the GUI for user feedback). */
+static void toast_rect(int row, int *x, int *y, int *w, int *h) {
+    *w = 300; *h = 44;
+    *x = W - *w - 18;
+    *y = H - TASKBAR_H - 14 - (row + 1) * (*h + 8);
+}
+
+/* Stacked bottom-right above the taskbar, newest at the bottom. */
+static void draw_toasts(void) {
+    int idx[TOAST_STACK]; int n = toast_live(idx);
+    for (int r = 0; r < n; r++) {
+        const notification_t *e = notify_at(idx[r]);
+        if (!e) continue;
+        int bx, by, bw, bh; toast_rect(r, &bx, &by, &bw, &bh);
+        if (by < 8) break;
+        g_round(bx - 2, by - 2, bw + 4, bh + 4, 12, 0x000000, 70);
+        g_round(bx, by, bw, bh, 9, COL_PANEL_2, 245);
+        g_round(bx, by, 4, bh, 9, note_colour(e->level), 255);
+        g_text(bx + 16, by + 7,  e->source, COL_TEXT_DIM, 1);
+        /* the body is one line here; the centre shows it whole */
+        int cap = (bw - 30) / 8;
+        char line[64];
+        int i = 0; for (; e->text[i] && i < cap && i < (int)sizeof(line) - 1; i++) line[i] = e->text[i];
+        if (e->text[i]) { if (i > 3) i -= 3; line[i++] = '.'; line[i++] = '.'; line[i++] = '.'; }
+        line[i] = 0;
+        g_text(bx + 16, by + 24, line, COL_TEXT, 1);
+    }
+}
+
+/* Show `msg` as a toast. Kept for the ~40 call sites that just want to say
+ * something happened; it is a notification like any other, so it survives in
+ * the centre after the toast goes. */
 void gui_toast(const char *msg) {
     if (!msg) return;
-    int i = 0; for (; msg[i] && i < (int)sizeof(toast_msg) - 1; i++) toast_msg[i] = msg[i];
-    toast_msg[i] = 0;
-    toast_until = pit_ticks() + 2500;
-    dirty = 1;
+    notify_post(NOTE_INFO, "System", msg);
 }
+
+void gui_notify(int level, const char *source, const char *text) {
+    notify_post(level, source, text);
+}
+
+/* Registered with the store in gui_run(). Anything that posts gets a frame. */
+static void gui_note_hook(const notification_t *n) { (void)n; dirty = 1; }
 
 /* prompt button rects (screen coords), rebuilt each draw */
 static int pr_ok_x, pr_ok_y, pr_ok_w, pr_ok_h, pr_ca_x, pr_ca_w;
@@ -1581,7 +1754,7 @@ static void composite(void) {
     draw_taskbar();
     draw_context_menu();
     if (dnd_active) draw_drag_ghost();
-    draw_toast();
+    draw_toasts();
     draw_prompt();
     draw_cursor();
 }
@@ -1674,6 +1847,53 @@ static void on_left_down(int x, int y) {
         if (it >= 0) return;                  /* clicked an item -> done       */
         /* it == -2 (outside) falls through so the click also lands normally   */
     }
+
+    /* A visible toast is a target: clicking one opens the centre on it, and
+     * the machine stops shouting about something you have now looked at. */
+    { int idx[TOAST_STACK]; int tn = toast_live(idx);
+      for (int r = 0; r < tn; r++) {
+          int bx, by, bw, bh; toast_rect(r, &bx, &by, &bw, &bh);
+          if (x < bx || x >= bx + bw || y < by || y >= by + bh) continue;
+          const notification_t *e = notify_at(idx[r]);
+          if (e) { toast_from = e->id + 1; notify_mark_read(e->id); }
+          notes_open = 1; notes_scroll = 0;
+          vol_open = net_open = clock_open = 0;
+          dirty = 1; return;
+      } }
+
+    /* notification centre: rows, the dismiss cross, and Clear */
+    if (notes_open) {
+        int px, py, pw, ph; nc_rect(&px, &py, &pw, &ph);
+        if (x >= px && x < px + pw && y >= py && y < py + ph) {
+            int cx, cy, cw, ch; nc_clear_rect(px, py, pw, &cx, &cy, &cw, &ch);
+            if (notify_count() && x >= cx && x < cx + cw && y >= cy && y < cy + ch) {
+                notify_clear(); notes_scroll = 0; dirty = 1; return;
+            }
+            for (int r = 0; r < NC_ROWS; r++) {
+                int ry = py + NC_HEAD + r * NC_ROW;
+                if (y < ry || y >= ry + NC_ROW) continue;
+                const notification_t *e = notify_at(notes_scroll + r);
+                if (!e) break;
+                uint32_t id = e->id;
+                if (x >= px + pw - 30) {                       /* the dismiss cross */
+                    notify_dismiss(id);
+                    int last = notify_count() - NC_ROWS;
+                    if (notes_scroll > last) notes_scroll = last > 0 ? last : 0;
+                } else {
+                    notify_mark_read(id);
+                }
+                dirty = 1; return;
+            }
+            dirty = 1; return;                       /* clicks inside are absorbed */
+        }
+    }
+    { int bbx, bby; tray_bell_rect(&bbx, &bby);
+      if (x >= bbx && x < bbx + 28 && y >= bby && y < bby + 28) {
+          notes_open = !notes_open;
+          if (notes_open) { notes_scroll = 0; notify_mark_all_read(); }
+          vol_open = net_open = clock_open = 0; dirty = 1; return;
+      } }
+    if (notes_open) { notes_open = 0; dirty = 1; }   /* click elsewhere dismisses it */
 
     /* tray volume: popup slider, then the speaker button toggles it */
     if (vol_open && volume_popup_click(x, y)) { dirty = 1; return; }
@@ -1827,6 +2047,18 @@ static void on_right_down(int x, int y) {
 /* scroll-wheel over a window's client area -> its scroll handler */
 static void handle_wheel(int dz) {
     int x = mlx(), y = mly();
+    /* wheel over the open notification centre scrolls its list */
+    if (notes_open) {
+        int px, py, pw, ph; nc_rect(&px, &py, &pw, &ph);
+        if (x >= px && x < px + pw && y >= py && y < py + ph) {
+            int last = notify_count() - NC_ROWS;
+            if (last < 0) last = 0;
+            notes_scroll -= dz;
+            if (notes_scroll < 0) notes_scroll = 0;
+            if (notes_scroll > last) notes_scroll = last;
+            dirty = 1; return;
+        }
+    }
     /* wheel over the tray speaker (or its open popup) nudges the volume */
     int vbx, vby; tray_vol_rect(&vbx, &vby);
     int over_tray = (x >= vbx && x < vbx + 28 && y >= vby && y < vby + 28);
@@ -2210,6 +2442,11 @@ void gui_run(void) {
     }
 
     settings_init();           /* theme + logical size + letterbox + wallpaper */
+
+    /* A notification posted from a driver or the network stack has to reach
+     * the screen without that code knowing the compositor exists. It only has
+     * to mark the frame dirty; toasts are drawn from the store. */
+    notify_set_hook(gui_note_hook);
 
     console_detach();                                /* GUI owns the framebuffer now */
 

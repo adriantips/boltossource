@@ -8,6 +8,7 @@
 #include "boot.h"
 #include "users.h"
 #include "kprintf.h"
+#include "notify.h"
 
 static fs_node *root_;
 static fs_node *cwd_;
@@ -733,6 +734,11 @@ io_fail:
     g_autosave = 0;
     kprintf("[--] fs: write/flush failed; disk protected READ-ONLY until reboot.\n"
             "     Recent changes are only in RAM; save a copy before rebooting.\n");
+    /* The worst thing this could do is happen quietly. Someone who is told
+     * copies their work off; someone who is not keeps working and loses the
+     * day at the next reboot. */
+    notify_error("Storage", "Disk write failed. Changes are RAM-only -- copy "
+                            "your work elsewhere before rebooting.");
     return -1;
 }
 
@@ -1071,6 +1077,8 @@ void fs_persist_init(void) {
         kprintf("[--] fs: cannot load saved filesystem%s; disk protected READ-ONLY.\n"
                 "     Seed files are RAM-only; original disk contents left untouched.\n",
                 oom ? " (out of memory)" : " (invalid or unreadable image)");
+        notify_error("Storage", "Saved filesystem could not be loaded. The disk "
+                                "is protected; these files are RAM-only.");
         return;
     }
     if (fresh)

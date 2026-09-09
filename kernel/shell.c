@@ -224,6 +224,7 @@ const command_t commands[] = {
 
     /* Core */
     { "run",      "Core",             "run an ELF64 program: run PATH [args]", cmd_run },
+    { "notify",   "Core",             "post or read notifications",         cmd_notify },
     { "man",      "Core",             "manual: man COMMAND | -k WORD | -c", cmd_man },
     { "sh",       "Shell",            "run a shell script: sh FILE [args]", cmd_sh },
     { "source",   "Shell",            "run a script in the current session", cmd_sh },

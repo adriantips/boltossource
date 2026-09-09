@@ -150,7 +150,12 @@ void imgview_open_path(const char *path); /* decode + show an image in Photos   
 void music_app_init(void);
 void gui_set_wallpaper_image(const char *path); /* use an image as the wallpaper  */
 void gui_clear_wallpaper_image(void);           /* revert to the procedural style */
-void gui_toast(const char *msg);                /* transient bottom-right notice  */
+/* Post a notification: a toast bottom-right now, and a row in the notification
+ * centre afterwards. gui_toast() is the plain-information case. The levels and
+ * the store itself are include/notify.h -- code with nothing to do with the
+ * desktop can post too, and does. */
+void gui_toast(const char *msg);                /* NOTE_INFO from "System"        */
+void gui_notify(int level, const char *source, const char *text);
 /* Modal text prompt; `cb` gets the entered string on OK/Enter (not on Cancel). */
 void gui_prompt(const char *title, const char *initial, void (*cb)(const char *));
 void calendar_app_init(void);

@@ -26,6 +26,17 @@ int boot_is_recovery(void) { return recovery; }
 uint32_t boot_flags(void) { return recovery ? BOOT_RECOVERY : 0; }
 void kprintf(const char *fmt, ...) { (void)fmt; }
 
+/* Protecting a disk read-only is a decision the person using the machine has
+ * to be told about, so it is part of what these tests check, not a stub that
+ * merely satisfies the linker. */
+static int notifications;
+uint32_t notify_post(int level, const char *source, const char *text) {
+    (void)level; (void)source; (void)text; return ++notifications;
+}
+uint32_t notify_error(const char *source, const char *text) {
+    return notify_post(3, source, text);
+}
+
 #define DISK_BYTES (4u * 1024 * 1024)
 static uint8_t durable[DISK_BYTES], cache[DISK_BYTES];
 static int io_step, fail_step, uncertain, writes;
@@ -188,8 +199,9 @@ static void commit_failures(void) {
         for (int point = 1; point <= 6; point++) {
             reset(); attach();
             assert(fs_write(fs_lookup("/keep"), "new contents", 12) == 0);
-            io_step = 0; fail_step = point; uncertain = mode;
+            io_step = 0; fail_step = point; uncertain = mode; notifications = 0;
             assert(fs_sync() < 0 && fs_persist_readonly());
+            assert(notifications == 1);   /* and the user is told, exactly once */
             int steps = io_step;
             assert(fs_sync() < 0 && fs_shutdown() < 0 && io_step == steps);
             /* Pull the plug: discard everything not made durable by a flush. */

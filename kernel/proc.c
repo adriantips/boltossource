@@ -13,6 +13,8 @@
 #include "core.h"
 #include "framebuffer.h"
 #include "pit.h"
+#include "notify.h"
+#include <stdio.h>
 
 static int next_pid = 1;
 
@@ -180,13 +182,21 @@ struct registers *proc_fault_kill(struct registers *r) {
      * this is the only moment the process's stack can be read. */
     core_write(p->pid, p->name, r);
 
-    kprintf("[fault] killed pid=%d (%s): %s at RIP 0x%lx\n",
-            p->pid, p->name,
+    const char *why =
             r->int_no == 14 ? "page fault" :
             r->int_no == 13 ? "general protection fault" :
             r->int_no == 6  ? "invalid opcode" :
-            r->int_no == 0  ? "divide by zero" : "fault",
-            r->rip);
+            r->int_no == 0  ? "divide by zero" : "fault";
+    kprintf("[fault] killed pid=%d (%s): %s at RIP 0x%lx\n",
+            p->pid, p->name, why, r->rip);
+
+    /* A program vanishing from the screen with an explanation only on the
+     * serial line is the desktop equivalent of failing silently. Say it where
+     * the person using the machine will see it, and say where the evidence is. */
+    { char msg[NOTE_TEXT_MAX];
+      snprintf(msg, sizeof msg, "%s crashed (%s). Core dumped -- see 'core show'.",
+               p->name, why);
+      notify_post(NOTE_ERROR, "Crash", msg); }
 
     p->exit_code = 128 + (int)r->int_no;
     p->alive = 0;
