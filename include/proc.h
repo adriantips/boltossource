@@ -52,6 +52,19 @@ void    proc_release(proc_t *p);
 
 void    proc_exit(int code) __attribute__((noreturn));
 
+/* ---- waiting for a program to finish --------------------------------------
+ *  A shell that starts a program and cannot tell you what it did is only half
+ *  a shell. Every way a process can end -- an ordinary exit, a CPU fault, a
+ *  kill -- records its pid and status in a small ring, so a caller that was not
+ *  running at the moment it died can still ask.
+ * ------------------------------------------------------------------------- */
+void    proc_note_exit(int pid, int code);          /* called from the exit paths */
+int     proc_exit_status(int pid, int *code);       /* 1 if that pid has finished */
+
+/* Block (hlt) until `pid` finishes or `timeout_ms` passes. Returns 0 with the
+ * status in *code, or -1 on timeout. */
+int     proc_wait(int pid, int *code, uint64_t timeout_ms);
+
 /* Reap the running ring-3 process after a CPU fault and return the register
  * frame of the thread to run next, for the ISR epilogue to resume. Returns 0 if
  * there is no current process (the caller then panics as before).

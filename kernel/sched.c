@@ -217,6 +217,9 @@ int sched_kill(int slot) {
     /* Hand back its files and the screen now, while the proc is still intact;
      * reap() frees the proc itself once we have switched off its stack. */
     proc_release(th[slot].proc);
+    /* A killed program has finished as far as anyone waiting on it is
+     * concerned; 137 is the conventional 128 + SIGKILL. */
+    proc_note_exit(proc_pid_of(th[slot].proc), 137);
     th[slot].used   = 0;
     th[slot].zombie = 1;
     return 0;

@@ -114,3 +114,6 @@ int cmd_mem(int, char **);    int cmd_python(int, char **);
 int cmd_js(int, char **);     int cmd_libctest(int, char **);
 int cmd_webx(int, char **);
 int cmd_nstest(int, char **);
+
+/* SDK */
+int cmd_run(int, char **);

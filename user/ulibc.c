@@ -4,28 +4,7 @@
 #include "stdio.h"
 #include "stdlib.h"
 
-/* syscall numbers (subset of include/syscall.h) */
-#define SYS_READ 0
-#define SYS_WRITE 1
-#define SYS_OPEN 2
-#define SYS_CLOSE 3
-#define SYS_FSTAT 5
-#define SYS_LSEEK 8
-#define SYS_MMAP 9
-#define SYS_BRK 12
-#define SYS_YIELD 24
-#define SYS_GETPID 39
-#define SYS_EXIT 60
-#define SYS_FBINFO 100
-#define SYS_GETKEY 101
-#define SYS_HTTPGET 102
-#define SYS_FBEND 103
-#define SYS_FBPRESENT 104
-#define SYS_SOCKET 41
-#define SYS_CONNECT 42
-#define SYS_ACCEPT 43
-#define SYS_LISTEN 50
-#define SYS_RESOLVE 105
+/* The syscall numbers come from include/syscall.h, via ulibc.h. */
 
 static long __syscall(long n, long a, long b, long c, long d, long e) {
     long ret;
@@ -50,6 +29,10 @@ void *mmap(void *addr, unsigned long len, int prot, int flags, int fd)
                                                            { return (void *)__syscall(SYS_MMAP, (long)addr, (long)len, prot, flags, fd); }
 void *sbrk_brk(void *addr)                                 { return (void *)__syscall(SYS_BRK, (long)addr, 0, 0, 0, 0); }
 int  getpid(void)                                          { return (int)__syscall(SYS_GETPID, 0, 0, 0, 0, 0); }
+/* The ABI this kernel implements. A program built against a newer SDK can
+ * check it and say so, instead of failing in whatever way an unimplemented
+ * syscall happens to fail. */
+int  bolt_abi(void)                                        { return (int)__syscall(SYS_ABI, 0, 0, 0, 0, 0); }
 void yield(void)                                           { __syscall(SYS_YIELD, 0, 0, 0, 0, 0); }
 void exit(int code) { __syscall(SYS_EXIT, code, 0, 0, 0, 0); for (;;) {} }
 

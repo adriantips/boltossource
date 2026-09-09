@@ -233,6 +233,9 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
         return 0;
     }
 
+    case SYS_ABI:                              /* what this kernel promises      */
+        return (uint64_t)BOLT_ABI_VERSION;
+
     case SYS_FBPRESENT:                        /* blit a ring-3 backbuffer       */
         return do_fbpresent(a1);
     case SYS_FBEND:                            /* hand the panel back to the GUI */

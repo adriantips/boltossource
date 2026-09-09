@@ -2,10 +2,12 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* mmap prot bits (match include/syscall.h) */
-#define PROT_READ   1
-#define PROT_WRITE  2
-#define PROT_EXEC   4
+/* The ABI itself -- syscall numbers, the argument registers, PROT_*, and the
+ * shape of struct user_fbinfo -- comes from the kernel's own header rather than
+ * being copied here. Two lists that must agree are one list too many, and the
+ * SDK exists precisely so a third-party program reads the same definitions the
+ * kernel was built from. */
+#include "syscall.h"
 
 /* open flags (match include/vfs.h) */
 #define O_RDONLY 0x000
@@ -33,11 +35,11 @@ int   fstat(int fd, stat_t *st);
 void *mmap (void *addr, unsigned long len, int prot, int flags, int fd);
 void *sbrk_brk(void *addr);          /* raw SYS_BRK */
 int   getpid(void);
+int   bolt_abi(void);       /* the kernel's ABI version; see SDK.md */
 void  yield(void);
 void  exit(int code) __attribute__((noreturn));
 
 /* ---- device access for the ring-3 browser (see include/syscall.h) -------- */
-struct user_fbinfo { uint64_t ptr; uint32_t w, h, pitch_px; };
 int   fb_map(struct user_fbinfo *fi);   /* claim the panel + pause compositor; 0/-1 */
 void  fb_release(void);                  /* hand the panel back to the desktop    */
 void  fb_present(const void *buf);       /* blit a packed w*h xRGB backbuffer     */
