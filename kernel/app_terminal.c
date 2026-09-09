@@ -28,6 +28,9 @@ typedef struct {
     uint8_t curcol;
     char    line[256];
     int     len;
+    int     pos;                       /* caret within the editable line */
+    char    saved[256];                /* the line being typed, while browsing */
+    int     hpos;                      /* 0 = typing, N = N entries back       */
 } term_t;
 
 static term_t  term;
@@ -89,12 +92,26 @@ static void term_sink(char c) { if (active) term_putc(active, c); }
 static void term_exec(term_t *t) {
     t->line[t->len] = 0;
     if (t->len == 0) { term_prompt(t); return; }
+    sh_history_add(t->line);
     active = t; t->curcol = 0;
     console_set_sink(term_sink);
     shell_exec_line(t->line);
     console_set_sink(0);
     active = 0;
     term_prompt(t);
+}
+
+/* Replace the visible input line with `text`. The grid has no CSI handling, so
+ * the old characters are backspaced away one at a time -- which is what the
+ * caret does anyway, and keeps this window's editing honest to what it draws. */
+static void term_setline(term_t *t, const char *text) {
+    while (t->len > 0) { t->len--; term_putc(t, '\b'); }
+    for (int i = 0; text && text[i] && t->len < (int)sizeof(t->line) - 1; i++) {
+        t->line[t->len++] = text[i];
+        term_putc(t, text[i]);
+    }
+    t->line[t->len] = 0;
+    t->pos = t->len;
 }
 
 static void term_key(window_t *w, char c) {
@@ -104,17 +121,82 @@ static void term_key(window_t *w, char c) {
         term_putc(t, '\n');
         term_exec(t);
         t->len = 0;
+        t->pos = 0;
+        t->line[0] = 0;
+        t->hpos = 0;
     } else if (c == '\b') {
-        if (t->len > 0) { t->len--; term_putc(t, '\b'); }
+        if (t->pos > 0) {
+            char edited[256]; strcpy(edited, t->line);
+            int pos = t->pos - 1;
+            memmove(edited + pos, edited + pos + 1, (uint32_t)(t->len - pos));
+            term_setline(t, edited); t->pos = pos;
+        }
+    } else if ((unsigned char)c == KEY_LEFT) {
+        if (t->pos) t->pos--;
+    } else if ((unsigned char)c == KEY_RIGHT) {
+        if (t->pos < t->len) t->pos++;
+    } else if ((unsigned char)c == KEY_HOME) {
+        t->pos = 0;
+    } else if ((unsigned char)c == KEY_END) {
+        t->pos = t->len;
+    } else if ((unsigned char)c == KEY_DEL) {
+        if (t->pos < t->len) {
+            char edited[256]; strcpy(edited, t->line);
+            int pos = t->pos;
+            memmove(edited + pos, edited + pos + 1, (uint32_t)(t->len - pos));
+            term_setline(t, edited); t->pos = pos;
+        }
+    } else if ((unsigned char)c == KEY_UP || (unsigned char)c == KEY_DOWN) {
+        /* The same history the text shell keeps, in the same order. */
+        int want = ((unsigned char)c == KEY_UP) ? t->hpos + 1 : t->hpos - 1;
+        if (want < 0 || want > sh_history_count()) return;
+        if (t->hpos == 0 && want > 0) {
+            t->line[t->len] = 0;
+            strncpy(t->saved, t->line, sizeof t->saved - 1);
+            t->saved[sizeof t->saved - 1] = 0;
+        }
+        t->hpos = want;
+        term_setline(t, want ? sh_history_get(want) : t->saved);
+    } else if (c == '\t') {
+        if (t->pos != t->len) return;
+        t->line[t->len] = 0;
+        int printed = 0, old = t->len;
+        /* sh_complete prints its candidate list through kputc, so the sink has
+         * to be in place or the list would land on the serial console instead
+         * of in the window that asked for it. */
+        active = t; console_set_sink(term_sink);
+        int n = sh_complete(t->line, (int)sizeof t->line, t->len, &printed);
+        console_set_sink(0); active = 0;
+        char full[256];
+        strncpy(full, t->line, sizeof full - 1);
+        full[sizeof full - 1] = 0;
+        if (printed) {                        /* the list ended with a newline */
+            term_prompt(t);
+            t->len = 0; t->line[0] = 0;
+            term_setline(t, full);
+        } else {
+            t->len = n;
+            t->pos = n;
+            t->line[n] = 0;
+            for (int i = old; i < n; i++) term_putc(t, t->line[i]);
+        }
     } else if ((unsigned char)c == KEY_COPY) {
         clip_set(t->line, t->len);               /* copy the current input line */
     } else if ((unsigned char)c == KEY_PASTE) {
         const char *p = clip_get();              /* paste: replay each char (\n runs it) */
         for (int i = 0; p[i]; i++)
             if (p[i] != '\r') term_key(w, p[i]);
-    } else if ((unsigned char)c >= 32 && t->len < (int)sizeof(t->line) - 1) {
-        t->line[t->len++] = c;
-        term_putc(t, c);
+    } else if ((unsigned char)c >= 32 && (unsigned char)c < 127 && t->len < (int)sizeof(t->line) - 1) {
+        if (t->pos == t->len) {
+            t->line[t->len++] = c; t->line[t->len] = 0;
+            t->pos = t->len; term_putc(t, c);
+        } else {
+            char edited[256]; strcpy(edited, t->line);
+            int pos = t->pos;
+            memmove(edited + pos + 1, edited + pos, (uint32_t)(t->len - pos + 1));
+            edited[pos] = c;
+            term_setline(t, edited); t->pos = pos + 1;
+        }
     }
 }
 
@@ -125,6 +207,8 @@ static void term_draw(window_t *w, int cx, int cy, int cw, int ch) {
 
     t->cols = (cw - 2 * PAD) / CELLW; if (t->cols > TCOLS) t->cols = TCOLS; if (t->cols < 1) t->cols = 1;
     t->rows = (ch - 2 * PAD) / CELLH; if (t->rows > TROWS) t->rows = TROWS; if (t->rows < 1) t->rows = 1;
+    if (t->cx >= t->cols) t->cx = t->cols - 1;
+    if (t->cy >= t->rows) t->cy = t->rows - 1;
 
     for (int r = 0; r < t->rows; r++) {
         int py = cy + PAD + r * CELLH;
@@ -136,8 +220,10 @@ static void term_draw(window_t *w, int cx, int cy, int cw, int ch) {
 
     /* blinking caret (only when focused) */
     if (gui_window_focused(w) && (pit_ticks() / 500) % 2 == 0) {
-        int px = cx + PAD + t->cx * CELLW;
-        int py = cy + PAD + t->cy * CELLH;
+        int cell = t->cy * t->cols + t->cx - (t->len - t->pos);
+        if (cell < 0) cell = 0;
+        int px = cx + PAD + (cell % t->cols) * CELLW;
+        int py = cy + PAD + (cell / t->cols) * CELLH;
         g_fill(px, py, 2, CELLH - 2, 0x4FC3F7);
     }
 }

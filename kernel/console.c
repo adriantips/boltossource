@@ -174,6 +174,14 @@ static void csi_apply(char final) {
         if (esc_buf[i] >= '0' && esc_buf[i] <= '9') a = a * 10 + (uint32_t)(esc_buf[i] - '0');
     }
     switch (final) {
+    case 'D': {                                     /* move input caret left */
+        uint32_t at = crow * cols + ccol;
+        uint32_t n = a ? a : 1;
+        cursor_erase();
+        at = at > n ? at - n : 0;
+        crow = at / cols; ccol = at % cols;
+        break;
+    }
     case 'J':                                        /* erase display        */
         if (a == 2) console_clear();
         break;

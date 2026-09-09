@@ -8,6 +8,8 @@
 #include "fs.h"
 #include "pit.h"
 #include "string.h"
+#include "kheap.h"
+#include <stdio.h>
 
 #define LINESZ  256
 #define MAXARG  24
@@ -80,10 +82,7 @@ int cmd_clear(int argc, char **argv) { (void)argc; (void)argv; console_clear(); 
 
 int cmd_help(int argc, char **argv) {
     if (argc > 1) {
-        const command_t *c = cmd_lookup(argv[1]);
-        if (!c) { kprintf("help: no such command: %s\n", argv[1]); return 1; }
-        kprintf("%s - %s\n", c->name, c->help);
-        return 0;
+        return cmd_man(argc, argv);
     }
     const char *cat = 0;
     for (int i = 0; i < commands_count; i++) {
@@ -225,6 +224,16 @@ const command_t commands[] = {
 
     /* Core */
     { "run",      "Core",             "run an ELF64 program: run PATH [args]", cmd_run },
+    { "man",      "Core",             "manual: man COMMAND | -k WORD | -c", cmd_man },
+    { "sh",       "Shell",            "run a shell script: sh FILE [args]", cmd_sh },
+    { "source",   "Shell",            "run a script in the current session", cmd_sh },
+    { ".",        "Shell",            "source FILE (alias)",                cmd_sh },
+    { "test",     "Shell",            "test a file, string or integer",     cmd_test },
+    { "[",        "Shell",            "test EXPR with a closing ]",         cmd_test },
+    { "true",     "Shell",            "return success (0)",                 cmd_true },
+    { "false",    "Shell",            "return failure (1)",                 cmd_false },
+    { "set",      "Shell",            "list variables, or set NAME VALUE", cmd_set },
+    { "unset",    "Shell",            "remove a variable: unset NAME",      cmd_unset },
     { "help",     "Core",             "show this list",                     cmd_help },
     { "echo",     "Core",             "print text back",                    cmd_echo },
     { "clear",    "Core",             "clear the screen",                   cmd_clear },
@@ -248,154 +257,151 @@ const command_t *cmd_lookup(const char *name) {
 /* ===========================================================================
  *  Line editor / REPL
  * ===========================================================================*/
-/* Split a line into arguments, honouring "double" and 'single' quotes and a
- * backslash escape.
- *
- * Without quoting there was no way to pass an argument containing a space or a
- * semicolon, which meant no way to write a line of C from the shell at all:
- * `write f.c "int x;"` split at the semicolon and lost half the line. Quotes
- * are removed as they are consumed, in place, so argv still points into the
- * caller's buffer and nothing is allocated. */
-static int tokenize(char *line, char **argv) {
-    int argc = 0;
-    char *p = line;
-    for (;;) {
-        while (*p == ' ' || *p == '\t') p++;
-        if (!*p) break;
-        if (argc >= MAXARG) break;
-
-        char *out = p;                 /* the unquoted text is written back here */
-        argv[argc++] = out;
-        int quote = 0;
-        while (*p) {
-            char c = *p;
-            if (!quote && (c == ' ' || c == '\t')) break;
-            if (!quote && (c == '"' || c == '\'')) { quote = c; p++; continue; }
-            if (quote && c == quote) { quote = 0; p++; continue; }
-            /* Inside double quotes a backslash escapes only a quote or another
-             * backslash, exactly as a POSIX shell does. Consuming every escape
-             * here would eat the ones that belong to the argument itself --
-             * writing a line of C containing \\n would silently store a bare n. */
-            if (c == '\\' && p[1] &&
-                (quote != '"' || p[1] == '"' || p[1] == '\\')) {
-                p++; *out++ = *p++; continue;
-            }
-            *out++ = *p++;
-        }
-        if (*p) p++;                   /* step over the separator */
-        *out = 0;
-    }
-    return argc;
-}
-
-/* Is the character at `p` inside a quoted run that began at `start`? The `;`
- * and `|` splitters use this so they do not cut a line apart in the middle of
- * a quoted argument. */
-static int in_quotes(const char *start, const char *p) {
-    int quote = 0;
-    for (const char *q = start; q < p; q++) {
-        if (*q == '\\' && q[1]) { q++; continue; }
-        if (!quote && (*q == '"' || *q == '\'')) quote = *q;
-        else if (quote && *q == quote) quote = 0;
-    }
-    return quote != 0;
-}
-
-/* output-capture sink for `>`/`>>` redirection */
-static char  redir_buf[32768];
-static int   redir_len;
-static void  redir_sink(char c) { if (redir_len < (int)sizeof(redir_buf)) redir_buf[redir_len++] = c; }
-
-/* Execute one command given its tokens, honouring a trailing `> file` /
- * `>> file` redirection. `inject`, if non-null, is spliced in as the command's
- * last positional argument (before any redirection) -- this is how a pipe feeds
- * the previous stage's output, captured to a temp file, into the next stage. */
-static void exec_argv(char **argv, int argc, const char *inject) {
-    if (!argc) return;
-
-    int redir = 0;            /* 0 none, 1 truncate (>), 2 append (>>) */
-    const char *outfile = 0;
-    int cmdc = argc;
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], ">") == 0 || strcmp(argv[i], ">>") == 0) {
-            redir = (argv[i][1] == '>') ? 2 : 1;
-            outfile = (i + 1 < argc) ? argv[i + 1] : 0;
-            cmdc = i;
-            break;
-        }
-    }
-    if (redir && !outfile) { kprintf("syntax: redirection needs a target file\n"); return; }
-
-    /* rebuild the command's own argv, appending the injected pipe input */
-    char *cargv[MAXARG]; int cn = 0;
-    for (int i = 0; i < cmdc && cn < MAXARG; i++) cargv[cn++] = argv[i];
-    if (inject && cn < MAXARG) cargv[cn++] = (char *)inject;
-    if (!cn) return;
-
-    const command_t *c = cmd_lookup(cargv[0]);
-    if (!c) { kprintf("unknown command: %s  (try 'help')\n", cargv[0]); return; }
-
-    if (!redir) { c->fn(cn, cargv); return; }
-
-    void (*prev)(char) = console_get_sink();
-    redir_len = 0;
-    console_set_sink(redir_sink);
-    c->fn(cn, cargv);
-    console_set_sink(prev);
-
-    fs_node *f = fs_lookup(outfile);
-    if (!f) f = fs_create(outfile, 0);
-    if (!f) { kprintf("cannot open %s\n", outfile); return; }
-    if (redir == 2) fs_append(f, redir_buf, (uint32_t)redir_len);
-    else            fs_write (f, redir_buf, (uint32_t)redir_len);
-}
-
-#define PIPE_FILE "/tmp/.pipe"
-
-/* Run a `;`-segment, splitting it into `|`-separated stages. Each non-final
- * stage's output is captured to PIPE_FILE and handed to the next stage as input;
- * the final stage prints to the screen (and may itself redirect with `>`). */
-static void run_segment(char *seg) {
-    char *stages[8]; int ns = 0; char *p = seg;
-    while (*p && ns < 8) {
-        stages[ns++] = p;
-        while (*p && !(*p == '|' && !in_quotes(seg, p))) p++;
-        if (*p == '|') *p++ = 0;
-    }
-    if (ns <= 1) { char *argv[MAXARG]; exec_argv(argv, tokenize(seg, argv), 0); return; }
-
-    const char *inject = 0;
-    for (int s = 0; s < ns; s++) {
-        char *argv[MAXARG]; int argc = tokenize(stages[s], argv);
-        if (s == ns - 1) { exec_argv(argv, argc, inject); break; }
-
-        /* capture this stage (with any injected input) into the pipe file */
-        char *cargv[MAXARG]; int cn = 0;
-        for (int i = 0; i < argc && cn < MAXARG; i++) cargv[cn++] = argv[i];
-        if (inject && cn < MAXARG) cargv[cn++] = (char *)inject;
-        if (!cn) continue;
-        const command_t *c = cmd_lookup(cargv[0]);
-        if (!c) { kprintf("unknown command: %s  (try 'help')\n", cargv[0]); return; }
-        void (*prev)(char) = console_get_sink();
-        redir_len = 0; console_set_sink(redir_sink);
-        c->fn(cn, cargv);
-        console_set_sink(prev);
-        if (!fs_lookup("/tmp")) fs_create("/tmp", 1);
-        fs_node *f = fs_lookup(PIPE_FILE); if (!f) f = fs_create(PIPE_FILE, 0);
-        if (f) fs_write(f, redir_buf, (uint32_t)redir_len);
-        inject = PIPE_FILE;
-    }
-}
-
-static void dispatch(char *line) {
-    /* split the line into `;`-separated commands and run each in turn */
-    char *p = line;
+/* Expand into separate storage: expansion may be longer than its source, and
+ * a loop must be able to evaluate the same source again on its next iteration.
+ * Operator metadata keeps a quoted ">" or "|" an ordinary argument. */
+int sh_words(const char *text, char *buf, int cap, char **argv, int maxarg,
+             unsigned char *operators) {
+    int ac = 0, o = 0;
+    const char *p = text;
     while (*p) {
-        char *seg = p;
-        while (*p && !(*p == ';' && !in_quotes(line, p))) p++;
-        if (*p == ';') *p++ = 0;
-        run_segment(seg);
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p || *p == '#') break;
+        if (ac == maxarg || o >= cap - 1) goto overflow;
+        argv[ac] = buf + o;
+        if (operators) operators[ac] = 0;
+        if (operators && (*p == '>' || *p == '|')) {
+            char c = *p++;
+            operators[ac] = (unsigned char)c;
+            buf[o++] = c;
+            if (*p == c) {
+                if (c == '|') { kprintf("sh: || is not supported\n"); return -1; }
+                if (o >= cap - 1) goto overflow;
+                buf[o++] = *p++;
+            }
+        } else {
+            int quote = 0;
+            while (*p) {
+                char c = *p;
+                if (!quote && (c == ' ' || c == '\t' ||
+                    (operators && (c == '>' || c == '|')))) break;
+                if (!quote && (c == '"' || c == '\'')) { quote = c; p++; continue; }
+                if (quote && c == quote) { quote = 0; p++; continue; }
+                if (c == '\\' && p[1] && quote != '\'' &&
+                    (quote != '"' || p[1] == '"' || p[1] == '\\' || p[1] == '$')) {
+                    p++; c = *p;
+                } else if (c == '$' && quote != '\'' && p[1]) {
+                    sh_expand_at(&p, buf, cap, &o);
+                    if (o >= cap - 1) goto overflow;
+                    continue;
+                }
+                if (o >= cap - 1) goto overflow;
+                buf[o++] = c; p++;
+            }
+            if (quote) { kprintf("sh: unterminated quote\n"); return -1; }
+        }
+        if (o >= cap) goto overflow;
+        buf[o++] = 0;
+        ac++;
     }
+    return ac;
+overflow:
+    kprintf("sh: too many arguments or expanded command too long\n");
+    return -1;
+}
+
+/* Each invocation owns its capture buffer. `sh inner.sh > out` can execute
+ * another redirection without overwriting the outer command's captured text. */
+typedef struct { char buf[32768]; uint32_t len; int overflow; } capture_t;
+static capture_t *capture;
+static void redir_sink(char c) {
+    if (!capture) return;
+    if (capture->len < sizeof capture->buf) capture->buf[capture->len++] = c;
+    else capture->overflow = 1;
+}
+
+static fs_node *output_file(const char *path) {
+    fs_node *f = fs_lookup(path);
+    if (!f) {
+        char leaf[FS_NAME_MAX];
+        fs_node *d = fs_parent_of(path, leaf, sizeof leaf);
+        if (!fs_may_create_in(d)) return 0;
+        f = fs_create(path, 0);
+    }
+    return f && !f->is_dir && fs_may(f, FS_PERM_WRITE) ? f : 0;
+}
+
+static int exec_argv(char **argv, unsigned char *ops, int argc,
+                     const char *inject, const char *pipe_out) {
+    char *av[MAXARG + 1]; int ac = 0, append = 0;
+    const char *out = pipe_out;
+    for (int i = 0; i < argc; i++) {
+        if (ops[i] == '>') {
+            if (out || i + 1 >= argc || ops[i + 1]) {
+                kprintf("sh: invalid redirection\n"); return 2;
+            }
+            append = argv[i][1] == '>';
+            out = argv[++i];
+        } else av[ac++] = argv[i];
+    }
+    if (inject) av[ac++] = (char *)inject;
+    if (!ac) { kprintf("sh: missing command\n"); return 2; }
+    const command_t *c = cmd_lookup(av[0]);
+    if (!c) { kprintf("unknown command: %s  (try 'help')\n", av[0]); return 127; }
+    if (!out) return c->fn(ac, av);
+
+    /* Refuse an unwritable destination before executing the command. */
+    if (!output_file(out)) { kprintf("sh: cannot write %s\n", out); return 1; }
+    capture_t *buf = (capture_t *)kmalloc(sizeof *buf);
+    if (!buf) { kprintf("sh: out of memory\n"); return 1; }
+    buf->len = 0; buf->overflow = 0;
+    capture_t *saved = capture;
+    void (*prev)(char) = console_get_sink();
+    capture = buf; console_set_sink(redir_sink);
+    int rc = c->fn(ac, av);
+    console_set_sink(prev); capture = saved;
+    /* The command may have removed its output file; never keep a borrowed
+     * fs_node pointer across a callback. */
+    fs_node *f = output_file(out);
+    if (buf->overflow) { kprintf("sh: output exceeds 32768 bytes\n"); rc = 1; }
+    else if (!f || (append ? fs_append(f, buf->buf, buf->len) :
+                            fs_write(f, buf->buf, buf->len)) < 0) {
+        kprintf("sh: cannot write %s\n", out); rc = 1;
+    }
+    kfree(buf);
+    return rc;
+}
+
+int sh_exec_simple(char *seg) {
+    char *buf = (char *)kmalloc(4096);
+    if (!buf) { kprintf("sh: out of memory\n"); return 1; }
+    char *av[MAXARG]; unsigned char ops[MAXARG];
+    int ac = sh_words(seg, buf, 4096, av, MAXARG, ops), rc = 0;
+    if (ac < 0) { kfree(buf); return 2; }
+    /* Pipes retain BoltShell's file-operand convention. A private temporary
+     * for each invocation also makes nested scripts safe to redirect. */
+    static unsigned pipe_id;
+    char path[64]; path[0] = 0;
+    const char *input = 0;
+    for (int i = 0; i < ac;) {
+        int end = i;
+        while (end < ac && ops[end] != '|') end++;
+        if (end == i || (end < ac && end + 1 == ac)) {
+            kprintf("sh: missing pipeline command\n"); rc = 2; break;
+        }
+        if (end < ac && !path[0]) {
+            /* Never reuse an existing file belonging to an earlier run. */
+            do { snprintf(path, sizeof path, "/tmp/.pipe-%u", ++pipe_id); }
+            while (fs_lookup(path));
+        }
+        rc = exec_argv(av + i, ops + i, end - i, input, end < ac ? path : 0);
+        if (end < ac && rc) break;
+        if (end < ac) input = path;
+        i = end + 1;
+    }
+    if (path[0]) fs_remove(path);
+    kfree(buf);
+    return rc;
 }
 
 static void prompt(void) {
@@ -404,37 +410,60 @@ static void prompt(void) {
     kprintf("bolt:%s> ", path);
 }
 
-/* Run one already-typed command line through the normal tokenizer + dispatch.
- * Used by the GUI terminal window, which captures kputc output via a sink. */
-void shell_exec_line(char *line) { dispatch(line); }
+void shell_exec_line(char *line) { sh_run_script(line, 0, 0); }
+
+static void redraw(const char *line, int len, int pos, int oldlen, int oldpos) {
+    if (oldpos) kprintf("\033[%dD", oldpos);
+    kprintf("%s", line);
+    for (int i = len; i < oldlen; i++) kputc(' ');
+    int back = (oldlen > len ? oldlen : len) - pos;
+    if (back) kprintf("\033[%dD", back);
+}
 
 void shell_run(void) {
-    char line[LINESZ];
-    uint32_t len = 0;
-
+    char line[LINESZ] = {0}, saved[LINESZ] = {0};
+    int len = 0, pos = 0, hpos = 0;
     kprintf("\nBoltShell ready. %d commands. Type 'help'.\n", commands_count);
     prompt();
-
     for (;;) {
-        xhci_poll();                                 /* pump USB HID keyboard */
+        xhci_poll();
         int ci = kbd_trygetc();
-        if (ci < 0) {                                /* idle: blink + wait for IRQ */
-            console_cursor_tick();
-            __asm__ volatile("hlt");
-            continue;
-        }
-        char c = (char)ci;
+        if (ci < 0) { console_cursor_tick(); __asm__ volatile("hlt"); continue; }
+        unsigned char c = (unsigned char)ci;
+        int oldlen = len, oldpos = pos;
         if (c == '\n') {
             kputc('\n');
-            line[len] = 0;
-            dispatch(line);
-            len = 0;
+            sh_history_add(line);
+            shell_exec_line(line);
+            len = pos = hpos = 0; line[0] = 0;
             prompt();
-        } else if (c == '\b') {
-            if (len > 0) { len--; kputc('\b'); }     /* erase one char */
-        } else if ((unsigned char)c >= 32 && len < LINESZ - 1) {
-            line[len++] = c;
-            kputc(c);                                /* echo */
-        }
+            continue;
+        } else if (c == KEY_UP || c == KEY_DOWN) {
+            int want = hpos + (c == KEY_UP ? 1 : -1);
+            if (want < 0 || want > sh_history_count()) continue;
+            if (!hpos && want) strcpy(saved, line);
+            hpos = want;
+            strcpy(line, want ? sh_history_get(want) : saved);
+            pos = len = (int)strlen(line);
+        } else if (c == '\t') {
+            if (pos != len) continue;
+            int printed = 0;
+            len = sh_complete(line, sizeof line, len, &printed); pos = len;
+            if (printed) { prompt(); oldlen = oldpos = 0; }
+        } else if (c == KEY_LEFT) { if (pos) pos--; }
+        else if (c == KEY_RIGHT) { if (pos < len) pos++; }
+        else if (c == KEY_HOME) pos = 0;
+        else if (c == KEY_END) pos = len;
+        else if (c == KEY_COPY) { kprintf("^C\n"); len = pos = hpos = 0; line[0] = 0; prompt(); continue; }
+        else if (c == '\b' && pos) {
+            memmove(line + pos - 1, line + pos, (uint32_t)(len - pos + 1)); len--; pos--;
+        } else if (c == KEY_DEL && pos < len) {
+            memmove(line + pos, line + pos + 1, (uint32_t)(len - pos)); len--;
+        } else if (c >= 32 && c < 127 && len < LINESZ - 1) {
+            memmove(line + pos + 1, line + pos, (uint32_t)(len - pos + 1));
+            line[pos++] = (char)c; len++;
+            if (oldpos == oldlen) { kputc((char)c); continue; }
+        } else continue;
+        redraw(line, len, pos, oldlen, oldpos);
     }
 }

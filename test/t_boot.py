@@ -27,8 +27,10 @@ def main():
                        "[ok] preemptive scheduler"):
             vm.expect(marker, timeout=90)
 
-        # The ring-3 demo really ran through the ELF loader + syscalls.
-        vm.expect("[exec] /bin/hello", timeout=60)
+        # Check completion from inside ring 3. The scheduler may start hello
+        # halfway through the kernel's "[exec] /bin/hello" log line, so that
+        # diagnostic is not necessarily contiguous on the serial stream.
+        vm.expect("hello: done, exiting 0", timeout=60)
 
         # And the desktop came up rather than falling back to the text shell.
         vm.expect("BoltOS is up. Launching desktop.", timeout=60)

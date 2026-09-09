@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "commands.h"
+#include "shell.h"
 #include "proc.h"
 #include "pit.h"
 #include "kprintf.h"
@@ -184,6 +185,7 @@ int cmd_ext2(int argc, char **argv) {
  * kernel/cmd_user.c, alongside sudo, passwd, chmod and chown. */
 
 int cmd_logout(int argc, char **argv) {
+    sh_history_save();          /* the session ends here too */
     (void)argc; (void)argv;
     if (!fb_present()) { kprintf("logout: only available in the desktop session\n"); return 1; }
     kprintf("logging out...\n");

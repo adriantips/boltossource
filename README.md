@@ -151,7 +151,7 @@ argument.
 public headers and ring-3 C runtime. `sdk/build.sh -o myapp main.c util.c`
 builds an external program with the host toolchain. Download it, set its mode
 with `chmod 755`, then use `run /path/to/myapp [args...]` (or `run myapp` for
-`/bin/myapp`). The shell reports the program's exit status.
+`/bin/myapp`). The shell reports the exit status and exposes it as `$?`.
 Malformed ELF headers, out-of-bounds segments and kernel-address destinations
 are rejected before loading; failed loads release their allocated pages.
 Native BoltCC code generation and self-hosting remain unfinished.
@@ -666,6 +666,14 @@ so `write f.c "printf(\"hi\n\")"` would silently store a bare `n`.
 `write -a` appends, so a file can be built up a line at a time.
 
 ## Projects, targets and `build`
+
+The shell now also supports variables, integer arithmetic, `if`/`elif`/`else`,
+`for`/`while`, functions and script files through `sh FILE [args...]`.
+`help COMMAND` opens the same page as `man COMMAND`; `man -k WORD` searches the
+manual and `man -c` verifies coverage. Text and GUI terminals support history,
+Tab completion and caret editing. History is saved per account with mode 0600
+on a clean session exit. See [SHELL.md](SHELL.md) for syntax, examples and limits,
+including the existing file-operand pipeline convention.
 
 `cc main.c util.c parse.c` is a multi-file build whose file list lives on the
 command line -- which means it lives in the head of whoever types it. Writing
@@ -1366,8 +1374,9 @@ The interactive OS shell supports a wide range of commands:
 - **Development:** `build` (build a project's target from its `build.txt`), `vcs` (local version control: init / add / commit / log / diff / checkout / branch)
 - **Language:** `cc` (multi-file C/C++/C# via the preprocessor + BoltCC; `-g` runs it under the source-level debugger), `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the **Code** app compiles C / C++ / C#
 - **Bonus / Unique:** `focus`, `snapshot`, `timeline`, `vault`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
-- **SDK:** `run` (ELF64 programs with arguments and exit status)
-- **Core:** `help`, `echo`, `clear`, `mem`
+- **Shell:** `sh`, `source`, `.`, `test`, `[`, `true`, `false`, `set`, `unset`; variables, conditions, loops and functions (see [SHELL.md](SHELL.md))
+- **SDK & help:** `run` (ELF64 programs with arguments and exit status), `man` (pages/search/coverage), `help [COMMAND]`
+- **Core:** `echo`, `clear`, `mem`
 
 ## Full File Tree
 
@@ -1375,7 +1384,7 @@ The interactive OS shell supports a wide range of commands:
 +-- README.md
 +-- BROWSER_UPGRADE.md     Browser engine upgrade plan + status log
 +-- STORAGE_UPGRADE.md     Mount safety, failure handling and storage tests
-+-- SDK.md                 Native program ABI and the external build helper
++-- SDK.md  SHELL.md       Native program ABI and shell development guide
 +-- sdk/                  External ELF64 build helper and sample program
 +-- build.sh  run.sh  run-uefi.sh    Build and QEMU launchers (legacy + UEFI)
 +-- build-and-run-vbox.bat  rebuild-all.ps1  rebuild-vdi.ps1  read-serial.ps1
@@ -1403,7 +1412,8 @@ The interactive OS shell supports a wide range of commands:
 |   +-- js.c    cmd_js.c  boltcc.c  cpp.c  cmd_cc.c  boltpy.c   JavaScript, C preprocessor, C/C++/C#, Python
 |   +-- ccbuild.c  cmd_build.c    Build targets (build.txt) shared by cc, `build` and the IDE
 |   +-- cmd_vcs.c               BoltVCS: local version control (.bvcs objects/commits/refs)
-|   +-- cmd_run.c              Third-party ELF execution and its exit status
+|   +-- cmd_run.c  manpages.c   Third-party ELF execution and command manual
+|   +-- shline.c  shscript.c    History/completion and the shell interpreter
 |   +-- core.c  cmd_core.c       Core dumps on a ring-3 fault + the post-mortem inspector
 |   +-- pkg.c  pkgcat.c          Package manager (format, repository, deps) + its catalogue
 |   +-- image.c  font8x8.c  kprintf.c  sysreg.c  user.asm
