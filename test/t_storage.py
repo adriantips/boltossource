@@ -108,13 +108,7 @@ def drive(tag, path, transport="nvme"):
 
 
 def reach_shell(vm, recovery=False):
-    for _ in range(16):
-        if "boot mode" in vm.serial():
-            break
-        vm.key("3" if recovery else "2")
-        time.sleep(0.4)
-    vm.expect("BoltShell ready", timeout=180)
-    vm.wait_prompt()
+    vm.reach_shell(180, "3" if recovery else "2")
     vm.expect_absent("KERNEL PANIC")
 
 

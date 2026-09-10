@@ -52,13 +52,7 @@ def scratch_disks(fresh=True):
 
 def reach_shell(vm, timeout=180):
     """Pick safe mode in the boot menu, then wait for the text shell prompt."""
-    for _ in range(16):
-        if "boot mode" in vm.serial():
-            break
-        vm.key("2")
-        time.sleep(0.4)
-    vm.expect("BoltShell ready", timeout=timeout)
-    vm.wait_prompt()
+    return vm.reach_shell(timeout, "2")
 
 
 def shell(vm, line, expect=None, timeout=60):

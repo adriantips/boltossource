@@ -111,13 +111,7 @@ def serve(directory):
 #  guests
 # --------------------------------------------------------------------------
 def reach_safe_shell(vm, timeout=180):
-    for _ in range(16):
-        if "boot mode" in vm.serial():
-            break
-        vm.key("2")
-        time.sleep(0.4)
-    vm.expect("BoltShell ready", timeout=timeout)
-    vm.wait_prompt()
+    return vm.reach_shell(timeout, "2")
 
 
 def reach_net_shell(vm, timeout=180):
