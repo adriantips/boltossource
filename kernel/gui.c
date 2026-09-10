@@ -2632,6 +2632,7 @@ void gui_run(void) {
     doom_app_init();
     installer_app_init();
     software_app_init();
+    logs_app_init();
     security_app_init();
     settings_app_init();
     /* Every app gets a launcher icon on the desktop; double-click opens it. The

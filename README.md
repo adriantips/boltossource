@@ -103,6 +103,23 @@ exact pixels on flat, gradient, noise, 1x1 and images longer than the window --
 an encoder only ever read back by its own decoder can be wrong in matching
 pairs and nobody finds out.
 
+### Logs
+
+`dmesg` shows this boot's kernel ring, which lives in RAM. `/var/log/kernel.log`
+is what survived earlier boots, and `logs` reads it back.
+
+Neither half of that used to be true. `klog_persist()` existed but the only
+caller was `dmesg save`, so the log survived a reboot exactly when somebody had
+thought to ask for it in advance -- which is not when anybody needs it. A clean
+shutdown now writes it before the final commit, trimmed to stay under a size
+cap, and `logs` can read it. `logs -n N` and `logs -a` control how much, and
+**`logs save`** writes the current ring immediately: the boot that ends badly is
+otherwise exactly the boot whose log is lost.
+
+The **Logs** app shows all three side by side -- this boot's ring (live, and
+saveable with a button), earlier boots, and the crash log -- coloured by the
+kernel's own `[ok]`/`[--]` tags so a page of it can be skimmed.
+
 ### Notifications
 
 `kernel/notify.c` is a kernel-wide store of what the machine has to say, and the
@@ -150,6 +167,8 @@ Bundled apps (26):
   index parser and install path `pkg` uses
 - **Security** — session and lock settings, the firewall (rules, presets, live
   pass/block counters) and the account list
+- **Logs** — this boot's kernel ring, what survived earlier boots, and the
+  crash log, in one scrollable window
 - **Calculator**, **Clock**, **Stopwatch**, **Calendar**, **Notes** (saved to FS)
 - **Paint**, **Color Picker**, **Piano** (PC-speaker, zoomable multi-octave)
 - **System Info**, **Matrix** rain
@@ -1460,7 +1479,7 @@ The interactive OS shell supports a wide range of commands:
 - **Bonus / Unique:** `focus`, `snapshot`, `timeline`, `vault`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
 - **Shell:** `sh`, `source`, `.`, `test`, `[`, `true`, `false`, `set`, `unset`; variables, conditions, loops and functions (see [SHELL.md](SHELL.md))
 - **SDK & help:** `run` (ELF64 programs with arguments and exit status), `man` (pages/search/coverage), `help [COMMAND]`
-- **Desktop:** `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window), `keys` (list/rebind/reset global shortcuts)
+- **Desktop:** `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window), `keys` (list/rebind/reset global shortcuts), `logs` (the kernel log kept across reboots)
 - **Core:** `echo`, `clear`, `mem`
 
 ## Full File Tree
@@ -1500,6 +1519,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- ccbuild.c  cmd_build.c    Build targets (build.txt) shared by cc, `build` and the IDE
 |   +-- cmd_vcs.c               BoltVCS: local version control (.bvcs objects/commits/refs)
 |   +-- notify.c  cmd_notify.c  Notification store behind toasts and the centre
+|   +-- cmd_logs.c  app_logs.c  The kernel log across reboots, and its viewer
 |   +-- png_enc.c              PNG writer (LZ77 + fixed-Huffman deflate)
 |   +-- screenshot.c  cmd_shot.c  Panel capture -> PNG in ~/Pictures
 |   +-- cmd_desk.c             Virtual desktops from the shell

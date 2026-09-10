@@ -274,6 +274,14 @@ static const manpage_t MAN[] = {
   "away from every program. F-keys need no modifier. Two actions cannot share\n"
   "a chord -- unbind one with `keys ACTION none` first. Changes are written to\n"
   "/etc/keys.conf and reloaded at boot." },
+{ "logs", "logs [-n LINES] | logs -a | logs save | logs clear",
+  "The kernel log that outlives the boot it was written in. `dmesg` shows this\n"
+  "boot's ring, which is in RAM; this shows /var/log/kernel.log, which is\n"
+  "written there on a clean shutdown and trimmed to stay under a size cap.\n"
+  "`logs save` writes the current ring now -- the thing to run before\n"
+  "rebooting a machine that has just misbehaved, since a boot that ends badly\n"
+  "is exactly the one whose log is otherwise lost. `crashlog` is the separate\n"
+  "record of faults and panics." },
 
 /* -------------------------------------------------------------- process --- */
 { "ps", "ps",
