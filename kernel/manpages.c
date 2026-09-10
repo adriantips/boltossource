@@ -395,6 +395,24 @@ static const manpage_t MAN[] = {
   "Either way it reports how long the audio really lasted -- on a PCM codec\n"
   "that is how long the samples took to play, so a figure well short of the\n"
   "one expected means the audio never reached the speakers." },
+{ "media", "media [status|list|open FILE|play|pause|stop|next|prev|track N|seek POS|vol N|repeat on|off]",
+  "The Media player's transport, from a prompt. There is one player: this and\n"
+  "the window are two sets of controls on the same track.\n"
+  "`media open FILE` loads a WAV file, makes the other .wav files in its folder\n"
+  "the playlist, shows the window and starts playing. Unlike `play`, it returns\n"
+  "immediately -- the desktop's main loop feeds the codec half a second at a\n"
+  "time, so the track keeps playing while you do something else, and keeps\n"
+  "playing when its window is minimised or on another desktop.\n"
+  "The window it opens does not take the keyboard: the caret stays in the\n"
+  "shell you typed into, so the next thing you type is a command and not a\n"
+  "space bar. Raise the window from the taskbar to use the buttons.\n"
+  "`seek` takes M:SS, a number of seconds, or +/-N to move relative to where\n"
+  "the track is now. `vol` is the system volume, the same one the tray slider\n"
+  "and Ctrl+wheel over the taskbar change.\n"
+  "`status` reports the position that is audible now, which is behind the\n"
+  "decoder by up to the half second it has already handed to the device.\n"
+  "Playback needs the desktop running: in safe mode nothing would feed the\n"
+  "codec, and the command says so rather than appearing to work." },
 { "dhcp", "dhcp",
   "Request a lease now, rather than waiting for the boot-time attempt." },
 { "clip", "clip show | clip set TEXT... | clip clear",

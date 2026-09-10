@@ -36,6 +36,13 @@ int  audio_busy(void);
 void audio_stop(void);
 int  audio_pcm_ok(void);
 
+/* A blocking play takes the device away from whatever was streaming through it.
+ * The dispatch layer has no idea what that is, so the desktop registers a
+ * callback here that stops the streaming players (Media, Music) first --
+ * without it, `play` and a track already running push buffers at one DMA
+ * engine and both come out broken. Same arrangement as notify_set_hook(). */
+void audio_set_preempt(void (*stop_streams)(void));
+
 void audio_set_volume(int percent);       /* 0..100 master volume */
 int  audio_volume(void);
 

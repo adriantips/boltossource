@@ -90,11 +90,12 @@ struct window {
 };
 
 enum { ICON_NONE = 0, ICON_TERMINAL, ICON_TASKMGR, ICON_START, ICON_FILES, ICON_SETTINGS,
-       ICON_BROWSER, ICON_FOLDER, ICON_FILE, ICON_TRASH, ICON_CALC, ICON_CLOCK, ICON_NOTES, ICON_CALENDAR, ICON_PIANO, ICON_PAINT, ICON_MINES, ICON_SNAKE, ICON_2048, ICON_STOPWATCH, ICON_SYSINFO, ICON_LIFE, ICON_TTT, ICON_COLOR, ICON_MEMORY, ICON_MATRIX, ICON_CODE, ICON_DOOM, ICON_OLDBROWSER, ICON_SHEETS, ICON_IMAGE, ICON_MUSIC, ICON_TASKS, ICON_CONTACTS, ICON_INSTALL, ICON_SECURITY, ICON_SOFTWARE };
+       ICON_BROWSER, ICON_FOLDER, ICON_FILE, ICON_TRASH, ICON_CALC, ICON_CLOCK, ICON_NOTES, ICON_CALENDAR, ICON_PIANO, ICON_PAINT, ICON_MINES, ICON_SNAKE, ICON_2048, ICON_STOPWATCH, ICON_SYSINFO, ICON_LIFE, ICON_TTT, ICON_COLOR, ICON_MEMORY, ICON_MATRIX, ICON_CODE, ICON_DOOM, ICON_OLDBROWSER, ICON_SHEETS, ICON_IMAGE, ICON_MUSIC, ICON_TASKS, ICON_CONTACTS, ICON_INSTALL, ICON_SECURITY, ICON_SOFTWARE, ICON_MEDIA };
 
 window_t *gui_add_window(const char *title, int w, int h, uint32_t accent, int icon);
 void      gui_open(window_t *win);          /* show + focus + raise           */
 void      gui_focus(window_t *win);
+void      gui_show_unfocused(window_t *win);  /* show it; the keyboard stays put */
 void      gui_request_redraw(void);
 int       gui_cpu_load(void);               /* 0..100, real busy/idle fraction*/
 int       gui_screen_w(void);               /* logical desktop width           */
@@ -164,6 +165,37 @@ void sheets_open_path(const char *path);  /* load `path` into Sheets + show it  
 void imgview_app_init(void);
 void imgview_open_path(const char *path); /* decode + show an image in Photos    */
 void music_app_init(void);
+void music_halt(void);                    /* give the codec back to whoever asked */
+
+/* ---- Media player -------------------------------------------------------- *
+ *  The window is the smaller half of this. Playback is fed from the desktop's
+ *  main loop (media_pump), not from the window's tick, so a track keeps playing
+ *  while its window is minimised or on another desktop -- and so the gap
+ *  between one buffer and the next is a millisecond rather than a tick. The
+ *  `media` command is the same transport from a prompt, for a session over SSH
+ *  and for a test that would otherwise have to synthesise clicks on a seek bar
+ *  to check anything.                                                          */
+void media_app_init(void);
+void media_open_path(const char *path);   /* load, show and play an audio file  */
+void media_open_path_bg(const char *path);/* the same, without taking the keyboard */
+void media_pump(void);                    /* keep the codec fed (desktop loop)  */
+void media_halt(void);                    /* stop; release the codec            */
+void media_toggle(void);                  /* play / pause                       */
+void media_stop(void);
+int  media_skip(int delta);               /* +1 next, -1 previous; -1 if no list */
+int  media_select(int i);                 /* play playlist entry i              */
+void media_seek_ms(uint32_t ms);
+uint32_t media_position_ms(void);         /* what is audible now, not decoded   */
+uint32_t media_duration_ms(void);
+int  media_playing(void);
+int  media_loaded(void);
+const char *media_track(void);            /* file name, or "" */
+const char *media_status(void);           /* why it will not play, or "" */
+const char *media_folder(void);           /* the folder the playlist came from */
+int  media_repeat(void);
+void media_set_repeat(int on);
+int  media_index(void);                   /* playlist position, or -1 */
+int  media_list(int i, const char **name);/* count; the i'th name via *name */
 void gui_set_wallpaper_image(const char *path); /* use an image as the wallpaper  */
 void gui_clear_wallpaper_image(void);           /* revert to the procedural style */
 /* Post a notification: a toast bottom-right now, and a row in the notification

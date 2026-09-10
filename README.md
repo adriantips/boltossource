@@ -13,7 +13,7 @@ honest account of what it cannot do yet.
 > Status: **active development.** Custom boot chain (stage1 → stage2 → long mode,
 > or UEFI → long mode) into a 64-bit C kernel. UEFI boot, ACPI, APIC, **SMP
 > (symmetric multiprocessing)**, HPET, a framebuffer compositor and windowed
-> **GUI desktop with 33 apps** (including a playable port of **DOOM**), a
+> **GUI desktop with 34 apps** (including a playable port of **DOOM**), a
 > preemptive **round-robin scheduler** with processes and **ring-3 userland**
 > (ELF64 loader + syscalls), physical and virtual memory management (including
 > **ASLR, SMAP, SMEP** and **swap**), a **persistent filesystem** on real ATA /
@@ -162,7 +162,7 @@ a machine administered over SSH has no taskbar. Today the ring-3 crash path post
 where the core dump is, and the storage layer posts when a disk has been
 protected read-only and changes are RAM-only.
 
-Bundled apps (33):
+Bundled apps (34):
 
 - **Terminal** — the full interactive shell in a window
 - **File Explorer** — browse/open the persistent filesystem
@@ -187,6 +187,11 @@ Bundled apps (33):
   pass/block counters) and the account list
 - **Logs** — this boot's kernel ring, what survived earlier boots, and the
   crash log, in one scrollable window
+- **Media** — a WAV player: the folder a track came from is the playlist, the
+  level meter is drawn from the samples on their way to the codec, and playback
+  is fed from the compositor's main loop rather than the window's tick, so it
+  keeps playing while the window is minimised, on another desktop, or while the
+  session is locked
 - **Calculator**, **Clock**, **Stopwatch**, **Calendar**, **Notes** (saved to FS)
 - **Paint**, **Color Picker**, **Piano** (PC-speaker, zoomable multi-octave)
 - **System Info**, **Matrix** rain
@@ -450,7 +455,7 @@ Windows are accessible from the shell and File Explorer.
 Two codec drivers sit behind one interface (`include/audio.h`), and
 `drivers/audio.c` picks between them at boot: **Intel HD Audio** first, then
 **AC'97**, then the legacy **PC speaker** (`drivers/pcspk.c`) so a tone always
-makes a sound. Everything above the line — Music, Piano, DOOM, `play` — speaks
+makes a sound. Everything above the line — Media, Music, Piano, DOOM, `play` — speaks
 only 48 kHz / 16-bit / stereo PCM and never learns which codec it reached.
 
 **Intel HD Audio** (`drivers/hda.c`) is what a machine built since about 2005
@@ -483,11 +488,34 @@ system sounds are generated at build time by `mkwav.py` and seeded to
 `/usr/share/sounds` in two deliberately different shapes (22 kHz mono 8-bit,
 44.1 kHz stereo 16-bit), so between them they exercise every conversion.
 
+The **Media** player (`kernel/app_media.c`) is what makes that usable. `play`
+holds the calling thread until the last sample is gone, which is fine for a test
+and no good for music; the player decodes half a second at a time and is fed
+from `media_pump()` at the top of the compositor's main loop. That placement is
+the design: the loop wakes on every timer interrupt, so the handover from one
+buffer to the next costs about a millisecond rather than the 150 ms a window
+tick would, and being above every early-out in that loop, a track keeps playing
+while its window is minimised, while another desktop is showing, while the
+session is locked and while a ring-3 program owns the panel. The folder a track
+came out of is its playlist and it advances on its own; the level meter is
+measured from the PCM on its way to the device, so a silent passage shows
+silence. `media` is the same transport from a prompt — `media open FILE`,
+`play`/`pause`, `next`, `seek`, `vol` — for scripts and for a session over SSH,
+and opening the player that way deliberately does not take the keyboard away
+from the shell you typed into. There is one codec and one stream: Media and
+Music stop each other, and a blocking `play` preempts both through a hook
+`drivers/audio.c` calls before it submits — the alternative is two callers
+pushing buffers at one DMA engine and both coming out broken.
+
 `test/t_audio.py` and `test/t_wav.py` point QEMU's audio backend at a WAV file
 and assert on the samples that actually left the guest — how many there were and
 what frequency they carry — so a wrong sample rate, a wrong stream format, a
 muted amplifier or a subtly wrong resampler fails the test even though every
-register reads back correctly.
+register reads back correctly. `test/t_media.py` uses the same capture to
+check the thing the player exists for: nothing is typed for six seconds, and the
+audio arriving at the sound card over the whole run is far more than the system
+sounds hold, at both of their pitches — so it was fed continuously, by something
+other than the shell, across the end of a track.
 
 ## Web browser & network stack
 
@@ -1484,7 +1512,7 @@ fs/             Filesystems: BoltFS (in-RAM tree, persisted), EXT2 (read-only), 
 include/        80+ kernel/system headers (blk, dom, layout, js, acpi, apic, smp, ahci, ext2, fat32,
                 ttf, clipboard, users, audio, dhcp, nvme, xhci, rsa, x509, ...)
 kernel/         Core kernel: scheduler, processes, syscalls, ELF + PE loaders, block layer, ACPI, APIC,
-                SMP, HPET, GUI + 24 apps, shell, browser engine (DOM/layout), BoltCC compilers, JS + Python
+                SMP, HPET, GUI + 34 apps, shell, browser engine (DOM/layout), BoltCC compilers, JS + Python
                 interpreters, package manager, multi-user, clipboard, TTF renderer, stack canaries
 libc/           Freestanding C library (string, malloc, printf, scanf, stdlib, math, stdio, time, setjmp)
 mm/             Memory management (PMM, heap, virtual memory, DMA, swap)
@@ -1534,6 +1562,7 @@ The interactive OS shell supports a wide range of commands:
 - **Bonus / Unique:** `focus`, `snapshot`, `timeline`, `vault`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
 - **Shell:** `sh`, `source`, `.`, `test`, `[`, `true`, `false`, `set`, `unset`; variables, conditions, loops and functions (see [SHELL.md](SHELL.md))
 - **SDK & help:** `run` (ELF64 programs with arguments and exit status), `man` (pages/search/coverage), `help [COMMAND]`
+- **Audio:** `play` (a tone, or a WAV file streamed and converted as it goes), `media` (the player's transport: `open`, `play`/`pause`, `next`/`prev`, `track`, `seek`, `vol`, `repeat`, `list`)
 - **Desktop:** `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window), `keys` (list/rebind/reset global shortcuts), `logs` (the kernel log kept across reboots)
 - **Core:** `echo`, `clear`, `mem`
 
@@ -1555,7 +1584,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- stage1.asm  stage2.asm  uefi_boot.c
 +-- doom/                  Full doomgeneric port (~150 files, includes libc shim)
 +-- drivers/
-|   +-- ac97.c     ahci.c    ata.c     e1000.c   virtio_net.c
+|   +-- ac97.c     hda.c     audio.c   ahci.c    ata.c     e1000.c   virtio_net.c
 |   +-- framebuffer.c  gpu.c  keyboard.c  mouse.c
 |   +-- nvme.c     pcspk.c   xhci.c
 +-- fs/
@@ -1588,7 +1617,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- ttf.c    clipboard.c  users.c  pkg.c
 |   +-- cmd_extra.c  cmd_fs.c  cmd_net.c  cmd_netcfg.c  cmd_serve.c  cmd_ssh.c  cmd_edit.c  cmd_proc.c  cmd_python.c  cmd_sys.c  cmd_hw.c
 |   +-- cmd_js.c  cmd_libctest.c  cmd_nstest.c
-|   \-- app_*.c           24 desktop apps (browser, files, ide, taskmgr, doom, paint, games, ...)
+|   \-- app_*.c           34 desktop apps (browser, files, ide, taskmgr, media, doom, paint, games, ...)
 +-- libc/
 |   +-- string.c  string_ext.c  malloc.c  printf.c  scanf.c
 |   +-- stdlib.c  math.c  stdio_file.c  time.c  support.c
