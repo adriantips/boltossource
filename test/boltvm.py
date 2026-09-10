@@ -94,7 +94,7 @@ class BoltVM:
     def __init__(self, name="vm", uefi=False, disks=True, net=True, snapshot=True,
                  memory="2G", smp=2, extra=None, port=None, workdir=None,
                  boot_img=None, data_disks=None, no_reboot=False, nic="e1000",
-                 hostfwd=None):
+                 hostfwd=None, audio="ac97", wav=None):
         self.name = name
         self.uefi = uefi
         self.workdir = workdir or os.path.join(ROOT, "test", "out")
@@ -139,9 +139,35 @@ class BoltVM:
             if os.path.exists(p):
                 a += ["-drive", _drive(tag, p, snapshot), "-device", dev]
 
+        # `wav` points QEMU's audio backend at a file instead of a null sink, so
+        # a test can assert on the samples that actually left the guest rather
+        # than on how long the guest thought it took to send them. The header's
+        # length field is only fixed up when QEMU exits, so read it after stop().
+        self.wav_path = None
+        if wav:
+            self.wav_path = wav if os.path.isabs(wav) else os.path.join(self.workdir, wav)
+            # Pin the backend to the guest's own format, so what lands in the
+            # file is the samples the codec emitted rather than a resampled
+            # rendering of them (QEMU's wav backend defaults to 44.1 kHz).
+            audiodev = ("wav,id=snd0,path=%s,out.frequency=48000,out.channels=2"
+                        ",out.format=s16" % self.wav_path)
+        else:
+            audiodev = "none,id=snd0"
+
         a += ["-m", memory, "-smp", str(smp), "-cpu", "max", "-rtc", "base=utc",
               "-vga", "std", "-global", "VGA.vgamem_mb=64",
-              "-audiodev", "none,id=snd0", "-device", "AC97,audiodev=snd0"]
+              "-audiodev", audiodev]
+        # `audio` picks the emulated codec, so the same test body can be run
+        # against either driver BoltOS ships. "hda" also attaches a codec: an
+        # HDA controller with nothing on its link is a controller with nothing
+        # to play through, and the driver is right to decline it.
+        if audio in ("ac97", "both"):
+            a += ["-device", "AC97,audiodev=snd0"]
+        if audio in ("hda", "both"):
+            a += ["-device", "intel-hda,id=hda",
+                  "-device", "hda-duplex,bus=hda.0,audiodev=snd0"]
+        elif audio == "hda-nocodec":
+            a += ["-device", "intel-hda,id=hda"]
         if net:
             # `nic` picks the emulated adapter, so the same test body can be run
             # against every driver BoltOS ships: "e1000" or "virtio-net-pci".

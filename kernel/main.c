@@ -347,7 +347,7 @@ void kmain(struct bootinfo *bi) {
                     nt.year, nt.mon, nt.day, nt.hour, nt.min, nt.sec);
         }
 
-        audio_init();    /* AC97 / Intel HDA codec (PC speaker fallback) */
+        audio_init();    /* Intel HDA, then AC97, then the PC speaker */
     }
 
     sched_init();                         /* adopt current context as thread 0 */

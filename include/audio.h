@@ -2,15 +2,22 @@
 #include <stdint.h>
 
 /* ===========================================================================
- *  Audio output. Drives an AC'97 codec (QEMU's -device AC97) with a real DMA
- *  buffer-descriptor list for 48 kHz / 16-bit / stereo PCM. Detects Intel HDA
- *  as well. Falls back to the PC speaker when no PCI audio device is present so
- *  audio_tone() always makes a sound.
+ *  Audio output.
+ *
+ *  Two codec drivers sit behind one interface: Intel HD Audio (drivers/hda.c),
+ *  which is what every machine built since about 2005 actually has, and AC'97
+ *  (drivers/ac97.c) for older hardware and QEMU's -device AC97. audio_init()
+ *  probes HDA first and falls back to AC'97, then to the PC speaker, so
+ *  audio_tone() always makes a sound even with no PCI codec at all.
+ *
+ *  Everything above this line -- Music, Piano, DOOM, the `play` command --
+ *  speaks only 48 kHz / 16-bit / signed / stereo PCM and never learns which
+ *  codec it reached.
  * ===========================================================================*/
 
 void        audio_init(void);
 int         audio_present(void);          /* 1 if a PCI codec was claimed */
-const char *audio_name(void);             /* "AC97" / "Intel HDA" / "PC speaker" */
+const char *audio_name(void);             /* "Intel HDA" / "AC97" / "PC speaker" */
 
 /* Play a square-wave tone of `freq` Hz for `ms` milliseconds (blocking). */
 void audio_tone(uint32_t freq, uint32_t ms);
@@ -27,3 +34,23 @@ int  audio_pcm_ok(void);
 
 void audio_set_volume(int percent);       /* 0..100 master volume */
 int  audio_volume(void);
+
+/* --- codec back end -------------------------------------------------------
+ *  A codec driver publishes one of these from its probe. Nothing outside
+ *  drivers/audio.c calls through it; the dispatch layer owns the fallbacks,
+ *  the tone generator and the volume bookkeeping, so a driver only has to move
+ *  PCM at 48 kHz and say when it has finished.
+ * ------------------------------------------------------------------------*/
+typedef struct audio_dev {
+    const char *name;
+    uint32_t (*capacity)(void);                        /* max frames per submit */
+    void     (*submit)(const int16_t *pcm, uint32_t frames);  /* copy + start DMA */
+    int      (*busy)(void);                            /* 1 while it is playing */
+    void     (*stop)(void);
+    void     (*volume)(int percent);                   /* 0..100 */
+} audio_dev_t;
+
+/* Claim the device if present, otherwise return NULL. Called only by
+ * audio_init(), in preference order. */
+const audio_dev_t *hda_probe(void);
+const audio_dev_t *ac97_probe(void);

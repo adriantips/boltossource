@@ -155,7 +155,12 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 
 ## Phase 6 — Peripherals & media
 
-- [ ] 85. Intel HD Audio driver alongside AC97
+- [x] 85. Intel HD Audio driver alongside AC97: controller reset, CORB/RIRB
+        with an immediate-command fallback, a codec graph walk that scores
+        the output pins and traces a route back to a converter through
+        mixers and selectors, and gain on that route as the volume knob.
+        Both drivers now sit behind one interface, and a controller with
+        no codec on its link is declined rather than claimed and silent
 - [ ] 86. Volume mixer
 - [ ] 87. Microphone capture path
 - [ ] 88. WAV playback

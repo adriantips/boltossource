@@ -32,6 +32,8 @@ exec "$QEMU" \
     -audiodev dsound,id=snd0 \
     -machine pcspk-audiodev=snd0 \
     -device AC97,audiodev=snd0 \
+    -device intel-hda,id=hda \
+    -device hda-duplex,bus=hda.0,audiodev=snd0 \
     -netdev user,id=net0 \
     -device e1000,netdev=net0 \
     -device qemu-xhci,id=xhci \

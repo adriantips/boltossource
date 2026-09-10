@@ -384,16 +384,20 @@ static const manpage_t MAN[] = {
 { "acpiinfo", "acpiinfo",
   "The ACPI tables that were found, and what the APIC and HPET are set to." },
 { "play", "play [HZ] [MS]",
-  "Play a tone through the AC97 audio device (defaults: 440 Hz, 400 ms)." },
+  "Play a tone (defaults: 440 Hz, 400 ms) through whichever codec the machine\n"
+  "has: Intel HDA, an AC'97, or the PC speaker if it has neither. It reports\n"
+  "the device it used and how long the tone really lasted -- on a PCM codec\n"
+  "that is how long the samples took to play, so a figure well short of the\n"
+  "one asked for means the audio never reached the speakers." },
 { "dhcp", "dhcp",
   "Request a lease now, rather than waiting for the boot-time attempt." },
 { "clip", "clip show | clip set TEXT... | clip clear",
-  "The system clipboard, shared with every GUI app. It carries one item of one' + N + '"
-  "kind: text, an image, or a list of files. `show` says which -- an image' + N + '"
-  "reports its size, files list their paths.' + N + '"
-  "Copy a picture with Ctrl+C in Photos or Paint; paste it into Paint, or into' + N + '"
-  "a folder in File Explorer, where it is written out as a PNG. Copying a file' + N + '"
-  "in File Explorer also puts its path here as text, so it can be pasted into' + N + '"
+  "The system clipboard, shared with every GUI app. It carries one item of one\n"
+  "kind: text, an image, or a list of files. `show` says which -- an image\n"
+  "reports its size, files list their paths.\n"
+  "Copy a picture with Ctrl+C in Photos or Paint; paste it into Paint, or into\n"
+  "a folder in File Explorer, where it is written out as a PNG. Copying a file\n"
+  "in File Explorer also puts its path here as text, so it can be pasted into\n"
   "Notes or a Terminal." },
 { "crash", "crash ring3 [null|div|ud|stack] | crash null|div|ud",
   "Fault on purpose. `crash ring3` runs /bin/crashme, which dies while the\n"

@@ -120,7 +120,16 @@ int cmd_play(int argc, char **argv) {
     int freq = argc > 1 ? atoi(argv[1]) : 440;
     int ms   = argc > 2 ? atoi(argv[2]) : 400;
     kprintf("Playing %d Hz for %d ms on %s\n", freq, ms, audio_name());
+    /* Report how long it really took. On a PCM codec a tone lasts as long as the
+     * DMA engine takes to consume its samples, so an elapsed time that tracks
+     * the length asked for is evidence that audio actually left the machine --
+     * rather than that a handful of registers accepted a write. Timed off the
+     * HPET, which is read on demand: the PIT can only report ticks it managed
+     * to deliver, and this is measured across a tight polling loop. */
+    uint64_t t0 = hpet_present() ? hpet_us() : pit_ticks() * 1000;
     audio_tone((uint32_t)freq, (uint32_t)ms);
+    uint64_t us = (hpet_present() ? hpet_us() : pit_ticks() * 1000) - t0;
+    kprintf("play: %lu ms elapsed on %s\n", us / 1000, audio_name());
     return 0;
 }
 
