@@ -176,15 +176,29 @@ class BoltVM:
     def start(self):
         if os.path.exists(self.serial_path):
             os.remove(self.serial_path)
+        # QEMU's stderr goes to a file, not a pipe. A pipe nobody reads holds
+        # 64 KiB and then blocks the writer, and a blocked QEMU is a guest that
+        # has stopped dead -- no serial output, no input, no clue why. That is
+        # not hypothetical: a chatty QEMU froze guests mid-test and the only
+        # symptom was a machine that had printed its shell prompt and would
+        # never answer again.
+        self._errf = open(self.serial_path + ".stderr", "wb")
         self.proc = subprocess.Popen(self.args, stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.PIPE)
+                                     stderr=self._errf)
         self._connect_qmp()
+
+    def qemu_stderr(self):
+        try:
+            self._errf.flush()
+            with open(self.serial_path + ".stderr", "rb") as fh:
+                return fh.read().decode("utf-8", "replace")
+        except (OSError, AttributeError):
+            return ""
 
     def _connect_qmp(self):
         for _ in range(160):
             if self.proc.poll() is not None:
-                err = self.proc.stderr.read().decode("utf-8", "replace")
-                raise SystemExit("QEMU exited early:\n" + err)
+                raise SystemExit("QEMU exited early:\n" + self.qemu_stderr())
             try:
                 s = socket.create_connection(("127.0.0.1", self.port), timeout=2)
                 self.qmp = s.makefile("rwb", buffering=0)
@@ -285,9 +299,14 @@ class BoltVM:
         desktop or network), "1" for a normal boot. Returns the boot log,
         which probing would otherwise clear and which callers assert on.
         """
-        for _ in range(16):
-            if "boot mode" in self.serial():
-                break
+        # Keep offering the menu key until the kernel says which mode it chose.
+        # Not a fixed number of presses: if a slow host outlasted them we would
+        # start probing while stage2 was still counting down, and the probe's
+        # Enter would pick the *default* entry -- a normal boot with a desktop,
+        # where a test expecting a text shell then waits for a prompt that is
+        # never coming.
+        deadline = time.time() + timeout
+        while time.time() < deadline and "boot mode" not in self.serial():
             self.key(entry)
             time.sleep(0.4)
 
@@ -296,7 +315,6 @@ class BoltVM:
         # modifier is a probe that a stray modifier state can defeat -- which
         # is a silly way to spend a three-minute timeout.
         boot_log = ""
-        deadline = time.time() + timeout
         while time.time() < deadline:
             boot_log += self.serial()
             self._buf = ""                     # probe against a clean buffer

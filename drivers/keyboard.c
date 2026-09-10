@@ -218,6 +218,22 @@ void keyboard_init(void) {
     win = 0;
     win_used = 0;
     extended = 0;
+
+    /* Drain the 8042 before installing the handler, and again after.
+     *
+     * A byte left in the controller by the firmware or the boot menu produced
+     * its interrupt at a moment when there was nothing to take it, and the
+     * 8042 will not raise another until that byte is read. One `inb` used to
+     * be enough for the single byte the boot menu leaves; it is not enough for
+     * somebody who taps a few keys while the machine is starting, and the
+     * consequence was not a lost keystroke -- it was a keyboard that never
+     * worked again until the next reboot. Which is a thing people do.
+     *
+     * So: loop, and consult the status register (bit 0 = output buffer full)
+     * rather than reading blind. Bounded, because a controller that always
+     * claims to have a byte should not stop the boot. Draining once more after
+     * irq_install closes the window between the two. */
+    for (int i = 0; i < 64 && (inb(0x64) & 1); i++) inb(0x60);
     irq_install(1, on_key);
-    inb(0x60);                                      /* drain any pending byte */
+    for (int i = 0; i < 64 && (inb(0x64) & 1); i++) inb(0x60);
 }
