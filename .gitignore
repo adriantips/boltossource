@@ -10,3 +10,4 @@ assets/font.ttf
 test/out/
 __pycache__/
 *.pyc
+.claude/settings.local.json
