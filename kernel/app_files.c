@@ -14,6 +14,9 @@
 #include "pit.h"
 #include "mouse.h"
 #include "keyboard.h"     /* KEY_COPY/CUT/PASTE/DEL */
+#include "clipboard.h"
+#include "png_enc.h"
+#include "kheap.h"
 #include "commands.h"     /* sh_human, sh_utoa */
 
 #define TOOLBAR_H  44
@@ -237,8 +240,22 @@ static void delete_sel(files_t *st) {
 static fs_node *fclip;
 static int      fclip_cut;
 
-static void copy_sel(files_t *st) { if (st->sel && st->sel != fs_root()) { fclip = st->sel; fclip_cut = 0; } }
-static void cut_sel (files_t *st) { if (st->sel && st->sel != fs_root()) { fclip = st->sel; fclip_cut = 1; } }
+/* Copying here also puts the path on the *system* clipboard, so a file copied
+ * in File Explorer can be pasted as text into Notes or a Terminal. fclip is
+ * kept alongside it because a cut has to remember the node itself -- a move is
+ * not a path operation. */
+static void publish_selection(files_t *st) {
+    if (!st->sel) return;
+    char path[FS_PATH_MAX];
+    fs_abspath(st->sel, path, sizeof path);
+    clip_set_files(path, (int)strlen(path));
+}
+static void copy_sel(files_t *st) {
+    if (st->sel && st->sel != fs_root()) { fclip = st->sel; fclip_cut = 0; publish_selection(st); }
+}
+static void cut_sel (files_t *st) {
+    if (st->sel && st->sel != fs_root()) { fclip = st->sel; fclip_cut = 1; publish_selection(st); }
+}
 
 /* true if `anc` is `n` or an ancestor of `n` (guards pasting a dir into itself) */
 static int is_ancestor(fs_node *anc, fs_node *n) {
@@ -288,7 +305,8 @@ static int build_menu(files_t *st, mrow *out, int max) {
         if (n < max) out[n++] = (mrow){ "New text",   A_NEWTXT };
         if (n < max) out[n++] = (mrow){ "New sheet",  A_NEWCSV };
     }
-    if (fclip && n < max) out[n++] = (mrow){ "Paste", A_PASTE };
+    if ((fclip || clip_kind() == CLIP_FILES || clip_kind() == CLIP_IMAGE) && n < max)
+        out[n++] = (mrow){ "Paste", A_PASTE };
     return n;
 }
 static fs_node *item_at(files_t *st, int lx, int ly) {
@@ -299,7 +317,52 @@ static fs_node *item_at(files_t *st, int lx, int ly) {
     return 0;
 }
 
+/* Paste an image off the system clipboard as a PNG in this directory. The OS
+ * grew a PNG writer for screenshots; this is the same one, so "copy a picture,
+ * paste it into a folder" costs nothing but the wiring. */
+static int paste_clip_image(files_t *st) {
+    int w = 0, h = 0;
+    const uint32_t *px = clip_image(&w, &h);
+    if (!px) return 0;
+    uint8_t *png = 0; uint32_t len = 0;
+    if (png_encode(px, w, h, &png, &len) != 0 || !png) return 0;
+    char nm[FS_NAME_MAX];
+    unique_name(st->dir, "pasted.png", nm, sizeof nm);
+    char path[FS_PATH_MAX];
+    fs_abspath(st->dir, path, sizeof path);
+    if (path[0] && path[strlen(path) - 1] != '/') kstrlcat(path, "/", sizeof path);
+    kstrlcat(path, nm, sizeof path);
+    fs_node *f = fs_create(path, 0);
+    int ok = f && fs_write(f, png, len) == 0;
+    kfree(png);
+    if (ok) st->sel = f;
+    return ok;
+}
+
+/* Paste paths off the system clipboard -- what somebody copied in another
+ * window, or typed with `clip set`. */
+static int paste_clip_files(files_t *st) {
+    int n = clip_file_count(), done = 0;
+    for (int i = 0; i < n; i++) {
+        char p[FS_PATH_MAX];
+        if (!clip_file_at(i, p, sizeof p)) continue;
+        fs_node *src = fs_lookup(p);
+        if (!src || src == fs_root() || is_ancestor(src, st->dir)) continue;
+        char nm[FS_NAME_MAX];
+        unique_name(st->dir, src->name, nm, sizeof nm);
+        fs_node *made = copy_node_into(st->dir, src, nm);
+        if (made) { st->sel = made; done++; }
+    }
+    return done;
+}
+
 static void paste_into(files_t *st) {
+    /* Nothing cut or copied in this window? Then whatever is on the system
+     * clipboard is what the user means. */
+    if (!fclip && st->dir) {
+        if (clip_kind() == CLIP_IMAGE) { paste_clip_image(st); return; }
+        if (clip_kind() == CLIP_FILES) { paste_clip_files(st); return; }
+    }
     if (!fclip || !st->dir) return;
     if (fclip_cut && is_ancestor(fclip, st->dir)) return;   /* no move into own subtree */
     char nm[FS_NAME_MAX];

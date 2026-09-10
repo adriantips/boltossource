@@ -9,6 +9,9 @@
 #include "gui.h"
 #include "fs.h"
 #include "image.h"
+#include "clipboard.h"
+#include "keyboard.h"
+#include "notify.h"
 #include "string.h"
 
 #define TOOLH 30
@@ -95,6 +98,19 @@ static void imgview_draw(window_t *w, int cx, int cy, int cw, int ch) {
     g_blit(cx + ox, ay + oy, ow, oh, iv_img->px, iv_img->w, iv_img->h);
 }
 
+/* Ctrl+C hands the picture to the rest of the machine: Paint can draw on it,
+ * File Explorer can save it as a PNG. Before the clipboard had a kind, the
+ * only thing an image viewer could copy was nothing. */
+static void imgview_key(window_t *w, char c) {
+    (void)w;
+    if ((unsigned char)c != KEY_COPY) return;
+    if (!iv_img) { gui_notify(NOTE_INFO, "Photos", "There is no image open to copy"); return; }
+    if (clip_set_image(iv_img->px, iv_img->w, iv_img->h) == 0)
+        gui_notify(NOTE_SUCCESS, "Photos", "Image copied to the clipboard");
+    else
+        gui_notify(NOTE_WARN, "Photos", "The image is too large to copy");
+}
+
 static void imgview_click(window_t *w, int lx, int ly) {
     (void)w;
     if (iv_img && wp_bw && lx >= wp_bx && lx < wp_bx + wp_bw &&
@@ -108,6 +124,7 @@ void imgview_app_init(void) {
     if (!win) return;
     win->draw  = imgview_draw;
     win->click = imgview_click;
+    win->key   = imgview_key;
     win->min_w = 280; win->min_h = 200;
     win->x = 260; win->y = 70;
     iv_win = win;

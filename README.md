@@ -49,8 +49,26 @@ which is flipped to the framebuffer. Windows support move/resize, focus/z-order,
 minimize/maximize, a taskbar with pinning, right-click context menus, and a
 desktop of double-clickable launcher icons. Font rendering uses **TrueType**
 outlines (`kernel/ttf.c`) in addition to the built-in bitmap fonts. A
-**system-wide clipboard** (`kernel/clipboard.c`) enables copy/paste across apps.
+**system-wide clipboard** (`kernel/clipboard.c`) carries text, an image or a
+list of files -- one item, typed, so every reader asks what kind it is before
+taking it.
 Each app is a `kernel/app_*.c` file exposing `draw/key/click/drag/tick` callbacks.
+
+### Clipboard
+
+One item, of one of three kinds. Text is a static buffer, because copying a
+selection must not be able to fail. An image is on the heap, because a full
+screen is three megabytes. Files are carried as their **paths**, which means a
+file selection is also text -- paste it into Notes and you get the paths, paste
+it into File Explorer and you get the files, and neither app has to know about
+the other representation.
+
+Ctrl+C in **Photos** or **Paint** copies the picture; Ctrl+V in Paint pastes one,
+scaled to fit rather than cropped. Pasting an image into a folder in **File
+Explorer** writes it out as a PNG, through the same encoder screenshots use.
+Copying a file in File Explorer publishes its path, so it can be pasted into a
+Terminal. `clip show` says which kind is loaded rather than pretending
+everything is text.
 
 ### Keyboard shortcuts
 

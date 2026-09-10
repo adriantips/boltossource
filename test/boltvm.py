@@ -310,6 +310,22 @@ class BoltVM:
             self.key(entry)
             time.sleep(0.4)
 
+        # Let the boot output stop before typing anything. Silence is the one
+        # signal about boot progress that cannot arrive cut in half, and typing
+        # into a machine that is still bringing its drivers up is both pointless
+        # and the worst case for the PS/2 controller. Bounded, so a machine that
+        # never goes quiet still gets probed.
+        quiet_since = time.time()
+        last = len(self.serial())
+        while time.time() < deadline:
+            time.sleep(0.3)
+            now = len(self.serial())
+            if now != last:
+                last = now
+                quiet_since = time.time()
+            elif time.time() - quiet_since > 1.5:
+                break
+
         # The marker is deliberately all lowercase letters. Every other
         # character on this keyboard needs Shift, and a probe that depends on a
         # modifier is a probe that a stray modifier state can defeat -- which
