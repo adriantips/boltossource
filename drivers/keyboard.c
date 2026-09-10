@@ -2,6 +2,7 @@
 #include "interrupts.h"
 #include "io.h"
 #include "keyboard.h"
+#include "keymap.h"
 
 /* extended (0xE0-prefixed) make code -> our control-byte key code, or 0 */
 static char ext_map(uint8_t sc) {
@@ -59,12 +60,11 @@ static char shift_nav(char e) {
     }
 }
 /* Ctrl+letter -> editing shortcut control byte, or 0 to swallow the combo.
- * Ctrl+Alt+L is separate: locking the screen must not be something an app can
- * intercept, so it is delivered as its own code the GUI handles before any
- * window sees it. */
+ * Ctrl+Alt+L used to be special-cased here. It is an ordinary entry in the
+ * shortcut table now, matched before this is reached -- which is also what
+ * makes it rebindable without the lock screen becoming unreachable. */
 static char ctrl_shortcut(char c) {
     if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-    if (alt && c == 'l') return KEY_LOCK;
     switch (c) {
         case 'a': return KEY_SELALL;
         case 'c': return KEY_COPY;
@@ -102,42 +102,77 @@ int kbd_raw_get(void) {
     return (int)v;
 }
 
+/* What the shortcut table matches against. Shift is a modifier here rather
+ * than a different character, so Win+Shift+Left is (WIN|SHIFT, Left) and not
+ * some separate key -- otherwise every chord would need naming twice. */
+static uint8_t cur_mods(void) {
+    return (uint8_t)((ctrl ? KMOD_CTRL : 0) | (shift ? KMOD_SHIFT : 0) |
+                     (alt ? KMOD_ALT : 0) | (win ? KMOD_WIN : 0));
+}
+
+static uint8_t logical_key(uint8_t sc, int ext) {
+    if (ext) return (uint8_t)ext_map(sc);
+    if (sc >= 0x3B && sc <= 0x44) return (uint8_t)(KEYK_F1 + (sc - 0x3B));  /* F1..F10 */
+    if (sc == 0x57) return (uint8_t)(KEYK_F1 + 10);                          /* F11 */
+    if (sc == 0x58) return (uint8_t)(KEYK_F1 + 11);                          /* F12 */
+    char c = map[sc];                        /* unshifted: Shift is a modifier */
+    if (!c) return 0;
+    if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+    return (uint8_t)c;
+}
+
 static void on_key(struct registers *r) {
     (void)r;
     uint8_t sc = inb(0x60);
     if (sc == 0xE0) { extended = 1; return; }       /* prefix: next byte is extended */
+    int ext = extended; extended = 0;
     if (raw_on)                                     /* feed the raw tap (real up/down) */
-        raw_push((uint16_t)(sc & 0x7F) | ((sc & 0x80) ? 0x100 : 0) | (extended ? 0x200 : 0));
-    if (extended) {
-        extended = 0;
+        raw_push((uint16_t)(sc & 0x7F) | ((sc & 0x80) ? 0x100 : 0) | (ext ? 0x200 : 0));
+
+    /* ---- modifiers, and the Super key tapped on its own ------------------ */
+    if (ext) {
         if (sc == 0x1D) { ctrl = 1; return; }       /* right Ctrl pressed  */
         if (sc == 0x9D) { ctrl = 0; return; }       /* right Ctrl released */
         if (sc == 0x38) { alt = 1; return; }        /* right Alt pressed   */
         if (sc == 0xB8) { alt = 0; return; }        /* right Alt released  */
         if (sc == 0x5B || sc == 0x5C) { win = 1; win_used = 0; return; }  /* L/R Super pressed  */
-        if (sc == 0xDB || sc == 0xDC) { int wu = win_used; win = 0;       /* L/R Super released */
-            if (!wu) push(KEY_WINTAP); return; }                         /* tapped alone -> Start */
-        if (!(sc & 0x80)) {
-            char e = ext_map(sc);
-            if (e) push(shift ? shift_nav(e) : e);
+        if (sc == 0xDB || sc == 0xDC) {                                   /* L/R Super released */
+            int wu = win_used; win = 0;
+            if (!wu) {                              /* a tap: whatever is bound to Win alone */
+                int a = keymap_tap(KMOD_WIN);
+                if (a != ACT_NONE) push((char)(KEY_ACTION_BASE + a));
+            }
+            return;
         }
-        return;                                     /* swallow the release too */
+    } else {
+        switch (sc) {
+            case 0x2A: case 0x36: shift = 1; return;    /* L/R shift pressed  */
+            case 0xAA: case 0xB6: shift = 0; return;    /* L/R shift released */
+            case 0x1D: ctrl = 1; return;                /* left Ctrl pressed  */
+            case 0x9D: ctrl = 0; return;                /* left Ctrl released */
+            case 0x38: alt  = 1; return;                /* left Alt pressed   */
+            case 0xB8: alt  = 0; return;                /* left Alt released  */
+        }
     }
-    switch (sc) {
-        case 0x2A: case 0x36: shift = 1; return;    /* L/R shift pressed  */
-        case 0xAA: case 0xB6: shift = 0; return;    /* L/R shift released */
-        case 0x1D: ctrl = 1; return;                /* left Ctrl pressed  */
-        case 0x9D: ctrl = 0; return;                /* left Ctrl released */
-        case 0x38: alt  = 1; return;                /* left Alt pressed   */
-        case 0xB8: alt  = 0; return;                /* left Alt released  */
-        case 0x58: push(KEY_SHOT); return;          /* F12 -> screenshot  */
+    if (sc & 0x80) return;                          /* any other key release */
+
+    /* ---- the global shortcut table --------------------------------------
+     * Consulted before anything else decides what this key means, so a bound
+     * chord never reaches a window. Alt+Tab, Alt+F4, F12 and Ctrl+Alt+L used
+     * to be `if`s right here; they are rows in kernel/keymap.c now, and so is
+     * everything the compositor added since. */
+    uint8_t lk = logical_key(sc, ext);
+    if (lk) {
+        int a = keymap_lookup(cur_mods(), lk);
+        if (a != ACT_NONE) { push((char)(KEY_ACTION_BASE + a)); return; }
     }
-    if (sc == 0x0F && alt) {                         /* Alt+Tab -> cycle windows */
-        push(shift ? KEY_ALTTABR : KEY_ALTTAB);
+
+    /* ---- ordinary delivery ----------------------------------------------- */
+    if (ext) {
+        char e = ext_map(sc);
+        if (e) push(shift ? shift_nav(e) : e);
         return;
     }
-    if (sc == 0x3E && alt) { push(KEY_ALTF4); return; }  /* Alt+F4 -> close window */
-    if (sc & 0x80) return;                          /* any other key release */
     char c = shift ? shiftmap[sc] : map[sc];
     if (!c) return;
     if (ctrl) {                                     /* Ctrl+key -> shortcut, else swallow */
@@ -149,6 +184,7 @@ static void on_key(struct registers *r) {
 }
 
 int kbd_ctrl_down(void)  { return ctrl;  }
+int kbd_alt_down(void)   { return alt;   }
 int kbd_shift_down(void) { return shift; }
 int kbd_win_down(void)   { return win;   }
 
@@ -171,6 +207,10 @@ char kbd_getc(void) {
 }
 
 void keyboard_init(void) {
+    /* The built-in bindings, so shortcuts work from the first keypress.
+     * keymap_init() re-applies these and then loads /etc/keys.conf, which
+     * cannot happen until there is a filesystem to read it from. */
+    keymap_reset();
     rhead = rtail = 0;
     shift = 0;
     ctrl = 0;

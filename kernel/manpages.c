@@ -264,6 +264,16 @@ static const manpage_t MAN[] = {
   "Win+Shift+Left/Right takes the focused window along, and the pips at the\n"
   "left of the taskbar do the same with the mouse. A window belongs to the\n"
   "desktop it was opened on; pinned taskbar launchers appear on all of them." },
+{ "keys", "keys | keys ACTION CHORD | keys reset [ACTION] | keys save",
+  "The global keyboard shortcuts, and how to change them. With no argument,\n"
+  "lists every action, its chord and what it does, marking the ones you have\n"
+  "changed. A chord is modifiers joined by + and then one key: Ctrl, Alt,\n"
+  "Shift, Win, then Left/Right/Up/Down, Home/End, PgUp/PgDn, Del, Tab, Esc,\n"
+  "Space, Enter, Back, F1..F12 or a single character.\n"
+  "A bare character is refused: binding k on its own would take that letter\n"
+  "away from every program. F-keys need no modifier. Two actions cannot share\n"
+  "a chord -- unbind one with `keys ACTION none` first. Changes are written to\n"
+  "/etc/keys.conf and reloaded at boot." },
 
 /* -------------------------------------------------------------- process --- */
 { "ps", "ps",

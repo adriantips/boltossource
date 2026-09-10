@@ -40,6 +40,7 @@
 
 void keyboard_init(void);
 int  kbd_ctrl_down(void);  /* 1 while either Ctrl key is held */
+int  kbd_alt_down(void);   /* 1 while either Alt key is held  */
 int  kbd_shift_down(void); /* 1 while either Shift key is held */
 int  kbd_win_down(void);   /* 1 while either Super/Win key is held */
 void kbd_inject(char c);   /* push a decoded char into the ring (USB HID path) */

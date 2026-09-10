@@ -59,7 +59,12 @@ int sh_readline(char *buf, int cap) {
         char c = (char)ci;
         if (c == '\n') { kputc('\n'); buf[len] = 0; return len; }
         if (c == '\b') { if (len) { len--; kputc('\b'); } continue; }
-        if ((unsigned char)c >= 32 && len < cap - 1) { buf[len++] = c; kputc(c); }
+        /* Printable only. The key ring also carries navigation codes and the
+         * resolved global shortcuts (0xC0 and up), and inserting one of those
+         * into a password prompt or a debugger command is never what was
+         * meant -- pressing Alt+Tab at a prompt should do nothing, not type. */
+        if ((unsigned char)c >= 32 && (unsigned char)c < 127 && len < cap - 1)
+            { buf[len++] = c; kputc(c); }
     }
 }
 
@@ -227,6 +232,7 @@ const command_t commands[] = {
     { "notify",   "Core",             "post or read notifications",         cmd_notify },
     { "screenshot","Core",            "capture the screen to a PNG",        cmd_screenshot },
     { "desk",     "Core",             "virtual desktops: desk [N|move N]",  cmd_desk },
+    { "keys",     "Core",             "list or change global shortcuts",    cmd_keys },
     { "man",      "Core",             "manual: man COMMAND | -k WORD | -c", cmd_man },
     { "sh",       "Shell",            "run a shell script: sh FILE [args]", cmd_sh },
     { "source",   "Shell",            "run a script in the current session", cmd_sh },

@@ -46,6 +46,25 @@ outlines (`kernel/ttf.c`) in addition to the built-in bitmap fonts. A
 **system-wide clipboard** (`kernel/clipboard.c`) enables copy/paste across apps.
 Each app is a `kernel/app_*.c` file exposing `draw/key/click/drag/tick` callbacks.
 
+### Keyboard shortcuts
+
+Every global shortcut is a row in a table (`kernel/keymap.c`), not a line of
+code. Alt+Tab used to be a synthetic byte invented inside the keyboard driver,
+Win+D an `if` in the compositor, and Ctrl+Alt+L a special case in the middle of
+the Ctrl-key handler; all of them worked and none could be changed. The driver
+now resolves a chord against the table *before* deciding what a key means, so a
+bound shortcut never reaches a window, and the compositor is handed an action
+rather than a keycode.
+
+`keys` lists them, `keys lock Ctrl+Alt+K` rebinds one, `keys ACTION none`
+unbinds, `keys reset` restores. Chords are modifiers joined by `+` and one key
+(`Ctrl+Alt+F2`, `Win+Shift+Left`, `F9`). A bare character is refused -- binding
+`k` alone would take that letter away from every program -- and two actions
+cannot share a chord. Changes are kept in `/etc/keys.conf` and reloaded at boot;
+a line that will not parse is reported and skipped rather than costing you a
+keyboard. Lock and screenshot outrank a modal dialog; the window-management ones
+do not.
+
 ### Virtual desktops
 
 Four of them. A window belongs to the desktop it was opened on, and from the
@@ -1432,7 +1451,7 @@ The interactive OS shell supports a wide range of commands:
 - **Bonus / Unique:** `focus`, `snapshot`, `timeline`, `vault`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
 - **Shell:** `sh`, `source`, `.`, `test`, `[`, `true`, `false`, `set`, `unset`; variables, conditions, loops and functions (see [SHELL.md](SHELL.md))
 - **SDK & help:** `run` (ELF64 programs with arguments and exit status), `man` (pages/search/coverage), `help [COMMAND]`
-- **Desktop:** `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window)
+- **Desktop:** `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window), `keys` (list/rebind/reset global shortcuts)
 - **Core:** `echo`, `clear`, `mem`
 
 ## Full File Tree
@@ -1473,6 +1492,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- png_enc.c              PNG writer (LZ77 + fixed-Huffman deflate)
 |   +-- screenshot.c  cmd_shot.c  Panel capture -> PNG in ~/Pictures
 |   +-- cmd_desk.c             Virtual desktops from the shell
+|   +-- keymap.c  cmd_keys.c   Global shortcut table (/etc/keys.conf)
 |   +-- cmd_run.c  manpages.c   Third-party ELF execution and command manual
 |   +-- shline.c  shscript.c    History/completion and the shell interpreter
 |   +-- core.c  cmd_core.c       Core dumps on a ring-3 fault + the post-mortem inspector

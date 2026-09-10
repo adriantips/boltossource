@@ -31,6 +31,7 @@
 #include "net.h"
 #include "notify.h"
 #include "screenshot.h"
+#include "keymap.h"
 
 extern const unsigned char font8x8_basic[128][8];   /* 8x8 retro face   */
 extern const unsigned char font_8x16[95][16];        /* 8x16 Arial face  */
@@ -2290,7 +2291,50 @@ static void gui_screenshot(void) {
     imgview_open_path(saved);      /* and show it, which also proves it decodes */
 }
 
+/* One global shortcut, already resolved from its chord by kernel/keymap.c.
+ * The compositor no longer knows which keys these are, which is the point:
+ * rebinding one is a table edit, not a code change. */
+static void gui_do_action(int a) {
+    switch (a) {
+    case ACT_START_MENU:
+        menu_open = !menu_open; sm_query[0] = 0; sm_qlen = 0; dirty = 1; break;
+    case ACT_CYCLE_WINDOW:      gui_cycle_window(+1); menu_open = 0; break;
+    case ACT_CYCLE_WINDOW_BACK: gui_cycle_window(-1); menu_open = 0; break;
+    case ACT_CLOSE_WINDOW: {
+        int t = topmost(); if (t >= 0) wins[t].open = 0;
+        menu_open = 0; dirty = 1; break;
+    }
+    case ACT_SHOW_DESKTOP: gui_show_desktop(); break;
+    case ACT_LOCK:         gui_lock(); dirty = 1; break;
+    case ACT_SCREENSHOT:   gui_screenshot(); dirty = 1; break;
+    case ACT_SNAP_LEFT:    case ACT_SNAP_RIGHT:
+    case ACT_SNAP_MAX:     case ACT_SNAP_RESTORE: {
+        int t = topmost();
+        if (t >= 0) gui_keysnap(&wins[t],
+            a == ACT_SNAP_LEFT  ? (char)KEY_LEFT  :
+            a == ACT_SNAP_RIGHT ? (char)KEY_RIGHT :
+            a == ACT_SNAP_MAX   ? (char)KEY_UP    : (char)KEY_DOWN);
+        break;
+    }
+    case ACT_DESK_1: case ACT_DESK_2: case ACT_DESK_3: case ACT_DESK_4:
+        desk_goto(a - ACT_DESK_1); break;
+    case ACT_DESK_NEXT: desk_goto((cur_desk + 1) % NDESK); break;
+    case ACT_DESK_PREV: desk_goto((cur_desk + NDESK - 1) % NDESK); break;
+    case ACT_DESK_MOVE_NEXT: desk_send((cur_desk + 1) % NDESK); break;
+    case ACT_DESK_MOVE_PREV: desk_send((cur_desk + NDESK - 1) % NDESK); break;
+    default: break;
+    }
+}
+
 static void handle_key(char c) {
+    /* Two shortcuts outrank a modal dialog. A lock an app -- or the OS's own
+     * Save As box -- could swallow would not be a lock, and refusing to
+     * photograph the screen because a dialog is up is the opposite of useful.
+     * The window-management ones stay below: the dialog really is modal. */
+    if (KEY_IS_ACTION(c)) {
+        int a = KEY_TO_ACTION(c);
+        if (a == ACT_LOCK || a == ACT_SCREENSHOT) { gui_do_action(a); return; }
+    }
     /* a modal prompt grabs all keys until confirmed/cancelled */
     if (prompt_active) {
         unsigned char u = (unsigned char)c;
@@ -2303,33 +2347,7 @@ static void handle_key(char c) {
         return;
     }
     if (c == 27) { menu_open = 0; ctx_open = 0; dirty = 1; return; }   /* Esc closes menus */
-    if ((unsigned char)c == KEY_SHOT) { gui_screenshot(); dirty = 1; return; }
-    if ((unsigned char)c == KEY_ALTTAB)  { gui_cycle_window(+1); menu_open = 0; return; }
-    if ((unsigned char)c == KEY_ALTTABR) { gui_cycle_window(-1); menu_open = 0; return; }
-    if ((unsigned char)c == KEY_ALTF4)   { int t = topmost(); if (t >= 0) wins[t].open = 0; menu_open = 0; dirty = 1; return; }
-    if ((unsigned char)c == KEY_WINTAP)  { menu_open = !menu_open; sm_query[0] = 0; sm_qlen = 0; dirty = 1; return; }
-    /* Ctrl+Alt+Left/Right walks the virtual desktops. The arrows arrive as
-     * ordinary nav codes, so the modifier state is what distinguishes this
-     * from an app scrolling its own view. */
-    if (kbd_ctrl_down() && kbd_alt_down()) {
-        unsigned char u = (unsigned char)c;
-        if (u == KEY_LEFT)  { desk_goto((cur_desk + NDESK - 1) % NDESK); return; }
-        if (u == KEY_RIGHT) { desk_goto((cur_desk + 1) % NDESK); return; }
-    }
-    /* Win+arrow snaps the focused window; Win+D shows/restores the desktop;
-     * Win+1..4 goes to a desktop and Win+Shift+Left/Right takes the focused
-     * window with you. */
-    if (kbd_win_down()) {
-        unsigned char u = (unsigned char)c;
-        if (u == KEY_SLEFT)  { desk_send((cur_desk + NDESK - 1) % NDESK); return; }
-        if (u == KEY_SRIGHT) { desk_send((cur_desk + 1) % NDESK); return; }
-        if (u == KEY_LEFT || u == KEY_RIGHT || u == KEY_UP || u == KEY_DOWN) {
-            int t = topmost(); if (t >= 0) gui_keysnap(&wins[t], c);
-            return;
-        }
-        if (u >= '1' && u < '1' + NDESK) { desk_goto(u - '1'); return; }
-        if (u == 'd' || u == 'D') { gui_show_desktop(); return; }
-    }
+    if (KEY_IS_ACTION(c)) { gui_do_action(KEY_TO_ACTION(c)); return; }
     /* While the Start menu is open, keystrokes drive its search box. */
     if (menu_open) {
         unsigned char u = (unsigned char)c;
@@ -2664,9 +2682,9 @@ void gui_run(void) {
         int ci;
         while ((ci = kbd_trygetc()) >= 0) {
             last_input_tick = pit_ticks();
-            /* Ctrl+Alt+L is intercepted here, before any window sees it: a
-             * lock an app could swallow would not be a lock. */
-            if ((char)ci == KEY_LOCK) { gui_lock(); dirty = 1; continue; }
+            /* Global shortcuts arrive already resolved and are handled before
+             * any window sees them: a lock an app could swallow would not be a
+             * lock, and the same goes for Alt+Tab and the desktop switcher. */
             handle_key((char)ci);
         }
 
