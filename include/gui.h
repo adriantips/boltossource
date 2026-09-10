@@ -148,6 +148,7 @@ void taskmgr_app_init(void);
 void settings_app_init(void);
 void installer_app_init(void);
 void software_app_init(void);
+void logs_app_init(void);
 void security_app_init(void);
 void browser_app_init(void);
 void files_app_init(void);

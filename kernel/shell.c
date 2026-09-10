@@ -233,6 +233,7 @@ const command_t commands[] = {
     { "screenshot","Core",            "capture the screen to a PNG",        cmd_screenshot },
     { "desk",     "Core",             "virtual desktops: desk [N|move N]",  cmd_desk },
     { "keys",     "Core",             "list or change global shortcuts",    cmd_keys },
+    { "logs",     "System",           "the kernel log kept across reboots",  cmd_logs },
     { "man",      "Core",             "manual: man COMMAND | -k WORD | -c", cmd_man },
     { "sh",       "Shell",            "run a shell script: sh FILE [args]", cmd_sh },
     { "source",   "Shell",            "run a script in the current session", cmd_sh },

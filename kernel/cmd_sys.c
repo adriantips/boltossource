@@ -233,6 +233,13 @@ static void shutdown_prepare(const char *what) {
     /* The shell keeps its history in memory and writes it here, so a day's
      * commands survive the reboot without paying a disk commit per command. */
     sh_history_save();
+    /* And the kernel log, before the final commit so it lands in the image.
+     * klog_persist() has existed for as long as the ring has, and the only
+     * thing that ever called it was `dmesg save` -- so the log survived a
+     * reboot exactly when somebody had thought to ask for it in advance, which
+     * is not when anybody needs it. A clean shutdown writes it now, and `logs`
+     * reads it back on the next boot. */
+    klog_persist();
     kprintf("%s: flushing filesystems...\n", what);
     if (fs_persist_active() && !fs_persist_readonly()) {
         if (fs_shutdown() == 0)

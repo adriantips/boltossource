@@ -167,8 +167,11 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 
 ## Phase 7 — Observability, testing, docs
 
-- [ ] 96. Rotating system log file and a `logs` command
-- [ ] 97. GUI log viewer
+- [x] 96. Rotating system log file: a clean shutdown now actually writes it
+        (klog_persist existed; nothing but `dmesg save` ever called it), and
+        `logs` reads it back, with `logs save` for the boot that ends badly
+- [x] 97. GUI log viewer: this boot's ring, earlier boots and the crash log,
+        tagged and scrollable
 - [x] 98. QEMU regression suite runnable headless
 - [ ] 99. Fuzzers for the network stack and the HTML/CSS/JS parsers
 - [x] 100. User guide (GUIDE.md: install, daily use, troubleshooting, and an
