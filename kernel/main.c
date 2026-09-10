@@ -164,21 +164,48 @@ extern const uint8_t _binary_browser_elf_start[];
 extern const uint8_t _binary_browser_elf_end[];
 extern const uint8_t _binary_crashme_elf_start[];
 extern const uint8_t _binary_crashme_elf_end[];
+extern const uint8_t _binary_chime_wav_start[];
+extern const uint8_t _binary_chime_wav_end[];
+extern const uint8_t _binary_blip_wav_start[];
+extern const uint8_t _binary_blip_wav_end[];
 extern const uint8_t _binary_netget_elf_start[];
 extern const uint8_t _binary_netget_elf_end[];
 
-/* Write an embedded ELF blob into the filesystem at `path` so proc_exec can load
- * it. /bin is created on first use. Returns 0 on success. */
+/* Create every missing directory along `path`'s parent chain, so a blob can be
+ * seeded anywhere rather than only into /bin. */
+static void seed_mkparents(const char *path) {
+    char dir[FS_PATH_MAX];
+    for (int i = 1; path[i]; i++) {
+        if (path[i] != '/' || i >= (int)sizeof dir) continue;
+        memcpy(dir, path, (uint64_t)i);
+        dir[i] = 0;
+        if (!fs_lookup(dir)) fs_create(dir, 1);
+    }
+}
+
+/* Write an embedded blob into the filesystem at `path` -- a ring-3 ELF for
+ * proc_exec to load, or a system asset. Returns 0 on success. */
 static int seed_blob(const char *path, const uint8_t *start, const uint8_t *end) {
     uint64_t len = (uint64_t)(end - start);
     fs_node *n = fs_lookup(path);
-    if (!n) { fs_create("/bin", 1); n = fs_create(path, 0); }
+    if (!n) { seed_mkparents(path); n = fs_create(path, 0); }
     if (!n || fs_write(n, start, (uint32_t)len) != 0) {
         kprintf("[--] could not seed %s\n", path);
         return -1;
     }
     kprintf("[ok] seeded %s (%lu bytes)\n", path, len);
     return 0;
+}
+
+/* The sounds an OS is expected to have somewhere it can find them. Seeded even
+ * in safe mode, where audio is not brought up: the files being there is what
+ * lets `play /usr/share/sounds/chime.wav` fail with "no audio device" rather
+ * than "no such file", which are different problems. */
+static void seed_system_sounds(void) {
+    seed_blob("/usr/share/sounds/chime.wav",
+              _binary_chime_wav_start, _binary_chime_wav_end);
+    seed_blob("/usr/share/sounds/blip.wav",
+              _binary_blip_wav_start, _binary_blip_wav_end);
 }
 
 static void launch_user_demo(void) {
@@ -313,6 +340,7 @@ void kmain(struct bootinfo *bi) {
     }
 
     proc_init();
+    seed_system_sounds();
     users_init();    kprintf("[ok] user accounts (%d) loaded\n", users_count());
     /* After the filesystem, because the bindings live in /etc/keys.conf. */
     keymap_init();   kprintf("[ok] %d keyboard shortcuts\n", keymap_count());

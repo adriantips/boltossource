@@ -25,9 +25,10 @@ interface.
 its link has nothing to play through. Claiming it anyway is how the old code
 produced silence that looked like success.
 """
-import os, re, struct, sys, time
+import os, re, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from boltvm import BoltVM
+from wavcheck import read_wav, dominant_hz, seconds
 
 LOGIN_USER, LOGIN_PASS = "user", "bolt"
 TONE_HZ = 440
@@ -58,48 +59,6 @@ def play(vm, ms, device):
     got, name = int(m.group(1)), m.group(2).strip()
     assert name == device, "expected %r to play it, got %r" % (device, name)
     return got
-
-
-def read_wav(path):
-    """Return (rate, channels, frames, samples) from a 16-bit PCM WAV."""
-    assert os.path.exists(path), "QEMU wrote no audio file at " + path
-    raw = open(path, "rb").read()
-    assert raw[:4] == b"RIFF" and raw[8:12] == b"WAVE", "not a WAV file: %r" % raw[:16]
-    rate = chans = bits = None
-    data = b""
-    i = 12
-    while i + 8 <= len(raw):
-        cid, clen = raw[i:i + 4], struct.unpack("<I", raw[i + 4:i + 8])[0]
-        body = raw[i + 8:i + 8 + clen]
-        if cid == b"fmt ":
-            chans, rate = struct.unpack("<HI", body[2:8])
-            bits = struct.unpack("<H", body[14:16])[0]
-        elif cid == b"data":
-            # QEMU fixes the length field up on exit, but a truncated run can
-            # leave it stale; trust the bytes actually on disk.
-            data = raw[i + 8:i + 8 + clen] if clen and i + 8 + clen <= len(raw) \
-                else raw[i + 8:]
-        i += 8 + clen + (clen & 1)
-    assert rate and chans and bits == 16, \
-        "unexpected WAV format: %s Hz, %s ch, %s bits" % (rate, chans, bits)
-    frames = len(data) // (2 * chans)
-    samples = struct.unpack("<%dh" % (frames * chans), data[:frames * chans * 2])
-    return rate, chans, frames, samples
-
-
-def dominant_hz(samples, chans, rate):
-    """Frequency of a square wave, by counting sign changes on one channel.
-
-    A square wave crosses zero exactly twice per cycle, so this needs no FFT --
-    and unlike a peak-picking measure it cannot be fooled by amplitude.
-    """
-    left = samples[::chans]
-    # Ignore the silence pad the driver appends after every buffer.
-    loud = [s for s in left if abs(s) > 1000]
-    if len(loud) < rate // 10:
-        return 0.0
-    crossings = sum(1 for a, b in zip(loud, loud[1:]) if (a >= 0) != (b >= 0))
-    return crossings * rate / (2.0 * len(loud))
 
 
 def hda_plays_real_audio():
@@ -138,7 +97,7 @@ def hda_plays_real_audio():
 
     # 1.5 s of tone went out; the pad and scheduling slack put the rest around
     # it. Well under a second means most of the samples never left the machine.
-    secs = frames / float(rate)
+    secs = seconds(frames, rate)
     assert secs >= 1.2, \
         "only %.2f s of audio reached the sound card for 1.5 s of tone" % secs
     print("  ok: %.2f s of audio arrived at the sound card" % secs)

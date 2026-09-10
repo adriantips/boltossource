@@ -383,12 +383,18 @@ static const manpage_t MAN[] = {
   "Every logical CPU the firmware reported and which ones came up under SMP." },
 { "acpiinfo", "acpiinfo",
   "The ACPI tables that were found, and what the APIC and HPET are set to." },
-{ "play", "play [HZ] [MS]",
-  "Play a tone (defaults: 440 Hz, 400 ms) through whichever codec the machine\n"
-  "has: Intel HDA, an AC'97, or the PC speaker if it has neither. It reports\n"
-  "the device it used and how long the tone really lasted -- on a PCM codec\n"
+{ "play", "play FILE | play [HZ] [MS]",
+  "Play sound through whichever codec the machine has: Intel HDA, an AC'97, or\n"
+  "the PC speaker if it has neither.\n"
+  "With a path, plays a WAV file -- PCM, 8- or 16-bit, any sample rate and\n"
+  "channel count. It is resampled to the 48 kHz stereo the codecs want as it\n"
+  "streams, so nothing has to be converted in full before it starts. The system\n"
+  "sounds live in /usr/share/sounds.\n"
+  "With a number, plays a tone (defaults: 440 Hz, 400 ms). A first argument\n"
+  "that does not begin with a digit is taken as a path.\n"
+  "Either way it reports how long the audio really lasted -- on a PCM codec\n"
   "that is how long the samples took to play, so a figure well short of the\n"
-  "one asked for means the audio never reached the speakers." },
+  "one expected means the audio never reached the speakers." },
 { "dhcp", "dhcp",
   "Request a lease now, rather than waiting for the boot-time attempt." },
 { "clip", "clip show | clip set TEXT... | clip clear",
