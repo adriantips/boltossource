@@ -443,13 +443,89 @@ window_t *gui_add_window(const char *title, int w, int h, uint32_t accent, int i
     return win;
 }
 
+/* ---- virtual desktops ---------------------------------------------------- *
+ *  Every open window belongs to one. Four of them, fixed: enough to separate
+ *  what you are doing from what you were doing, and few enough that switching
+ *  is a keystroke rather than a decision. A window is assigned the desktop it
+ *  was opened on, and `on_desk` is the only question the compositor, the
+ *  taskbar and focus have to ask.
+ *
+ *  Windows that are closed but pinned are launchers, not windows, so they
+ *  appear on every desktop -- moving a taskbar shortcut between desktops would
+ *  be a way to lose it.                                                       */
+#define NDESK 4
+static int cur_desk;
+
+static int on_desk(const window_t *w) { return w->desk == cur_desk; }
+
 void gui_focus(window_t *win) {
     for (int i = 0; i < nwin; i++)
         if (&wins[i] == win) { win->z = ++ztop; focus_id = i; dirty = 1; return; }
 }
+
+static void desk_goto(int d) {
+    if (d < 0 || d >= NDESK || d == cur_desk) return;
+    cur_desk = d;
+    /* Focus follows: whatever was frontmost over there is frontmost again. */
+    focus_id = -1;
+    int best = -1, bz = -1;
+    for (int i = 0; i < nwin; i++)
+        if (wins[i].open && !wins[i].minimized && on_desk(&wins[i]) && wins[i].z > bz)
+            { bz = wins[i].z; best = i; }
+    if (best >= 0) focus_id = best;
+    dirty = 1;
+}
+
 void gui_open(window_t *win) {
+    /* Already open somewhere else? Go to it rather than dragging it here: the
+     * window is where the user left it, and they asked to see it, not move it. */
+    if (win->open && win->desk != cur_desk) desk_goto(win->desk);
+    else if (!win->open) win->desk = cur_desk;
     win->open = 1; win->minimized = 0;
     gui_focus(win);
+}
+
+/* Send the focused window to another desktop and follow it -- following is the
+ * point, otherwise you have thrown a window somewhere you cannot see. */
+static void desk_send(int d) {
+    if (d < 0 || d >= NDESK || d == cur_desk) return;
+    int t = focus_id;
+    if (t < 0 || !wins[t].open || !on_desk(&wins[t])) return;
+    wins[t].desk = d;
+    desk_goto(d);
+    gui_focus(&wins[t]);
+}
+
+/* Reachable from the shell (`desk`), so the desktops can be driven from a
+ * terminal, over SSH, and by a test that cannot press Win+2. */
+int gui_desk_count(void)   { return NDESK; }
+int gui_desk_current(void) { return cur_desk; }
+
+int gui_desk_goto(int d) {
+    if (d < 0 || d >= NDESK) return -1;
+    desk_goto(d);
+    return 0;
+}
+
+int gui_desk_windows(int d, char *out, uint32_t cap) {
+    uint32_t n = 0; int count = 0;
+    if (cap) out[0] = 0;
+    for (int i = 0; i < nwin; i++) {
+        if (!wins[i].open || wins[i].desk != d) continue;
+        count++;
+        if (n && n + 2 < cap) { out[n++] = ','; out[n++] = ' '; }
+        for (const char *p = wins[i].title; *p && n + 1 < cap; p++) out[n++] = *p;
+        if (n < cap) out[n] = 0;
+    }
+    return count;
+}
+
+int gui_desk_send(int d) {
+    if (d < 0 || d >= NDESK || d == cur_desk) return -1;
+    int t = focus_id;
+    if (t < 0 || !wins[t].open || !on_desk(&wins[t])) return -2;
+    desk_send(d);
+    return 0;
 }
 
 /* Alt+Tab: cycle focus through open, non-minimised windows in a stable index
@@ -457,25 +533,30 @@ void gui_open(window_t *win) {
 static void gui_cycle_window(int dir) {
     int list[MAX_WIN], n = 0, cur = -1;
     for (int i = 0; i < nwin; i++)
-        if (wins[i].open && !wins[i].minimized) { if (i == focus_id) cur = n; list[n++] = i; }
+        if (wins[i].open && !wins[i].minimized && on_desk(&wins[i]))
+            { if (i == focus_id) cur = n; list[n++] = i; }
     if (n == 0) return;
     int start = cur < 0 ? 0 : cur;
     int nx = (start + (dir > 0 ? 1 : n - 1)) % n;
     gui_focus(&wins[list[nx]]);
 }
 
-/* Win+D: minimise every open window; press again to restore the ones we hid. */
+/* Win+D: minimise every open window; press again to restore the ones we hid.
+ * Per desktop, so showing the desktop on one does not disturb another. */
 static void gui_show_desktop(void) {
-    static uint8_t hidden[MAX_WIN];
+    static uint8_t hidden[NDESK][MAX_WIN];
+    uint8_t *hid = hidden[cur_desk];
     int any_visible = 0;
-    for (int i = 0; i < nwin; i++) if (wins[i].open && !wins[i].minimized) { any_visible = 1; break; }
+    for (int i = 0; i < nwin; i++)
+        if (wins[i].open && !wins[i].minimized && on_desk(&wins[i])) { any_visible = 1; break; }
     if (any_visible) {
         for (int i = 0; i < nwin; i++) {
-            hidden[i] = (wins[i].open && !wins[i].minimized) ? 1 : 0;
-            if (hidden[i]) wins[i].minimized = 1;
+            hid[i] = (wins[i].open && !wins[i].minimized && on_desk(&wins[i])) ? 1 : 0;
+            if (hid[i]) wins[i].minimized = 1;
         }
     } else {                                   /* restore what we hid */
-        for (int i = 0; i < nwin; i++) if (hidden[i] && wins[i].open) { wins[i].minimized = 0; hidden[i] = 0; }
+        for (int i = 0; i < nwin; i++)
+            if (hid[i] && wins[i].open) { wins[i].minimized = 0; hid[i] = 0; }
     }
     dirty = 1;
 }
@@ -490,7 +571,8 @@ static void gui_open_by_title(const char *title) {
 static int topmost(void) {
     int best = -1, bz = -1;
     for (int i = 0; i < nwin; i++)
-        if (wins[i].open && !wins[i].minimized && wins[i].z > bz) { bz = wins[i].z; best = i; }
+        if (wins[i].open && !wins[i].minimized && on_desk(&wins[i]) && wins[i].z > bz)
+            { bz = wins[i].z; best = i; }
     return best;
 }
 
@@ -863,7 +945,8 @@ static void draw_window(window_t *w) {
 static int taskbar_list(int *out) {
     int n = 0;
     for (int i = 0; i < nwin; i++)
-        if (wins[i].open || wins[i].pinned) out[n++] = i;
+        if ((wins[i].open && on_desk(&wins[i])) || (!wins[i].open && wins[i].pinned))
+            out[n++] = i;
     return n;
 }
 static void taskbar_layout(int *startx, int *y) {
@@ -1176,9 +1259,54 @@ static void draw_clock_flyout(void) {
     }
 }
 
+/* ---- desktop switcher (left end of the taskbar) -------------------------- *
+ *  Four pips. The current one is wide and accented; a desktop with windows on
+ *  it is lit, an empty one is dim -- so a glance says both where you are and
+ *  where everything else is.                                                  */
+#define DP_W   14
+#define DP_H   6
+#define DP_GAP 5
+#define DP_X0  14
+
+static void desk_pip_rect(int d, int *x, int *y, int *w, int *h) {
+    *w = DP_W; *h = DP_H;
+    *x = DP_X0 + d * (DP_W + DP_GAP);
+    *y = H - TASKBAR_H / 2 - DP_H / 2;
+}
+
+static int desk_occupied(int d) {
+    for (int i = 0; i < nwin; i++) if (wins[i].open && wins[i].desk == d) return 1;
+    return 0;
+}
+
+static void draw_desk_switcher(void) {
+    int mxp = mlx(), myp = mly();
+    for (int d = 0; d < NDESK; d++) {
+        int x, y, w, h; desk_pip_rect(d, &x, &y, &w, &h);
+        int hot = mxp >= x - 2 && mxp < x + w + 2 &&
+                  myp >= H - TASKBAR_H && myp < H;
+        uint32_t c = (d == cur_desk) ? COL_ACCENT
+                   : desk_occupied(d) ? COL_TEXT_DIM : 0x33333F;
+        if (hot && d != cur_desk) c = COL_TEXT;
+        g_round(x, y, w, h, 3, c, 255);
+    }
+}
+
+/* Which pip is under (x, y), or -1. The whole taskbar height is live so the
+ * pips are hittable without aiming at a six-pixel bar. */
+static int desk_switcher_hit(int x, int y) {
+    if (y < H - TASKBAR_H) return -1;
+    for (int d = 0; d < NDESK; d++) {
+        int px, py, pw, ph; desk_pip_rect(d, &px, &py, &pw, &ph);
+        if (x >= px - 2 && x < px + pw + 2) return d;
+    }
+    return -1;
+}
+
 static void draw_taskbar(void) {
     g_blend(0, H - TASKBAR_H, W, TASKBAR_H, 0x0E0E16, 224);
     g_hline(0, H - TASKBAR_H, W, 0x33333F);
+    draw_desk_switcher();
 
     int top = topmost();
     /* start button */
@@ -1407,7 +1535,7 @@ static int cursor_resize(int x, int y, int *out_i) {
     int best = -1, bz = -1;
     for (int i = 0; i < nwin; i++) {
         window_t *w = &wins[i];
-        if (!w->open || w->minimized || w->maximized) continue;
+        if (!w->open || w->minimized || w->maximized || !on_desk(w)) continue;
         if (x < w->x - RS_BORDER || x >= w->x + w->w + RS_BORDER ||
             y < w->y - RS_BORDER || y >= w->y + w->h + RS_BORDER) continue;
         if (w->z > bz) { bz = w->z; best = i; }
@@ -1622,7 +1750,8 @@ static void dnd_drop(int x, int y) {
     if (y >= H - TASKBAR_H) return;
     for (int i = 0; i < nwin; i++) {
         window_t *w = &wins[i];
-        if (w->open && !w->minimized && x >= w->x && x < w->x + w->w && y >= w->y && y < w->y + w->h) return;
+        if (w->open && !w->minimized && on_desk(w) &&
+            x >= w->x && x < w->x + w->w && y >= w->y && y < w->y + w->h) return;
     }
     deskicon_drop(dnd_node, dnd_label, dnd_icon, x, y);
 }
@@ -1748,7 +1877,7 @@ static void composite(void) {
     /* windows back-to-front by z */
     for (int pass = 0; pass <= ztop; pass++)
         for (int i = 0; i < nwin; i++)
-            if (wins[i].open && !wins[i].minimized && wins[i].z == pass)
+            if (wins[i].open && !wins[i].minimized && on_desk(&wins[i]) && wins[i].z == pass)
                 draw_window(&wins[i]);
 
     draw_start_menu();
@@ -1912,6 +2041,10 @@ static void on_left_down(int x, int y) {
       if (x >= qbx && x < qbx + qbw && y >= qby && y < qby + qbh) { clock_open = !clock_open; vol_open = net_open = 0; dirty = 1; return; } }
     if (clock_open) { clock_open = 0; dirty = 1; } /* click elsewhere dismisses it */
 
+    /* desktop switcher, left of the start button */
+    { int d = desk_switcher_hit(x, y);
+      if (d >= 0) { desk_goto(d); menu_open = 0; return; } }
+
     /* start button */
     int bx, by; taskbar_btn_rect(-1, &bx, &by);
     if (x >= bx && x < bx + TB_BTN && y >= by && y < by + TB_BTN) { menu_open = !menu_open; sm_query[0] = 0; sm_qlen = 0; dirty = 1; return; }
@@ -1959,7 +2092,7 @@ static void on_left_down(int x, int y) {
     for (int z = ztop; z >= 0; z--) {
         for (int i = 0; i < nwin; i++) {
             window_t *w = &wins[i];
-            if (!w->open || w->minimized || w->z != z) continue;
+            if (!w->open || w->minimized || !on_desk(w) || w->z != z) continue;
             if (x < w->x || x >= w->x + w->w || y < w->y || y >= w->y + w->h) continue;
             gui_focus(w);
             if (y < w->y + TITLE_H) {              /* title bar */
@@ -2035,7 +2168,7 @@ static void on_right_down(int x, int y) {
     for (int z = ztop; z >= 0; z--)
         for (int i = 0; i < nwin; i++) {
             window_t *w = &wins[i];
-            if (!w->open || w->minimized || w->z != z) continue;
+            if (!w->open || w->minimized || !on_desk(w) || w->z != z) continue;
             if (x < w->x || x >= w->x + w->w || y < w->y || y >= w->y + w->h) continue;
             if (y >= w->y + TITLE_H && w->rclick) { gui_focus(w); w->rclick(w, x - w->x, y - (w->y + TITLE_H)); }
             return;
@@ -2075,7 +2208,7 @@ static void handle_wheel(int dz) {
     for (int z = ztop; z >= 0; z--)
         for (int i = 0; i < nwin; i++) {
             window_t *w = &wins[i];
-            if (!w->open || w->minimized || w->z != z) continue;
+            if (!w->open || w->minimized || !on_desk(w) || w->z != z) continue;
             if (x < w->x || x >= w->x + w->w || y < w->y + TITLE_H || y >= w->y + w->h) continue;
             if (w->scroll) { w->scroll(w, dz); dirty = 1; }
             return;
@@ -2175,13 +2308,26 @@ static void handle_key(char c) {
     if ((unsigned char)c == KEY_ALTTABR) { gui_cycle_window(-1); menu_open = 0; return; }
     if ((unsigned char)c == KEY_ALTF4)   { int t = topmost(); if (t >= 0) wins[t].open = 0; menu_open = 0; dirty = 1; return; }
     if ((unsigned char)c == KEY_WINTAP)  { menu_open = !menu_open; sm_query[0] = 0; sm_qlen = 0; dirty = 1; return; }
-    /* Win+arrow snaps the focused window; Win+D shows/restores the desktop. */
+    /* Ctrl+Alt+Left/Right walks the virtual desktops. The arrows arrive as
+     * ordinary nav codes, so the modifier state is what distinguishes this
+     * from an app scrolling its own view. */
+    if (kbd_ctrl_down() && kbd_alt_down()) {
+        unsigned char u = (unsigned char)c;
+        if (u == KEY_LEFT)  { desk_goto((cur_desk + NDESK - 1) % NDESK); return; }
+        if (u == KEY_RIGHT) { desk_goto((cur_desk + 1) % NDESK); return; }
+    }
+    /* Win+arrow snaps the focused window; Win+D shows/restores the desktop;
+     * Win+1..4 goes to a desktop and Win+Shift+Left/Right takes the focused
+     * window with you. */
     if (kbd_win_down()) {
         unsigned char u = (unsigned char)c;
+        if (u == KEY_SLEFT)  { desk_send((cur_desk + NDESK - 1) % NDESK); return; }
+        if (u == KEY_SRIGHT) { desk_send((cur_desk + 1) % NDESK); return; }
         if (u == KEY_LEFT || u == KEY_RIGHT || u == KEY_UP || u == KEY_DOWN) {
             int t = topmost(); if (t >= 0) gui_keysnap(&wins[t], c);
             return;
         }
+        if (u >= '1' && u < '1' + NDESK) { desk_goto(u - '1'); return; }
         if (u == 'd' || u == 'D') { gui_show_desktop(); return; }
     }
     /* While the Start menu is open, keystrokes drive its search box. */

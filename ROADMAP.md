@@ -127,7 +127,9 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 - [~] 74. Window snapping: Aero-snap to halves on drag, maximise at the top
         edge and Win+arrow, all in the base compositor. Quarter tiling and a
         drop preview remain.
-- [ ] 75. Virtual desktops / workspaces
+- [x] 75. Four virtual desktops: per-desktop windows, taskbar and Alt+Tab,
+        hit tests included, so a hidden window takes no input. Win+1..4,
+        Ctrl+Alt+arrows, Win+Shift+arrows, taskbar pips, and `desk`.
 - [ ] 76. Configurable keyboard shortcuts
 - [x] 77. Notification system: a kernel-wide store, stacked toasts, a tray
         notification centre with unread counts, and `notify`. The crash path

@@ -118,6 +118,7 @@ int cmd_nstest(int, char **);
 /* Notifications and screen capture */
 int cmd_notify(int, char **);
 int cmd_screenshot(int, char **);
+int cmd_desk(int, char **);
 
 /* SDK, manual and shell language */
 int cmd_run(int, char **);   int cmd_man(int, char **);

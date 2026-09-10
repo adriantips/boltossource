@@ -73,6 +73,7 @@ struct window {
     int      pinned;                /* kept on the taskbar even when closed   */
     int      minimized, maximized;
     int      snapped;               /* edge-snapped (half screen); restores on drag */
+    int      desk;                  /* which virtual desktop it lives on (0-based) */
     int      rx, ry, rw, rh;        /* saved rect for un-maximise / un-snap   */
     int      z;                     /* stacking order (higher = nearer front) */
     uint32_t accent;                /* per-app accent / icon colour           */
@@ -104,6 +105,19 @@ int       gui_window_focused(window_t *win);
 void      gui_run(void);                    /* enter the desktop; never returns*/
 void      gui_pump(void);                   /* force one composite+blit (re-entrant)*/
 void      gui_logout(void);                 /* return to the sign-in screen */
+
+/* ---- virtual desktops --------------------------------------------------- *
+ *  Four of them. A window belongs to the desktop it was opened on and is
+ *  invisible (and unclickable) from the others; closed-but-pinned taskbar
+ *  launchers appear on all of them. Win+1..4 switches, Ctrl+Alt+Left/Right
+ *  walks, Win+Shift+Left/Right takes the focused window along, and the pips at
+ *  the left of the taskbar do the same with the mouse. `desk` is the shell
+ *  front end, so this works over SSH too.                                     */
+int  gui_desk_count(void);
+int  gui_desk_current(void);
+int  gui_desk_goto(int d);                            /* 0, or -1 out of range */
+int  gui_desk_send(int d);                            /* move the focused window */
+int  gui_desk_windows(int d, char *out, uint32_t cap); /* count; names into out */
 
 /* Lock the running session behind a password prompt. The desktop is left
  * exactly as it was; only the current user's password gets back in. Armed by
