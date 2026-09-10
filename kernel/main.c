@@ -48,6 +48,13 @@
 #include "ntp.h"
 #include "hw.h"
 #include "users.h"
+/* kernel/boot.asm copies bootinfo and its E820 table into .data before it
+ * zeroes .bss, using these offsets spelled out as constants. stage2.asm writes
+ * the same ones. A change to the struct should break the build here rather
+ * than produce a machine that boots with no memory map. */
+_Static_assert(sizeof(struct bootinfo) == 40, "boot.asm copies BOOTINFO_SZ bytes");
+_Static_assert(__builtin_offsetof(struct bootinfo, e820_count) == 24, "BI_E820_COUNT");
+_Static_assert(__builtin_offsetof(struct bootinfo, e820_addr)  == 28, "BI_E820_ADDR");
 #include "ttf.h"
 #include "string.h"
 #include "kprintf.h"
