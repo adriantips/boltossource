@@ -166,11 +166,51 @@ static uint8_t *find_kernel_image(uint64_t *len_out) {
     return kernel_from_fat(len_out);
 }
 
+/* How big is the kernel we could install -- without reading it.
+ *
+ * This used to call find_kernel_image() and immediately free the result: 7.5 MB
+ * of PIO to learn a number the boot header carries in its own field, done once
+ * for the summary line and then again by install_describe() for every disk in
+ * the list. `install` sat silent for twenty-odd seconds before printing
+ * anything, which under load was long enough for the test suite to give up on
+ * it -- and long enough for a person to assume it had hung.
+ *
+ * The header answers it in one sector. Under UEFI there is no header, so the
+ * ESP's directory entry answers it without reading the file. */
+static uint64_t kernel_size_from_fat(void) {
+    static const char *paths[] = { "/kernel.bin", "/EFI/BOLTOS/kernel.bin",
+                                   "/EFI/BOOT/kernel.bin" };
+    for (int i = 0; i < blk_count(); i++) {
+        blkdev_t *d = blk_get(i);
+        if (!d) continue;
+        uint64_t bases[5], spans[5]; int nb = 0;
+        bases[nb] = 0; spans[nb] = d->sectors; nb++;
+        blk_part parts[4];
+        if (blk_read_mbr(d, parts) > 0) {
+            for (int p = 0; p < 4 && nb < 5; p++) {
+                if (!parts[p].present) continue;
+                if (parts[p].type != 0x0C && parts[p].type != 0x0B &&
+                    parts[p].type != 0xEF && parts[p].type != 0x06) continue;
+                bases[nb] = parts[p].lba_start; spans[nb] = parts[p].sectors; nb++;
+            }
+        }
+        for (int b = 0; b < nb; b++) {
+            if (fat32_mount_at(d, bases[b], spans[b]) != 0) continue;
+            for (unsigned p = 0; p < sizeof(paths) / sizeof(paths[0]); p++) {
+                int64_t sz = fat32_size(paths[p]);
+                if (sz > 0) return (uint64_t)sz;
+            }
+        }
+    }
+    return 0;
+}
+
 uint64_t install_kernel_available(void) {
-    uint64_t len = 0;
-    uint8_t *img = find_kernel_image(&len);
-    if (img) kfree(img);
-    return len;
+    for (int i = 0; i < blk_count(); i++) {
+        struct boot_header h;
+        if (header_on(blk_get(i), &h)) return h.kernel_bytes;
+    }
+    return kernel_size_from_fat();
 }
 
 /* ------------------------------------------------------ partition table ----*/
