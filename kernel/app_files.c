@@ -93,6 +93,7 @@ static int  icon_for(fs_node *n) {
         name_ends(n->name, ".gif") || name_ends(n->name, ".bmp") || name_ends(n->name, ".tga"))
         return ICON_IMAGE;
     if (name_ends(n->name, ".csv")) return ICON_SHEETS;
+    if (name_ends(n->name, ".wav")) return ICON_MEDIA;
     if (name_ends(n->name, ".txt") || name_ends(n->name, ".md") || name_ends(n->name, ".log"))
         return ICON_NOTES;
     return ICON_FILE;
@@ -156,6 +157,9 @@ static void open_item(files_t *st, fs_node *n) {
         name_ends(n->name, ".jpeg") || name_ends(n->name, ".gif") ||
         name_ends(n->name, ".bmp") || name_ends(n->name, ".tga")) {
         char p[FS_PATH_MAX]; fs_abspath(n, p, sizeof(p)); imgview_open_path(p); return;
+    }
+    if (name_ends(n->name, ".wav")) {
+        char p[FS_PATH_MAX]; fs_abspath(n, p, sizeof(p)); media_open_path(p); return;
     }
     if (name_ends(n->name, ".txt") || name_ends(n->name, ".md") ||
         name_ends(n->name, ".log") || name_ends(n->name, ".ini") ||

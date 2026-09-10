@@ -197,6 +197,10 @@ Twenty-six of them, all in the Start menu. The ones you are most likely to want:
 - **Code** — a programming environment; see [DEVELOPING.md](DEVELOPING.md).
 - **Settings** — themes, resolution, wallpaper, fonts.
 - **Security** — the lock timer, the firewall, and the account list.
+- **Media** — plays sound files. Open a `.wav` from File Explorer, or open the
+  app and pick one: the folder it came out of becomes the playlist, and it
+  moves on to the next track by itself. It keeps playing while you do something
+  else -- minimise it, switch desktop, lock the screen, it carries on.
 - **Photos**, **Music**, **Paint**, **Sheets**, **Calendar**, **Contacts**,
   **Calculator**, **Clock**, and a shelf of games including **DOOM**.
 
@@ -409,8 +413,10 @@ Being straight about this is more useful than a feature list:
   in File Explorer.
 - **No printing.**
 - **No IPv6.**
-- **Sound is AC97 only** — fine in a virtual machine, unlikely on a modern
-  laptop. There is no microphone input and no media player.
+- **Sound plays; nothing records.** Intel HD Audio and AC'97 are both driven,
+  and the Media player plays WAV files. There is no microphone input, no volume
+  mixer beyond the one master level, and no MP3 or any other compressed format
+  -- a `.wav` is the only kind of sound file the machine can open.
 - **No disk encryption.** Anyone who can take the disk out can read it.
 - **Nothing is upgradable in place.** A newer BoltOS means reinstalling.
 

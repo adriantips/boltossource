@@ -101,6 +101,7 @@ static int build_batch(void) {
 /* ---- transport ---------------------------------------------------------- */
 static void music_play(int song) {
     if (song < 0 || song >= NSONGS) return;
+    media_halt();                                     /* one codec, one stream */
     cur = song; note_idx = 0; playing = 1;
     audio_stop();
     int f = build_batch();
@@ -110,7 +111,7 @@ static void music_stop(void) { playing = 0; note_idx = 0; audio_stop(); }
 static void music_toggle(void) {
     if (cur < 0) { music_play(0); return; }
     if (playing) { playing = 0; audio_stop(); }
-    else         { playing = 1; }                     /* tick resumes from note_idx */
+    else         { media_halt(); playing = 1; }       /* tick resumes from note_idx */
 }
 static void music_next(void) { music_play((cur < 0 ? 0 : (cur + 1) % NSONGS)); }
 
@@ -231,4 +232,14 @@ void music_app_init(void) {
     win->tick  = music_tick;
     win->min_w = 360; win->min_h = 360;
     win->x = 300; win->y = 90;
+}
+
+/* Hand the codec back. The Media player calls this before it starts a file:
+ * two programs pushing buffers at one DMA engine is two programs sounding
+ * broken. The song and its position are kept, so Play resumes rather than
+ * restarts. */
+void music_halt(void) {
+    if (!playing) return;
+    playing = 0;
+    audio_stop();
 }

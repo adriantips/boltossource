@@ -211,6 +211,7 @@ const command_t commands[] = {
     { "play",     "Hardware",         "play a tone: play [Hz] [ms]",        cmd_play },
     { "dhcp",     "Hardware",         "request a DHCP lease",               cmd_dhcp },
     { "clip",     "Hardware",         "clipboard: clip show|set|clear",     cmd_clip },
+    { "media",    "Hardware",         "play audio files: media open FILE",  cmd_media },
     { "crash",    "Hardware",         "trigger panic: crash null|div|ud",   cmd_crash },
     { "whoami",   "System",           "print the current user",             cmd_whoami },
     { "id",       "System",           "show uid, gid, home and elevation",  cmd_id },

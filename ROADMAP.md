@@ -168,7 +168,16 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
         incrementally so a track streams rather than converting in full.
         `play FILE`, and two system sounds generated at build time
 - [ ] 89. MP3 decoding
-- [ ] 90. Media player app
+- [x] 90. Media player app: the folder a track came from is the playlist, it
+        advances by itself, and the level meter is measured from the PCM on its
+        way to the codec. Fed from media_pump() at the top of the compositor
+        loop rather than the window's tick -- a millisecond between buffers
+        instead of 150, and playback that survives being minimised, another
+        desktop, a locked session and a ring-3 program owning the panel.
+        `media` is the same transport from a prompt, and opening the player
+        that way does not take the keyboard off the shell. One codec, one
+        stream: a blocking `play` preempts the players through a hook in
+        drivers/audio.c, and Media and Music stop each other
 - [ ] 91. ACPI battery status
 - [ ] 92. Backlight / brightness control
 - [ ] 93. Suspend (S3) and resume

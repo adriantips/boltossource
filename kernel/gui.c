@@ -464,6 +464,21 @@ void gui_focus(window_t *win) {
         if (&wins[i] == win) { win->z = ++ztop; focus_id = i; dirty = 1; return; }
 }
 
+/* Show a window without taking the keyboard from whatever has it. The `media`
+ * command opens the player from a Terminal you are still typing in, and a
+ * window that takes the caret out from under a shell prompt eats your next
+ * command -- in the player's case, reading the space in it as Pause.
+ *
+ * Which is also why this does not raise the window: keys go to the topmost
+ * window here, so raising one *is* focusing it. The window appears where it
+ * last was, in the stack where it last was, and on the taskbar. */
+void gui_show_unfocused(window_t *win) {
+    if (!win) return;
+    if (!win->open) { win->desk = cur_desk; win->open = 1; }
+    win->minimized = 0;
+    dirty = 1;
+}
+
 static void desk_goto(int d) {
     if (d < 0 || d >= NDESK || d == cur_desk) return;
     cur_desk = d;
@@ -885,6 +900,13 @@ static void draw_icon(int id, int x, int y, int s, uint32_t c) {
         g_fill(x + s, y + 3 * s, 14 * s, 2 * s, (box >> 1) & 0x7F7F7F);  /* lid */
         g_fill(x + 7 * s, y + 3 * s, 2 * s, 11 * s, band);               /* ribbon */
         g_fill(x + s, y + 7 * s, 14 * s, 2 * s, band);
+        break;
+    }
+    case ICON_MEDIA: {                          /* a play triangle on a screen */
+        uint32_t body = 0x22304A, tri = 0x5AC8FA;
+        g_round(x, y + s, 16 * s, 14 * s, 3 * s, body, 255);
+        for (int i = 0; i < 5; i++)             /* columns narrowing to a point */
+            g_fill(x + (6 + i) * s, y + (4 + i) * s, s, (10 - 2 * i) * s, tri);
         break;
     }
     default:
@@ -2562,6 +2584,10 @@ static void draw_login(void) {
     }
 }
 
+/* Handed to drivers/audio.c: stop the two players that stream through the
+ * codec, so a blocking play gets a device to itself. */
+static void gui_audio_preempt(void) { media_halt(); music_halt(); }
+
 /* ===========================================================================
  *  Boot screen + main loop
  * ===========================================================================*/
@@ -2600,6 +2626,11 @@ void gui_run(void) {
      * to mark the frame dirty; toasts are drawn from the store. */
     notify_set_hook(gui_note_hook);
 
+    /* One codec, one stream. A blocking play -- `play FILE`, a tone -- has to
+     * take the device off whatever was streaming through it first, and
+     * drivers/audio.c has no business knowing that the Media player exists. */
+    audio_set_preempt(gui_audio_preempt);
+
     console_detach();                                /* GUI owns the framebuffer now */
 
     terminal_app_init();
@@ -2616,6 +2647,7 @@ void gui_run(void) {
     sheets_app_init();
     imgview_app_init();
     music_app_init();
+    media_app_init();
     calendar_app_init();
     piano_app_init();
     paint_app_init();
@@ -2653,6 +2685,15 @@ void gui_run(void) {
 
     for (;;) {
         uint64_t t0 = rdtsc();
+
+        /* Feed the media player's codec first, and unconditionally. This loop
+         * wakes on every timer interrupt, so the handover from one half-second
+         * buffer to the next costs about a millisecond instead of the 150 ms a
+         * window tick would -- and because it is above every early-out below,
+         * a track keeps playing while its window is minimised or on another
+         * desktop, while the session is locked, and while a ring-3 program has
+         * taken the panel. It returns immediately when nothing is playing. */
+        media_pump();
 
         /* A ring-3 program (the userland browser) has grabbed the panel: don't
          * touch VRAM or drain the keyboard -- it reads input via SYS_GETKEY and

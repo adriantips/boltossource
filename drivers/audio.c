@@ -19,6 +19,9 @@
 
 static const audio_dev_t *dev;
 static int volume = 80;
+static void (*preempt)(void);          /* stop whatever is streaming */
+
+void audio_set_preempt(void (*stop_streams)(void)) { preempt = stop_streams; }
 
 int         audio_present(void) { return 1; }         /* the speaker is always there */
 const char *audio_name(void)    { return dev ? dev->name : "PC speaker"; }
@@ -43,6 +46,7 @@ void audio_stop(void) { if (dev) dev->stop(); }
 
 void audio_play_pcm(const int16_t *interleaved, uint32_t frames) {
     if (!dev || !interleaved || !frames) return;
+    if (preempt) preempt();               /* this buffer, not the one already going */
     uint32_t cap = dev->capacity();
     if (frames > cap) frames = cap;
     audio_play_async(interleaved, frames);
@@ -59,6 +63,9 @@ void audio_play_pcm(const int16_t *interleaved, uint32_t frames) {
 }
 
 void audio_tone(uint32_t freq, uint32_t ms) {
+    /* No preempt here: the fallback path is the PC speaker, which shares
+     * nothing with the codec, and the codec path below goes out through
+     * audio_play_pcm(), which does it. */
     if (!dev || freq == 0) {
         pcspk_tone(freq);
         uint64_t end = pit_ticks() + ms;
