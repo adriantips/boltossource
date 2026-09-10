@@ -169,4 +169,7 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 - [ ] 97. GUI log viewer
 - [x] 98. QEMU regression suite runnable headless
 - [ ] 99. Fuzzers for the network stack and the HTML/CSS/JS parsers
-- [ ] 100. User guide and developer guide (install, daily use, writing apps)
+- [x] 100. User guide (GUIDE.md: install, daily use, troubleshooting, and an
+        honest list of what the OS cannot do) and developer guide
+        (DEVELOPING.md: the on-machine toolchain, projects, debugging,
+        packaging, writing a desktop app, and the testing conventions)
