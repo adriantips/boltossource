@@ -130,7 +130,9 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 - [x] 75. Four virtual desktops: per-desktop windows, taskbar and Alt+Tab,
         hit tests included, so a hidden window takes no input. Win+1..4,
         Ctrl+Alt+arrows, Win+Shift+arrows, taskbar pips, and `desk`.
-- [ ] 76. Configurable keyboard shortcuts
+- [x] 76. Configurable keyboard shortcuts: a named-action table resolved in
+        the keyboard driver before a key means anything, `keys` to rebind,
+        persisted in /etc/keys.conf. Replaces four hard-coded special cases.
 - [x] 77. Notification system: a kernel-wide store, stacked toasts, a tray
         notification centre with unread counts, and `notify`. The crash path
         and the storage layer post to it.
