@@ -191,7 +191,7 @@ SRCS=(
     kernel/core.c kernel/cmd_core.c kernel/pkgcat.c kernel/settings.c kernel/clipboard.c kernel/stackguard.c kernel/users.c kernel/pkg.c kernel/install.c kernel/klog.c
     kernel/cpp.c kernel/ccbuild.c kernel/cmd_cc.c kernel/cmd_build.c kernel/cmd_vcs.c kernel/boltpy.c kernel/cmd_python.c kernel/boltcc.c kernel/js.c kernel/cmd_js.c
     fs/ramfs.c fs/fat32.c fs/ext2.c
-    drivers/keyboard.c drivers/framebuffer.c drivers/gpu.c drivers/mouse.c drivers/ata.c drivers/ahci.c drivers/nvme.c drivers/xhci.c drivers/pcspk.c drivers/ac97.c mm/pmm.c mm/vmm.c mm/kheap.c mm/dma.c
+    drivers/keyboard.c drivers/framebuffer.c drivers/gpu.c drivers/mouse.c drivers/ata.c drivers/ahci.c drivers/nvme.c drivers/xhci.c drivers/pcspk.c drivers/audio.c drivers/ac97.c drivers/hda.c mm/pmm.c mm/vmm.c mm/kheap.c mm/dma.c
     kernel/cmd_libctest.c
 )
 # The freestanding C library. Built with -fno-math-errno/-fno-trapping-math so the

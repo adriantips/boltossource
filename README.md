@@ -20,15 +20,15 @@ honest account of what it cannot do yet.
 > NVMe / AHCI SATA disks (HDD/SSD) behind a VFS and generic block layer, **EXT2
 > and FAT32** standard filesystem support, hardware interrupts, keyboard and
 > mouse drivers, an **xHCI USB** host-controller driver with **HID** support,
-> an **AC97 audio** driver, an interactive shell, a full **IPv4/TCP/UDP/TLS
+> **Intel HDA + AC97 audio** drivers, an interactive shell, a full **IPv4/TCP/UDP/TLS
 > 1.2+1.3 network stack** (with X.509 certificate verification, **DHCP**,
 > persistent configuration, a DNS cache and an **SNTP** clock)
 > on **e1000** and **virtio-net** NICs, a **standards-ish web browser** with a real DOM tree, CSS
 > cascade, box/flex/grid layout engine and a from-scratch **JavaScript
 > interpreter**, a **multi-language IDE** with from-scratch **C / C++ / C#
 > compilers** and a **Python interpreter**, a **GPU / display-adapter driver**,
-> support for running real **Windows PE32+ executables**, **PC-speaker + AC97
-> audio**, **TrueType font** rendering, a **system-wide clipboard**, **stack
+> support for running real **Windows PE32+ executables**, **Intel HDA + AC97 +
+> PC-speaker audio**, **TrueType font** rendering, a **system-wide clipboard**, **stack
 > canary** protection, **multi-user** support, a **package manager** with a real
 > package/repository format that installs over HTTP, **local version control**,
 > **core dumps** with symbolised backtraces, a full
@@ -445,12 +445,36 @@ Beyond BoltFS, the kernel can mount **EXT2** (`fs/ext2.c`) and **FAT32**
 through the generic block layer and VFS, so standard disk images from Linux or
 Windows are accessible from the shell and File Explorer.
 
-## Audio (AC97)
+## Audio (Intel HDA + AC97)
 
-An **AC97 audio driver** (`drivers/ac97.c`) drives the Intel ICH AC97 controller
-over PCI. It programs the PCM out channel (stereo 16-bit, 48 kHz), sets up a
-DMA buffer via the bus-mastering engine, and exposes a simple `audio_play(buf, len)`
-interface. Audio coexists with the legacy **PC speaker** (`drivers/pcspk.c`).
+Two codec drivers sit behind one interface (`include/audio.h`), and
+`drivers/audio.c` picks between them at boot: **Intel HD Audio** first, then
+**AC'97**, then the legacy **PC speaker** (`drivers/pcspk.c`) so a tone always
+makes a sound. Everything above the line — Music, Piano, DOOM, `play` — speaks
+only 48 kHz / 16-bit / stereo PCM and never learns which codec it reached.
+
+**Intel HD Audio** (`drivers/hda.c`) is what a machine built since about 2005
+actually has. Bringing it up means two separate jobs. The controller side is a
+PCI device with MMIO registers, DMA stream engines and a command/response ring
+pair (**CORB/RIRB**, with the immediate-command registers as a fallback for
+controllers that implement only one of the two well). The codec side is a graph
+of widgets that arrives with *nothing connected*: the driver walks it, scores the
+output pins from their configuration defaults, traces a route from the best pin
+back to a converter through any mixers and selectors in the way, selects that
+branch at every fork, unmutes each amplifier along it and switches the pin's
+output driver on. Volume is a real gain control on that route, not a software
+scale. Playback is polled; because an HDA stream buffer is cyclic, each buffer is
+submitted as the caller's PCM followed by a block of silence, so a buffer that
+drains before the caller notices plays quiet rather than repeating itself.
+
+**AC'97** (`drivers/ac97.c`) drives the Intel ICH controller over PCI for older
+boards and QEMU's `-device AC97`: PCM-out programmed through a buffer descriptor
+list on the bus-mastering engine, same 48 kHz stereo contract.
+
+`test/t_audio.py` points QEMU's audio backend at a WAV file and asserts on the
+samples that actually left the guest — how many there were and what frequency
+they carry — so a wrong sample rate, a wrong stream format or a muted amplifier
+fails the test even though every register reads back correctly.
 
 ## Web browser & network stack
 
@@ -1442,7 +1466,7 @@ doom/           Vendored doomgeneric port + in-house libc shim + BoltOS platform
 oldbrowser/     NetSurf port (OldBrowser): nsurl, content cache + handlers, browser_window, fbtk frontend,
                 libhubbub HTML parsing, libcss selector integration
 drivers/        Hardware drivers (framebuffer, GPU/display, keyboard, mouse, ATA HDD/SSD, AHCI SATA,
-                NVMe, xHCI USB, e1000 + virtio-net NICs, PC speaker, AC97 audio)
+                NVMe, xHCI USB, e1000 + virtio-net NICs, PC speaker, Intel HDA + AC97 audio)
 fs/             Filesystems: BoltFS (in-RAM tree, persisted), EXT2 (read-only), FAT32 (read/write)
 include/        80+ kernel/system headers (blk, dom, layout, js, acpi, apic, smp, ahci, ext2, fat32,
                 ttf, clipboard, users, audio, dhcp, nvme, xhci, rsa, x509, ...)
