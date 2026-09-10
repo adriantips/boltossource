@@ -267,6 +267,54 @@ class BoltVM:
         if needle in self.serial():
             raise AssertionError("unexpected %r on the serial log" % needle)
 
+    def reach_shell(self, timeout=180, entry="2"):
+        """Pick a boot-menu entry and wait until the shell is really reading.
+
+        Not expect("BoltShell ready"). /bin/hello runs in ring 3 on another
+        thread and writes to the same serial port, so the banner routinely
+        arrives cut in half -- "BoltShell rea" ... "dy. 134 commands" -- and no
+        substring of it is safe to wait for. Twenty-two tests each carried a
+        copy of that wait and each could lose the race; t_net's author hit it,
+        documented it, and fixed it in one file.
+
+        Probing is reliable where matching a banner is not: if a marker typed
+        at the prompt comes back, the shell is reading input, which is the
+        thing every caller actually wants to know.
+
+        `entry` is the boot-menu key -- "2" for safe mode (a text shell, no
+        desktop or network), "1" for a normal boot. Returns the boot log,
+        which probing would otherwise clear and which callers assert on.
+        """
+        for _ in range(16):
+            if "boot mode" in self.serial():
+                break
+            self.key(entry)
+            time.sleep(0.4)
+
+        # The marker is deliberately all lowercase letters. Every other
+        # character on this keyboard needs Shift, and a probe that depends on a
+        # modifier is a probe that a stray modifier state can defeat -- which
+        # is a silly way to spend a three-minute timeout.
+        boot_log = ""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            boot_log += self.serial()
+            self._buf = ""                     # probe against a clean buffer
+            self.key("ret")                    # flush any half-typed line
+            self.type("echo boltvmshellup\n")
+            time.sleep(1.2)
+            if "boltvmshellup" in self.serial():
+                time.sleep(0.4)
+                # Put the boot log back. Probing consumed it, and it is the only
+                # place the driver bind, the DHCP lease and the filesystem mount
+                # are reported -- callers assert on those straight afterwards,
+                # so losing them here would break them in a way that looks like
+                # the kernel stopped printing.
+                self._buf = boot_log + self.serial()
+                return self._buf
+        raise AssertionError("never reached a shell prompt\n--- serial tail ---\n"
+                             + self.serial()[-2500:])
+
     def wait_prompt(self, timeout=60):
         """Block until the shell prints its prompt.
 
@@ -350,7 +398,13 @@ class BoltVM:
             if tail.endswith("bolt:/>") or tail.endswith(">"):
                 return self.serial()
             time.sleep(0.25)
-        return self.serial()
+        # No prompt came back. Returning what we have keeps callers that expect
+        # a command not to return (reboot, poweroff) working, but a silent empty
+        # string turns "the guest never answered" into "the output was wrong",
+        # and those two are investigated in completely different places.
+        return self.serial() + (
+            "\n[boltvm: no prompt %ds after %r -- the guest did not respond]\n"
+            % (timeout, line))
 
     def move(self, x, y):
         self._cmd({"execute": "input-send-event", "arguments": {"events": [
