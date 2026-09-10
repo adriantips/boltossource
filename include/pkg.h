@@ -61,3 +61,34 @@ typedef struct {
 } pkgdef_t;
 
 const pkgdef_t *pkg_builtin(int *count);
+
+/* ---------------------------------------------------------------------------
+ *  Catalogue queries and actions, for the Software app.
+ *
+ *  `pkg` is a shell command, and everything it can do should be doable by
+ *  somebody who has never opened a terminal -- installing software is the one
+ *  administrative task a person cannot avoid. Rather than have a GUI reimplement
+ *  the index parser and the install path (two readers of one format is how they
+ *  drift), the app calls these, which are the same code the command runs.
+ * ------------------------------------------------------------------------- */
+#define PKG_LIST_MAX 64
+
+typedef struct {
+    char name[40], version[16], kind[12], summary[96], requires[128];
+    int  installed;
+} pkg_entry;
+
+/* The repository's index, newest read of it. Returns how many were written
+ * (<= max), or -1 if there is no index to read. */
+int  pkg_catalogue(pkg_entry *out, int max);
+/* What is installed on this machine, from /var/lib/pkg/db. */
+int  pkg_installed_list(pkg_entry *out, int max);
+int  pkg_is_installed(const char *name);
+
+/* Install (with dependencies) or remove. 0 on success. Both are synchronous
+ * and can take seconds over a network, so a GUI caller should paint a "working"
+ * frame before calling. */
+int  pkg_action_install(const char *name);
+int  pkg_action_remove(const char *name);
+int  pkg_action_update(void);            /* re-read the repository's index */
+const char *pkg_repo_in_use(void);
