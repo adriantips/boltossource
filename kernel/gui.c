@@ -879,6 +879,14 @@ static void draw_icon(int id, int x, int y, int s, uint32_t c) {
             g_fill(x + (5 + i) * s, y + (5 + i) * s, (8 - 2 * i) * s, s, arrow);
         break;
     }
+    case ICON_SOFTWARE: {                       /* a parcel: box plus a band */
+        uint32_t box = 0xC08A5A, band = 0xEFC98A;
+        g_round(x + s, y + 3 * s, 14 * s, 11 * s, 2 * s, box, 255);
+        g_fill(x + s, y + 3 * s, 14 * s, 2 * s, (box >> 1) & 0x7F7F7F);  /* lid */
+        g_fill(x + 7 * s, y + 3 * s, 2 * s, 11 * s, band);               /* ribbon */
+        g_fill(x + s, y + 7 * s, 14 * s, 2 * s, band);
+        break;
+    }
     default:
         g_round(x, y, 14 * s, 12 * s, 2 * s, c, 255);
         break;
@@ -2623,6 +2631,7 @@ void gui_run(void) {
     matrix_app_init();
     doom_app_init();
     installer_app_init();
+    software_app_init();
     security_app_init();
     settings_app_init();
     /* Every app gets a launcher icon on the desktop; double-click opens it. The

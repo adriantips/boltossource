@@ -812,6 +812,85 @@ static void usage(void) {
             "fetching works the same either way. Default: " PKG_REPO "\n");
 }
 
+/* ===========================================================================
+ *  The same operations, callable rather than typed.
+ *
+ *  The Software app needs the catalogue and the two verbs, and it must not
+ *  have its own copy of the index parser or the install path -- two readers of
+ *  one format is how the two drift apart. These are thin wrappers over exactly
+ *  what cmd_pkg calls.
+ * ===========================================================================*/
+static void entry_from_meta(pkg_entry *e, const meta_t *m) {
+    memset(e, 0, sizeof *e);
+    sset(e->name,     sizeof e->name,     m->name);
+    sset(e->version,  sizeof e->version,  m->version);
+    sset(e->kind,     sizeof e->kind,     m->kind);
+    sset(e->summary,  sizeof e->summary,  m->summary);
+    sset(e->requires, sizeof e->requires, m->requires);
+    e->installed = installed(m->name);
+}
+
+int pkg_catalogue(pkg_entry *out, int max) {
+    if (!out || max <= 0) return 0;
+    ensure_index();
+    uint32_t n = 0;
+    char *idx = load_index(&n);
+    if (!idx) return -1;
+    int c = 0;
+    char *p = idx;
+    while (*p && c < max) {
+        meta_t m;
+        p = parse_meta(p, &m, 1);
+        if (!m.name[0]) break;
+        entry_from_meta(&out[c++], &m);
+    }
+    kfree(idx);
+    return c;
+}
+
+int pkg_installed_list(pkg_entry *out, int max) {
+    if (!out || max <= 0) return 0;
+    ensure_dirs();
+    fs_node *d = fs_lookup(PKG_DB);
+    int c = 0;
+    if (!d || !d->is_dir) return 0;
+    for (fs_node *ch = d->child; ch && c < max; ch = ch->next) {
+        if (ch->is_dir) continue;
+        char path[128];
+        snprintf(path, sizeof path, PKG_DB "/%s", ch->name);
+        uint32_t sz = 0;
+        char *b = slurp(path, &sz);
+        meta_t m;
+        memset(&m, 0, sizeof m);
+        if (b) { parse_meta(b, &m, 0); kfree(b); }
+        sset(m.name, sizeof m.name, ch->name);   /* the file name is the truth */
+        entry_from_meta(&out[c++], &m);
+        out[c - 1].installed = 1;
+    }
+    return c;
+}
+
+int pkg_is_installed(const char *name) { return name ? installed(name) : 0; }
+
+int pkg_action_install(const char *name) {
+    if (!name || !name[0]) return 1;
+    ensure_index();
+    return install_one(name, 0);
+}
+
+int pkg_action_remove(const char *name) {
+    if (!name || !name[0]) return 1;
+    return pkg_remove(name);
+}
+
+int pkg_action_update(void) { return pkg_update(); }
+
+const char *pkg_repo_in_use(void) {
+    static char repo[256];
+    repo_get(repo, sizeof repo);
+    return repo;
+}
+
 int cmd_pkg(int argc, char **argv) {
     const char *sub = argc > 1 ? argv[1] : "list";
     const char *a2  = argc > 2 ? argv[2] : 0;

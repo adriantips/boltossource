@@ -145,7 +145,9 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 - [ ] 80. Screen recording
 - [ ] 81. HiDPI / display scaling
 - [ ] 82. Clipboard for images and files, not just text
-- [ ] 83. Software centre GUI over the package manager
+- [x] 83. Software centre: Available/Installed tabs over the repository index,
+        one-click install and remove through the same pkg code the command
+        uses, work deferred one tick so the desktop paints before it blocks.
 - [~] 84. Start-menu type-to-search filters the app grid. Searching files
         from the same box remains.
 

@@ -145,6 +145,9 @@ Bundled apps (26):
 - **Settings** — themes and system options (persisted), font switching
 - **Install BoltOS** — the graphical installer: pick a disk, create the account,
   watch the progress bar; writes both the legacy and UEFI boot paths
+- **Software** — the package manager with a window on it: what the repository
+  offers and what is installed, one click to install or remove, over the same
+  index parser and install path `pkg` uses
 - **Security** — session and lock settings, the firewall (rules, presets, live
   pass/block counters) and the account list
 - **Calculator**, **Clock**, **Stopwatch**, **Calendar**, **Notes** (saved to FS)
@@ -1505,6 +1508,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- shline.c  shscript.c    History/completion and the shell interpreter
 |   +-- core.c  cmd_core.c       Core dumps on a ring-3 fault + the post-mortem inspector
 |   +-- pkg.c  pkgcat.c          Package manager (format, repository, deps) + its catalogue
+|   +-- app_software.c         Software: the package manager as a window
 |   +-- image.c  font8x8.c  kprintf.c  sysreg.c  user.asm
 |   +-- ttf.c    clipboard.c  users.c  pkg.c
 |   +-- cmd_extra.c  cmd_fs.c  cmd_net.c  cmd_netcfg.c  cmd_serve.c  cmd_ssh.c  cmd_edit.c  cmd_proc.c  cmd_python.c  cmd_sys.c  cmd_hw.c
