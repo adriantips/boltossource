@@ -10,6 +10,16 @@ extern kmain
 extern __bss_start
 extern __bss_end
 
+; struct bootinfo (include/boot.h), and the E820 table it points at. The
+; offsets are already spelled out in stage2.asm; kernel/main.c carries static
+; assertions so a change to the struct breaks the build rather than the boot.
+KERNEL_VBASE    equ 0xFFFFFFFF80000000
+BOOTINFO_SZ     equ 40
+BI_E820_COUNT   equ 24
+BI_E820_ADDR    equ 28
+E820_ENT        equ 24
+E820_MAX        equ 256                 ; what uefi_boot.c will emit at most
+
 section .text.boot
 _start:
     cli
@@ -33,6 +43,39 @@ _start:
     or      rax, (1 << 9) | (1 << 10)
     mov     cr4, rax
 
+    ; --- rescue bootinfo before the .bss wipe --------------------------------
+    ; The UEFI loader takes its bootinfo pages from the firmware with
+    ; AllocateAnyPages, so they can land anywhere in RAM -- including inside
+    ; this kernel's own .bss, which the loop below is about to fill with zeroes,
+    ; taking the memory map with it. That is not hypothetical: growing the
+    ; kernel by twenty kilobytes moved .bss over the page the firmware had
+    ; picked, and the machine booted to "0 MiB free" with no ACPI and no disks.
+    ;
+    ; So copy the struct and its E820 table into .data, which nothing zeroes,
+    ; and hand kmain the copy. The legacy loader keeps bootinfo at 0x0500 in low
+    ; memory and never had the problem; doing this for both is one code path
+    ; instead of two, and costs a few microseconds once.
+    lea     rdi, [rel bootinfo_copy]
+    mov     rsi, rbx
+    mov     ecx, BOOTINFO_SZ
+    rep     movsb
+
+    lea     rbx, [rel bootinfo_copy]        ; the copy is bootinfo from here on
+    mov     ecx, [rbx + BI_E820_COUNT]
+    cmp     ecx, E820_MAX
+    jbe     .e820_fits
+    mov     ecx, E820_MAX                   ; a garbled count must not run away
+    mov     [rbx + BI_E820_COUNT], ecx
+.e820_fits:
+    imul    ecx, ecx, E820_ENT
+    mov     esi, [rbx + BI_E820_ADDR]       ; physical; the loader identity-maps it
+    lea     rdi, [rel e820_copy]
+    rep     movsb
+    lea     rax, [rel e820_copy]
+    mov     r8, KERNEL_VBASE
+    sub     rax, r8                         ; kmain reads it back through P2V()
+    mov     [rbx + BI_E820_ADDR], eax
+
     ; zero .bss
     lea     rdi, [rel __bss_start]
     lea     rcx, [rel __bss_end]
@@ -48,6 +91,13 @@ _start:
     cli
     hlt
     jmp     .hang
+
+; Not .bss: the whole point is that the wipe above does not reach these.
+section .data
+align 16
+bootinfo_copy:  times BOOTINFO_SZ            db 0
+align 16
+e820_copy:      times (E820_MAX * E820_ENT)  db 0
 
 section .bss
 align 16
