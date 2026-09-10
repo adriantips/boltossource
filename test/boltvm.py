@@ -319,7 +319,11 @@ class BoltVM:
             boot_log += self.serial()
             self._buf = ""                     # probe against a clean buffer
             self.key("ret")                    # flush any half-typed line
-            self.type("echo boltvmshellup\n")
+            # The leading space is the shell's own opt-out from history.
+            # Without it the probe becomes the most recent thing the user
+            # typed, and a test that presses Up to check what it typed before a
+            # reboot finds this instead of its own command.
+            self.type(" echo boltvmshellup\n")
             time.sleep(1.2)
             if "boltvmshellup" in self.serial():
                 time.sleep(0.4)

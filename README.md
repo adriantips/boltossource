@@ -13,7 +13,7 @@ honest account of what it cannot do yet.
 > Status: **active development.** Custom boot chain (stage1 → stage2 → long mode,
 > or UEFI → long mode) into a 64-bit C kernel. UEFI boot, ACPI, APIC, **SMP
 > (symmetric multiprocessing)**, HPET, a framebuffer compositor and windowed
-> **GUI desktop with 24 apps** (including a playable port of **DOOM**), a
+> **GUI desktop with 33 apps** (including a playable port of **DOOM**), a
 > preemptive **round-robin scheduler** with processes and **ring-3 userland**
 > (ELF64 loader + syscalls), physical and virtual memory management (including
 > **ASLR, SMAP, SMEP** and **swap**), a **persistent filesystem** on real ATA /
@@ -144,7 +144,7 @@ a machine administered over SSH has no taskbar. Today the ring-3 crash path post
 where the core dump is, and the storage layer posts when a disk has been
 protected read-only and changes are RAM-only.
 
-Bundled apps (26):
+Bundled apps (33):
 
 - **Terminal** — the full interactive shell in a window
 - **File Explorer** — browse/open the persistent filesystem
