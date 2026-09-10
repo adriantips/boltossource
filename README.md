@@ -46,6 +46,21 @@ outlines (`kernel/ttf.c`) in addition to the built-in bitmap fonts. A
 **system-wide clipboard** (`kernel/clipboard.c`) enables copy/paste across apps.
 Each app is a `kernel/app_*.c` file exposing `draw/key/click/drag/tick` callbacks.
 
+### Virtual desktops
+
+Four of them. A window belongs to the desktop it was opened on, and from the
+others it is not merely unpainted -- it is out of the taskbar, out of Alt+Tab,
+and out of every hit test, so nothing you click or type can reach a window you
+cannot see. Closed-but-pinned taskbar launchers are shortcuts rather than
+windows, so they appear on all four.
+
+**Win+1..4** switches, **Ctrl+Alt+Left/Right** walks, **Win+Shift+Left/Right**
+takes the focused window with you (following it, because throwing a window
+somewhere you cannot see is not a feature), and the pips at the left of the
+taskbar do the same with the mouse -- lit where there are windows, wide where
+you are. `desk`, `desk N` and `desk move N` are the shell front end, for the
+Terminal and for a session over SSH.
+
 ### Screenshots
 
 Print Screen (F12) or `screenshot [PATH]` captures the screen to a **PNG** in
@@ -1417,7 +1432,7 @@ The interactive OS shell supports a wide range of commands:
 - **Bonus / Unique:** `focus`, `snapshot`, `timeline`, `vault`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
 - **Shell:** `sh`, `source`, `.`, `test`, `[`, `true`, `false`, `set`, `unset`; variables, conditions, loops and functions (see [SHELL.md](SHELL.md))
 - **SDK & help:** `run` (ELF64 programs with arguments and exit status), `man` (pages/search/coverage), `help [COMMAND]`
-- **Desktop:** `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG)
+- **Desktop:** `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window)
 - **Core:** `echo`, `clear`, `mem`
 
 ## Full File Tree
@@ -1457,6 +1472,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- notify.c  cmd_notify.c  Notification store behind toasts and the centre
 |   +-- png_enc.c              PNG writer (LZ77 + fixed-Huffman deflate)
 |   +-- screenshot.c  cmd_shot.c  Panel capture -> PNG in ~/Pictures
+|   +-- cmd_desk.c             Virtual desktops from the shell
 |   +-- cmd_run.c  manpages.c   Third-party ELF execution and command manual
 |   +-- shline.c  shscript.c    History/completion and the shell interpreter
 |   +-- core.c  cmd_core.c       Core dumps on a ring-3 fault + the post-mortem inspector

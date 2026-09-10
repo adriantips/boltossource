@@ -48,6 +48,7 @@
 #include "ntp.h"
 #include "hw.h"
 #include "users.h"
+
 /* kernel/boot.asm copies bootinfo and its E820 table into .data before it
  * zeroes .bss, using these offsets spelled out as constants. stage2.asm writes
  * the same ones. A change to the struct should break the build here rather

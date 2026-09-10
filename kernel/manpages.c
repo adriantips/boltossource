@@ -256,6 +256,14 @@ static const manpage_t MAN[] = {
   "desktop and opens the result in Photos. It reads the panel back rather than\n"
   "the compositor's buffer, so DOOM, the ring-3 browser and the text console\n"
   "capture correctly too." },
+{ "desk", "desk [N] | desk move N | desk list",
+  "The virtual desktops. With no argument, lists all four, marks the one you\n"
+  "are on and names the windows on each. `desk 2` switches; `desk move 2` sends\n"
+  "the focused window there and follows it.\n"
+  "From the desktop itself: Win+1..4 switches, Ctrl+Alt+Left/Right walks,\n"
+  "Win+Shift+Left/Right takes the focused window along, and the pips at the\n"
+  "left of the taskbar do the same with the mouse. A window belongs to the\n"
+  "desktop it was opened on; pinned taskbar launchers appear on all of them." },
 
 /* -------------------------------------------------------------- process --- */
 { "ps", "ps",
