@@ -163,7 +163,10 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
         no codec on its link is declined rather than claimed and silent
 - [ ] 86. Volume mixer
 - [ ] 87. Microphone capture path
-- [ ] 88. WAV playback
+- [x] 88. WAV playback: a RIFF/WAVE decoder that is also the converter --
+        resampling, mono to stereo and 8-bit unsigned to signed, decoded
+        incrementally so a track streams rather than converting in full.
+        `play FILE`, and two system sounds generated at build time
 - [ ] 89. MP3 decoding
 - [ ] 90. Media player app
 - [ ] 91. ACPI battery status

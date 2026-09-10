@@ -471,10 +471,23 @@ drains before the caller notices plays quiet rather than repeating itself.
 boards and QEMU's `-device AC97`: PCM-out programmed through a buffer descriptor
 list on the bus-mastering engine, same 48 kHz stereo contract.
 
-`test/t_audio.py` points QEMU's audio backend at a WAV file and asserts on the
-samples that actually left the guest — how many there were and what frequency
-they carry — so a wrong sample rate, a wrong stream format or a muted amplifier
-fails the test even though every register reads back correctly.
+**WAV playback** (`kernel/wav.c`) is the decoder *and* the converter, because
+the two cannot be separated: the codecs are fixed at 48 kHz stereo and almost no
+file on a disk is. It parses RIFF/WAVE (PCM and `WAVE_FORMAT_EXTENSIBLE`, 8- or
+16-bit, any rate, any channel count), then resamples with a 16.16 fixed-point
+linear interpolator, expands mono to stereo and converts 8-bit WAV's *unsigned*
+samples to signed — get that last one wrong and silence plays as full-scale
+noise. Decoding is incremental, so `play FILE` streams a track a quarter-second
+at a time instead of converting it in full before the first sample is heard. The
+system sounds are generated at build time by `mkwav.py` and seeded to
+`/usr/share/sounds` in two deliberately different shapes (22 kHz mono 8-bit,
+44.1 kHz stereo 16-bit), so between them they exercise every conversion.
+
+`test/t_audio.py` and `test/t_wav.py` point QEMU's audio backend at a WAV file
+and assert on the samples that actually left the guest — how many there were and
+what frequency they carry — so a wrong sample rate, a wrong stream format, a
+muted amplifier or a subtly wrong resampler fails the test even though every
+register reads back correctly.
 
 ## Web browser & network stack
 

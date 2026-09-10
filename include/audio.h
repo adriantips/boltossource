@@ -15,6 +15,10 @@
  *  codec it reached.
  * ===========================================================================*/
 
+/* Every codec here is programmed for one format, and everything above them
+ * produces it: signed 16-bit stereo at this rate. */
+#define AUDIO_RATE 48000u
+
 void        audio_init(void);
 int         audio_present(void);          /* 1 if a PCI codec was claimed */
 const char *audio_name(void);             /* "Intel HDA" / "AC97" / "PC speaker" */

@@ -11,6 +11,8 @@
 #include "smp.h"
 #include "hpet.h"
 #include "audio.h"
+#include "wav.h"
+#include "kheap.h"
 #include "dhcp.h"
 #include "net.h"
 #include "clipboard.h"
@@ -115,8 +117,53 @@ int cmd_dhcp(int argc, char **argv) {
     return 0;
 }
 
+/* Stream a WAV file to the codec, converting as it goes. One chunk is decoded,
+ * handed to the device and waited on before the next is decoded, so a long track
+ * never needs to exist twice: once as the file, once as 48 kHz stereo. */
+static int play_file(const char *path) {
+    wav_t w;
+    uint8_t *file = 0;
+    const char *err = "unknown error";
+    if (wav_load(path, &w, &file, &err) != 0) {
+        kprintf("play: %s: %s\n", path, err);
+        return 1;
+    }
+    kprintf("%s: %u Hz, %u ch, %u-bit, %u.%02u s -> %u Hz stereo on %s\n",
+            path, w.rate, w.channels, w.bits,
+            wav_duration_ms(&w) / 1000, (wav_duration_ms(&w) % 1000) / 10,
+            AUDIO_RATE, audio_name());
+
+    if (!audio_pcm_ok()) {
+        kprintf("play: %s has no PCM device to play through\n", audio_name());
+        kfree(file);
+        return 1;
+    }
+
+    uint32_t chunk = AUDIO_RATE / 4;                  /* a quarter second */
+    int16_t *pcm = (int16_t *)kmalloc((uint64_t)chunk * 4);
+    if (!pcm) { kprintf("play: out of memory\n"); kfree(file); return 1; }
+
+    uint64_t t0 = hpet_present() ? hpet_us() : pit_ticks() * 1000;
+    for (;;) {
+        uint32_t got = wav_read(&w, pcm, chunk);
+        if (!got) break;
+        audio_play_pcm(pcm, got);
+    }
+    uint64_t us = (hpet_present() ? hpet_us() : pit_ticks() * 1000) - t0;
+    kprintf("play: %lu ms elapsed on %s\n", us / 1000, audio_name());
+
+    kfree(pcm);
+    kfree(file);
+    return 0;
+}
+
 int cmd_play(int argc, char **argv) {
     if (!audio_present()) { kprintf("play: no audio device\n"); return 1; }
+    /* `play FILE` or `play [HZ] [MS]`. A first argument that is not a number is
+     * a path -- which does mean a file called "440" would be heard as a tone,
+     * and that is the trade for not having two commands for one idea. */
+    if (argc > 1 && (argv[1][0] < '0' || argv[1][0] > '9'))
+        return play_file(argv[1]);
     int freq = argc > 1 ? atoi(argv[1]) : 440;
     int ms   = argc > 2 ? atoi(argv[2]) : 400;
     kprintf("Playing %d Hz for %d ms on %s\n", freq, ms, audio_name());

@@ -192,7 +192,7 @@ SRCS=(
     kernel/cpp.c kernel/ccbuild.c kernel/cmd_cc.c kernel/cmd_build.c kernel/cmd_vcs.c kernel/boltpy.c kernel/cmd_python.c kernel/boltcc.c kernel/js.c kernel/cmd_js.c
     fs/ramfs.c fs/fat32.c fs/ext2.c
     drivers/keyboard.c drivers/framebuffer.c drivers/gpu.c drivers/mouse.c drivers/ata.c drivers/ahci.c drivers/nvme.c drivers/xhci.c drivers/pcspk.c drivers/audio.c drivers/ac97.c drivers/hda.c mm/pmm.c mm/vmm.c mm/kheap.c mm/dma.c
-    kernel/cmd_libctest.c
+    kernel/wav.c kernel/cmd_libctest.c
 )
 # The freestanding C library. Built with -fno-math-errno/-fno-trapping-math so the
 # compiler lowers __builtin_sqrt &c. to bare SSE instructions instead of an
@@ -278,6 +278,16 @@ fi
 cp assets/font.ttf build/font.ttf
 ( cd build && "$OBJCOPY" -I binary -O elf64-x86-64 font.ttf font_ttf.o )
 KOBJS+=(build/font_ttf.o)
+
+echo "[3d2/6] generate the system sounds (chime.wav, blip.wav -> blobs)"
+# Two shapes on purpose: 22 kHz mono 8-bit and 44.1 kHz stereo 16-bit. Between
+# them they make the decoder resample, expand mono to stereo and sign-convert,
+# which is what any WAV off a real disk asks of it.
+"$PYTHON" mkwav.py assets
+cp assets/chime.wav assets/blip.wav build/
+( cd build && "$OBJCOPY" -I binary -O elf64-x86-64 chime.wav chime_wav.o )
+( cd build && "$OBJCOPY" -I binary -O elf64-x86-64 blip.wav  blip_wav.o  )
+KOBJS+=(build/chime_wav.o build/blip_wav.o)
 
 echo "[3e/6] real NetSurf libraries (upstream source, compiled against the libc)"
 # The genuine NetSurf support stack, vendored under netsurf/ and built against

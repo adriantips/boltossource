@@ -53,7 +53,7 @@ void audio_play_pcm(const int16_t *interleaved, uint32_t frames) {
      * never starts reads as permanently busy -- gives the caller its thread
      * back at the same moment instead of holding it for as long as an
      * iteration count happens to take on that machine. */
-    uint64_t deadline = pit_ticks() + frames / 48u + 500u;
+    uint64_t deadline = pit_ticks() + frames / (AUDIO_RATE / 1000u) + 500u;
     while (dev->busy() && pit_ticks() < deadline) __asm__ volatile("pause");
     dev->stop();
 }
@@ -66,7 +66,7 @@ void audio_tone(uint32_t freq, uint32_t ms) {
         pcspk_off();
         return;
     }
-    uint32_t frames = (48000u * ms) / 1000u;
+    uint32_t frames = (AUDIO_RATE * ms) / 1000u;
     uint32_t cap = dev->capacity();
     if (frames > cap) frames = cap;
     if (!frames) return;
@@ -76,7 +76,7 @@ void audio_tone(uint32_t freq, uint32_t ms) {
 
     /* Integer square wave at ~25% of full scale: loud enough to hear, quiet
      * enough that the codec's own gain does not clip it into a rasp. */
-    uint32_t half = 48000u / (freq * 2);
+    uint32_t half = AUDIO_RATE / (freq * 2);
     if (half == 0) half = 1;
     int16_t lvl = 8000;
     uint32_t cnt = 0;
