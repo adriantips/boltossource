@@ -4,6 +4,12 @@ A 64-bit operating system written from scratch in C and x86-64 assembly — no
 GRUB, no Multiboot, no external libraries. Custom boot chain (legacy BIOS MBR +
 UEFI), own kernel.
 
+**Using it:** [GUIDE.md](GUIDE.md) — install, daily use, troubleshooting, and an
+honest account of what it cannot do yet.
+**Writing software on it:** [DEVELOPING.md](DEVELOPING.md), with
+[SDK.md](SDK.md) for the syscall ABI and [SHELL.md](SHELL.md) for the shell.
+**What is left:** [ROADMAP.md](ROADMAP.md).
+
 > Status: **active development.** Custom boot chain (stage1 → stage2 → long mode,
 > or UEFI → long mode) into a 64-bit C kernel. UEFI boot, ACPI, APIC, **SMP
 > (symmetric multiprocessing)**, HPET, a framebuffer compositor and windowed
@@ -1458,6 +1464,8 @@ The interactive OS shell supports a wide range of commands:
 
 ```text
 +-- README.md
++-- GUIDE.md               User guide: install, daily use, troubleshooting
++-- DEVELOPING.md          Developer guide: building on BoltOS, writing an app
 +-- BROWSER_UPGRADE.md     Browser engine upgrade plan + status log
 +-- STORAGE_UPGRADE.md     Mount safety, failure handling and storage tests
 +-- SDK.md  SHELL.md       Native program ABI and shell development guide
