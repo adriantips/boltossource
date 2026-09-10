@@ -25,7 +25,9 @@ def reach_shell(vm, timeout=180):
 
 def text_leg():
     """Everything that can be checked without a desktop, which is most of it."""
-    with BoltVM(name="keys", snapshot=False, extra=["-vga", "none"]) as vm:
+    # snapshot=True: the overlay lives as long as this QEMU, so /etc/keys.conf
+    # survives the reboots below without writing into the shared iso/ images.
+    with BoltVM(name="keys", extra=["-vga", "none"]) as vm:
         reach_shell(vm)
 
         out = vm.run("keys")

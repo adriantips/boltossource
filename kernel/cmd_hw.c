@@ -14,6 +14,7 @@
 #include "dhcp.h"
 #include "net.h"
 #include "clipboard.h"
+#include "fs.h"
 #include "ext2.h"
 #include "users.h"
 #include "gui.h"
@@ -128,11 +129,29 @@ int cmd_play(int argc, char **argv) {
 int cmd_clip(int argc, char **argv) {
     const char *sub = argc > 1 ? argv[1] : "show";
     if (strcmp(sub, "show") == 0) {
-        if (clip_len() == 0) { kprintf("clipboard is empty\n"); return 0; }
-        kprintf("clipboard (%d bytes):\n%s\n", clip_len(), clip_get());
+        /* The clipboard is typed now, so say which kind it holds. "clipboard
+         * is empty" for a picture would be a lie, and a paste that then
+         * produced an image would be a surprise. */
+        if (clip_kind() == CLIP_EMPTY) { kprintf("clipboard is empty\n"); return 0; }
+        if (clip_kind() == CLIP_IMAGE) {
+            int w = 0, h = 0;
+            clip_image(&w, &h);
+            kprintf("clipboard: image %dx%d (%d KiB)\n", w, h, (w * h * 4) / 1024);
+            return 0;
+        }
+        if (clip_kind() == CLIP_FILES) {
+            int n = clip_file_count();
+            kprintf("clipboard: %d file%s\n", n, n == 1 ? "" : "s");
+            for (int i = 0; i < n; i++) {
+                char p[FS_PATH_MAX];
+                if (clip_file_at(i, p, sizeof p)) kprintf("  %s\n", p);
+            }
+            return 0;
+        }
+        kprintf("clipboard: text, %d bytes\n%s\n", clip_len(), clip_get());
         return 0;
     }
-    if (strcmp(sub, "clear") == 0) { clip_set("", 0); kprintf("clipboard cleared\n"); return 0; }
+    if (strcmp(sub, "clear") == 0) { clip_clear(); kprintf("clipboard cleared\n"); return 0; }
     if (strcmp(sub, "set") == 0 && argc > 2) {
         /* join the remaining args with spaces */
         static char buf[CLIP_CAP]; int n = 0;

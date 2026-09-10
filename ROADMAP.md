@@ -144,7 +144,9 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
         BMP of the compositor's backbuffer.
 - [ ] 80. Screen recording
 - [ ] 81. HiDPI / display scaling
-- [ ] 82. Clipboard for images and files, not just text
+- [x] 82. Typed clipboard: text, images or file paths. Photos and Paint copy
+        and paste pictures, File Explorer publishes paths and writes a pasted
+        image out as a PNG, and `clip show` names the kind.
 - [x] 83. Software centre: Available/Installed tabs over the repository index,
         one-click install and remove through the same pkg code the command
         uses, work deferred one tick so the desktop paints before it blocks.

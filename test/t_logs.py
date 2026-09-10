@@ -21,7 +21,10 @@ def reach_shell(vm, timeout=180):
 
 
 def main():
-    with BoltVM(name="logs", snapshot=False, extra=["-vga", "none"]) as vm:
+    # snapshot=True: the copy-on-write overlay outlives the guest's reboot but
+    # not this QEMU, so the log persists for the test without the test
+    # persisting into the developer's disk images.
+    with BoltVM(name="logs", extra=["-vga", "none"]) as vm:
         reach_shell(vm)
 
         vm.run("logs clear")

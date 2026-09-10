@@ -10,6 +10,9 @@
 #include "kheap.h"
 #include "string.h"
 #include "fs.h"
+#include "clipboard.h"
+#include "keyboard.h"
+#include "notify.h"
 
 #define CANVW 520
 #define CANVH 340
@@ -117,6 +120,42 @@ static void paint_saveas_cb(const char *name) {
     kfree(bmp);
 }
 
+/* Ctrl+C hands the canvas to the machine, Ctrl+V takes a picture from it.
+ * A pasted image is scaled to fit rather than cropped: the clipboard could be
+ * holding a whole 1024x768 screenshot, and silently keeping its top-left
+ * corner would look like a bug. */
+static void paint_key(window_t *w, char c) {
+    (void)w;
+    unsigned char u = (unsigned char)c;
+    if (u == KEY_COPY) {
+        if (canvas && clip_set_image(canvas, CANVW, CANVH) == 0)
+            gui_notify(NOTE_SUCCESS, "Paint", "Canvas copied to the clipboard");
+        return;
+    }
+    if (u != KEY_PASTE) return;
+
+    int iw = 0, ih = 0;
+    const uint32_t *px = clip_image(&iw, &ih);
+    if (!px) {
+        gui_notify(NOTE_INFO, "Paint", "The clipboard has no picture in it");
+        return;
+    }
+    if (!canvas) return;
+    /* Nearest-neighbour, scaled to fit and centred, keeping the aspect ratio. */
+    int dw = CANVW, dh = ih * CANVW / (iw ? iw : 1);
+    if (dh > CANVH) { dh = CANVH; dw = iw * CANVH / (ih ? ih : 1); }
+    if (dw < 1) dw = 1;
+    if (dh < 1) dh = 1;
+    int ox = (CANVW - dw) / 2, oy = (CANVH - dh) / 2;
+    for (int y = 0; y < dh; y++) {
+        const uint32_t *src = px + (uint64_t)(y * ih / dh) * iw;
+        uint32_t *dst = canvas + (uint64_t)(oy + y) * CANVW + ox;
+        for (int x = 0; x < dw; x++) dst[x] = src[x * iw / dw] | 0xFF000000;
+    }
+    gui_request_redraw();
+    gui_notify(NOTE_SUCCESS, "Paint", "Pasted the clipboard image onto the canvas");
+}
+
 static void paint_click(window_t *w, int lx, int ly) {
     (void)w;
     last_x = last_y = -1;                            /* reset stroke on a fresh press */
@@ -192,6 +231,7 @@ void paint_app_init(void) {
     win->draw  = paint_draw;
     win->click = paint_click;
     win->drag  = paint_drag;
+    win->key   = paint_key;
     win->min_w = 360; win->min_h = 300;
     win->x = 120; win->y = 60;
 }

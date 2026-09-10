@@ -387,8 +387,14 @@ static const manpage_t MAN[] = {
   "Play a tone through the AC97 audio device (defaults: 440 Hz, 400 ms)." },
 { "dhcp", "dhcp",
   "Request a lease now, rather than waiting for the boot-time attempt." },
-{ "clip", "clip show|set TEXT|clear",
-  "The system clipboard, shared with every GUI app." },
+{ "clip", "clip show | clip set TEXT... | clip clear",
+  "The system clipboard, shared with every GUI app. It carries one item of one' + N + '"
+  "kind: text, an image, or a list of files. `show` says which -- an image' + N + '"
+  "reports its size, files list their paths.' + N + '"
+  "Copy a picture with Ctrl+C in Photos or Paint; paste it into Paint, or into' + N + '"
+  "a folder in File Explorer, where it is written out as a PNG. Copying a file' + N + '"
+  "in File Explorer also puts its path here as text, so it can be pasted into' + N + '"
+  "Notes or a Terminal." },
 { "crash", "crash ring3 [null|div|ud|stack] | crash null|div|ud",
   "Fault on purpose. `crash ring3` runs /bin/crashme, which dies while the\n"
   "machine carries on -- that is the per-process isolation demonstration, and\n"
