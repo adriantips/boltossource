@@ -1407,10 +1407,41 @@ has not been given the CPU for five seconds. Round-robin should never starve
 anyone, so a hit means a thread is wedged with interrupts off — a driver
 spinning on a register that will never change, say. The kernel cannot preempt
 its way out of that, but reporting it turns "the machine froze" into a
-diagnosable event. The same thread warns once when the kernel heap passes 90%
-full, which is the last chance to say something before allocations start failing
-in callers that cannot report it. `ps` shows every scheduler thread with its
-ring, CPU ticks and idle ticks.
+diagnosable event. `ps` shows every scheduler thread with its ring, CPU ticks
+and idle ticks.
+
+The same thread watches the kernel heap. Passing 90% used is the last chance to
+say something before allocations start failing in callers that cannot report it
+— but how full the heap is was never the whole story, so it also reports a heap
+whose largest free block has shrunk below a megabyte while megabytes remain
+free, and every allocation that has actually failed. All three reach the
+notification centre as well as the log.
+
+### The kernel heap
+
+`mm/kheap.c` is a first-fit allocator over a 96 MiB window. Every block, free or
+in use, is on a doubly-linked list in address order; free blocks are also on
+their own list, stored in their own unused payloads, so an allocation walks free
+blocks rather than every block in the heap.
+
+Both lists exist because of coalescing. The previous version had one singly
+linked list and merged forward only: `kfree(b)` merged `b` with `b->next` if
+that happened to be free. Release two neighbouring blocks in the order they were
+taken — the ordinary case — and neither merge fires, because when the first is
+freed the second is still in use, and when the second is freed it looks past the
+first. They stayed adjacent and separate for the rest of the boot. An allocation
+needing both then failed with the space sitting right there, and the watchdog,
+which only looked at bytes in use, saw a heap 40% full and said nothing. Now a
+free merges both of its neighbours, an allocation from a stray pointer or a
+double free is counted rather than allowed to corrupt the list, and `kheap_check()`
+walks both lists to confirm they agree with each other and with the memory
+between them — reported by `meminfo` as `structure ok`.
+
+Every list walk runs with interrupts off. The timer ISR calls `schedule()`
+unconditionally, so a thread halfway through unlinking a block is preempted by a
+thread that allocates, and the two interleave inside the same pointers. Only the
+BSP runs kernel threads today, so that is enough; giving the APs work is the
+change that would need a real lock.
 
 ## StackGuard (stack canaries)
 

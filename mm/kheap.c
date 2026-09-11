@@ -2,67 +2,224 @@
 #include "kheap.h"
 #include "pmm.h"
 #include "mm.h"
+#include "io.h"
 
-/* A simple first-fit free-list heap over a fixed window starting at physical
- * 16 MiB (identity-mapped, reserved from the PMM). Good enough to back the rest
- * of the kernel; a slab allocator can replace it later. Sized at 96 MiB so the
- * DOOM port has room for its ~6 MiB zone, the 640x400 framebuffer and WAD lump
- * cache on top of the desktop's compositor buffers. */
+/* A first-fit heap over a fixed window starting at physical 16 MiB
+ * (identity-mapped, reserved from the PMM). Sized at 96 MiB so the DOOM port
+ * has room for its ~6 MiB zone, the 640x400 framebuffer and WAD lump cache on
+ * top of the desktop's compositor buffers.
+ *
+ * Two lists, not one. Every block, free or in use, is on a doubly-linked list
+ * in address order, which is what makes a neighbour cheap to find and merge.
+ * Free blocks are additionally on their own list, so an allocation walks free
+ * blocks rather than every block in the heap -- with a browser open the
+ * difference is thousands of headers per kmalloc.
+ *
+ * The previous version had one singly-linked list and coalesced forward only:
+ * kfree(b) merged b with b->next if that happened to be free. Free two blocks
+ * in address order -- which is the ordinary case, since things tend to be
+ * released in the order they were taken -- and neither merge fires, because
+ * when the first is freed the second is still in use, and when the second is
+ * freed it looks past the first. The two stayed adjacent and separate for the
+ * rest of the boot. An allocation big enough to need both then failed with the
+ * space sitting right there, and the watchdog, which only ever looked at how
+ * many bytes were in use, saw a heap that was 40% full and said nothing.
+ *
+ * Every list walk runs with interrupts off. The timer ISR calls schedule()
+ * unconditionally, so a thread halfway through unlinking a block gets
+ * preempted by another thread that allocates, and the two interleave inside
+ * the same pointers. Only the BSP ever runs kernel threads -- the APs idle in
+ * ap_entry64 and allocate nothing -- so switching interrupts off is enough and
+ * no spinlock is needed. Giving the APs work is the change that would need
+ * one. The sections are short because coalescing keeps the free list short:
+ * that is the other reason it matters. */
 #define KHEAP_START 0x1000000ull   /* 16 MiB */
 #define KHEAP_SIZE  0x6000000ull   /* 96 MiB */
 
+/* The smallest payload worth leaving behind when a block is split. It is also
+ * the smallest a free block may be, because a free block stores its free-list
+ * links inside its own payload. */
+#define MIN_PAYLOAD 16u
+#define BLK_MAGIC   0x424C4B31u    /* "BLK1" */
+
 typedef struct block {
-    uint64_t       size;           /* payload size, excluding header */
-    struct block  *next;
-    int            free;
+    uint64_t      size;            /* payload bytes, not counting this header */
+    struct block *prev, *next;     /* address order: every block in the heap */
+    uint32_t      free;
+    uint32_t      magic;           /* a kfree of a stray pointer is caught, not
+                                    * silently allowed to corrupt the heap */
 } block_t;
 
-static block_t *head;
+/* A free block's payload is dead space, so the free list lives in it. */
+typedef struct { struct block *prev, *next; } freelink;
+
+static block_t *head;              /* lowest-addressed block */
+static block_t *freehead;
+static uint8_t *heap_lo;           /* the window itself, so kfree can tell a
+                                    * pointer that came from here from one that
+                                    * did not without depending on `head` still
+                                    * being the lowest block */
+static uint64_t g_failures, g_bad_frees;
+
+static freelink *fl(block_t *b)      { return (freelink *)((uint8_t *)b + sizeof(block_t)); }
+static void     *payload(block_t *b) { return (uint8_t *)b + sizeof(block_t); }
+
+static void fl_insert(block_t *b) {
+    fl(b)->prev = 0;
+    fl(b)->next = freehead;
+    if (freehead) fl(freehead)->prev = b;
+    freehead = b;
+}
+static void fl_remove(block_t *b) {
+    block_t *p = fl(b)->prev, *n = fl(b)->next;
+    if (p) fl(p)->next = n; else freehead = n;
+    if (n) fl(n)->prev = p;
+}
 
 void kheap_init(void) {
     pmm_reserve_range(KHEAP_START, KHEAP_SIZE);
     head = (block_t *)P2V(KHEAP_START);    /* direct map: valid under any CR3 */
-    head->size = KHEAP_SIZE - sizeof(block_t);
-    head->next = 0;
-    head->free = 1;
+    heap_lo = (uint8_t *)head;
+    head->size  = KHEAP_SIZE - sizeof(block_t);
+    head->prev  = head->next = 0;
+    head->free  = 1;
+    head->magic = BLK_MAGIC;
+    freehead = 0;
+    fl_insert(head);
+    g_failures = g_bad_frees = 0;
+}
+
+static void split(block_t *b, uint64_t size) {
+    block_t *nb = (block_t *)((uint8_t *)b + sizeof(block_t) + size);
+    nb->size  = b->size - size - sizeof(block_t);
+    nb->free  = 1;
+    nb->magic = BLK_MAGIC;
+    nb->prev  = b;
+    nb->next  = b->next;
+    if (nb->next) nb->next->prev = nb;
+    b->next = nb;
+    b->size = size;
+    fl_insert(nb);
 }
 
 void *kmalloc(uint64_t size) {
-    size = (size + 15) & ~15ull;
-    for (block_t *b = head; b; b = b->next) {
-        if (!b->free || b->size < size) continue;
-        if (b->size >= size + sizeof(block_t) + 16) {     /* split */
-            block_t *nb = (block_t *)((uint8_t *)b + sizeof(block_t) + size);
-            nb->size = b->size - size - sizeof(block_t);
-            nb->next = b->next;
-            nb->free = 1;
-            b->size = size;
-            b->next = nb;
+    if (size == 0) size = 1;
+    uint64_t f = irq_save();
+    /* The bound is tested before the round-up, which would otherwise wrap a
+     * huge request into a small one and hand back a buffer that is nothing
+     * like the size that was asked for. */
+    if (size <= KHEAP_SIZE) {
+        size = (size + 15) & ~15ull;
+        for (block_t *b = freehead; b; b = fl(b)->next) {
+            if (b->size < size) continue;
+            fl_remove(b);
+            if (b->size >= size + sizeof(block_t) + MIN_PAYLOAD) split(b, size);
+            b->free = 0;
+            irq_restore(f);
+            return payload(b);
         }
-        b->free = 0;
-        return (uint8_t *)b + sizeof(block_t);
     }
+    g_failures++;
+    irq_restore(f);
     return 0;
+}
+
+/* Absorb b->next into b. Both must be free. */
+static void merge_next(block_t *b) {
+    block_t *n = b->next;
+    if (!n || !n->free) return;
+    fl_remove(n);
+    n->magic = 0;
+    b->size += sizeof(block_t) + n->size;
+    b->next  = n->next;
+    if (b->next) b->next->prev = b;
 }
 
 void kfree(void *p) {
     if (!p) return;
-    block_t *b = (block_t *)((uint8_t *)p - sizeof(block_t));
-    b->free = 1;
-    if (b->next && b->next->free) {                       /* coalesce forward */
-        b->size += sizeof(block_t) + b->next->size;
-        b->next  = b->next->next;
+    uint8_t *q = (uint8_t *)p;
+    if (q < heap_lo + sizeof(block_t) || q >= heap_lo + KHEAP_SIZE) {
+        g_bad_frees++;
+        return;
     }
+    block_t *b = (block_t *)(q - sizeof(block_t));
+    uint64_t f = irq_save();
+    if (b->magic != BLK_MAGIC || b->free) {       /* not ours, or freed twice */
+        g_bad_frees++;
+        irq_restore(f);
+        return;
+    }
+    b->free = 1;
+    fl_insert(b);
+    /* Both neighbours, which is enough: no two adjacent free blocks can exist
+     * before this call -- every previous free merged its own -- so b's are the
+     * only ones there are. */
+    merge_next(b);
+    if (b->prev && b->prev->free) merge_next(b->prev);
+    irq_restore(f);
 }
 
 /* Walk the free list to report live allocation. *used = payload bytes handed
  * out, *total = bytes under management. Backs the Task Manager heap readout. */
 void kheap_usage(uint64_t *used, uint64_t *total) {
-    uint64_t u = 0, t = 0;
+    kheap_stats st;
+    kheap_get_stats(&st);
+    if (used)  *used  = st.used;
+    if (total) *total = st.total;
+}
+
+void kheap_get_stats(kheap_stats *s) {
+    uint64_t used = 0, total = 0, freeb = 0, largest = 0;
+    uint32_t blocks = 0, freeblocks = 0;
+    uint64_t f = irq_save();                      /* one consistent snapshot */
     for (block_t *b = head; b; b = b->next) {
-        t += b->size + sizeof(block_t);
-        if (!b->free) u += b->size;
+        total += b->size + sizeof(block_t);
+        blocks++;
+        if (b->free) {
+            freeblocks++;
+            freeb += b->size;
+            if (b->size > largest) largest = b->size;
+        } else {
+            used += b->size;
+        }
     }
-    if (used)  *used  = u;
-    if (total) *total = t;
+    s->used = used; s->total = total; s->free_bytes = freeb;
+    s->largest_free = largest;
+    s->blocks = blocks; s->free_blocks = freeblocks;
+    s->failures = g_failures; s->bad_frees = g_bad_frees;
+    irq_restore(f);
+}
+
+/* Walk both lists and check they agree with each other and with the memory
+ * between them. Returns 0 if the heap is sound, or a negative code naming the
+ * first thing that was not. Cheap enough to call from a test after every
+ * operation; not on any hot path. */
+int kheap_check(void) {
+    uint64_t f = irq_save();
+#define KHEAP_BAD(code) do { irq_restore(f); return (code); } while (0)
+    uint64_t span = 0;
+    uint32_t frees = 0;
+    block_t *prev = 0;
+    for (block_t *b = head; b; prev = b, b = b->next) {
+        if (b->magic != BLK_MAGIC)            KHEAP_BAD(-1);
+        if (b->prev != prev)                  KHEAP_BAD(-2);  /* not doubly linked */
+        if (prev && (uint8_t *)b != (uint8_t *)prev + sizeof(block_t) + prev->size)
+                                              KHEAP_BAD(-3);  /* hole or overlap  */
+        if (prev && prev->free && b->free)    KHEAP_BAD(-4);  /* should have merged */
+        span += b->size + sizeof(block_t);
+        if (b->free) frees++;
+    }
+    if (span != KHEAP_SIZE)                   KHEAP_BAD(-5);
+    uint32_t seen = 0;
+    block_t *fprev = 0;
+    for (block_t *b = freehead; b; fprev = b, b = fl(b)->next) {
+        if (!b->free || b->magic != BLK_MAGIC) KHEAP_BAD(-6);
+        if (fl(b)->prev != fprev)              KHEAP_BAD(-7);
+        if (++seen > frees)                    KHEAP_BAD(-8); /* a cycle */
+    }
+    if (seen != frees)                         KHEAP_BAD(-9); /* a free block the
+                                                               * free list lost */
+#undef KHEAP_BAD
+    irq_restore(f);
+    return 0;
 }

@@ -83,7 +83,25 @@ int cmd_meminfo(int argc, char **argv) {
             (unsigned long)((freep * 4096ull) >> 20));
     kprintf("frames   : %lu / %lu free  (4 KiB each)\n",
             (unsigned long)freep, (unsigned long)totp);
-    kprintf("kheap    : kmalloc/kfree region allocator\n");
+    kheap_stats h;
+    kheap_get_stats(&h);
+    kprintf("kheap    : %lu KiB used, %lu KiB free of %lu KiB\n",
+            (unsigned long)(h.used >> 10), (unsigned long)(h.free_bytes >> 10),
+            (unsigned long)(h.total >> 10));
+    /* The largest free block, not just the total, because that is the number
+     * that decides whether the next big allocation succeeds. */
+    kprintf("           %lu blocks (%lu free), largest free %lu KiB\n",
+            (unsigned long)h.blocks, (unsigned long)h.free_blocks,
+            (unsigned long)(h.largest_free >> 10));
+    if (h.failures || h.bad_frees)
+        kprintf("           %lu failed allocation%s, %lu bad free%s\n",
+                (unsigned long)h.failures, h.failures == 1 ? "" : "s",
+                (unsigned long)h.bad_frees, h.bad_frees == 1 ? "" : "s");
+    /* Walking the heap's own structure costs one pass over the block list,
+     * which is worth paying when somebody has asked how memory is doing. */
+    int hc = kheap_check();
+    if (hc == 0) kprintf("           structure ok\n");
+    else         kprintf("           structure INCONSISTENT (%d)\n", hc);
     char sz[12]; sh_human(fs_total_bytes(), sz);
     kprintf("ramfs    : %d nodes, %s in files\n", fs_count_nodes(), sz);
     return 0;
