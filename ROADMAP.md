@@ -161,7 +161,12 @@ says "wired or Wi-Fi".
 - [x] 49. Build targets in the IDE, run through BoltCC (`build.txt`; the
         `build` command resolves the same target from the shell)
 - [x] 50. BoltCC: C preprocessor (`#include`, `#define`, conditionals)
-- [~] 51. BoltCC: arrays (structs and pointers still to come)
+- [x] 51. BoltCC: arrays, and now structs -- fields, `.` and `->`, `&`,
+        arrays of structs, typedef struct, and a field that refers to the
+        struct's own type, which is what a linked list needs. A struct is a
+        reference rather than a value, because there are no types here to
+        tell `f(p)` from `f(&p)` apart and copying would break the one
+        people write; the manual says so rather than hiding it
 - [ ] 52. BoltCC: native x86-64 code generation
 - [ ] 53. BoltCC: emit linkable objects
 - [~] 54. `cc` command (builds + runs multi-file C; bytecode, not yet an ELF)

@@ -466,7 +466,13 @@ static const manpage_t MAN[] = {
   "into one translation unit -- a unity build, since BoltCC has no linker --\n"
   "so a program really can be split across files with headers between them.\n"
   "-E prints the preprocessed text, -g runs it under the debugger, and the\n"
-  "dialect comes from the first file's extension." },
+  "dialect comes from the first file's extension.\n"
+  "\n"
+  "Structs work: fields, . and ->, arrays of them, and a field that refers to\n"
+  "the struct's own type. A struct is a reference, so passing one to a\n"
+  "function does not copy it -- changing a field inside changes the caller's\n"
+  "struct. That is what passing a pointer does in C and not what passing a\n"
+  "struct does, and there are no types here to tell the two apart." },
 { "build", "build [-t TARGET] [-l] [-g] [-o FILE] [DIR]",
   "Build a project rather than a file list: DIR's build.txt names its\n"
   "targets, each with its sources, include directories and macros. -l lists\n"
