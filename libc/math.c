@@ -1,12 +1,12 @@
-/* ===========================================================================
- *  libc/math.c -- double math on SSE2 (the kernel keeps SSE; only x87 is off).
+/*
+ * libc/math.c -- double math on SSE2 (the kernel keeps SSE; only x87 is off).
  *
- *  __builtin_{fabs,copysign,sqrt} lower to single SSE instructions, so they are
- *  safe to lean on. floor/ceil/trunc/round are written with integer casts rather
- *  than __builtin_floor (which would emit a call to floor() -- SSE4.1 roundsd is
- *  not in the x86-64 baseline -- and recurse). Transcendentals use range
- *  reduction + series; browser-grade precision, not libm-grade.
- * ===========================================================================*/
+ * __builtin_{fabs,copysign,sqrt} lower to single SSE instructions, so they are
+ * safe to lean on. floor/ceil/trunc/round are written with integer casts rather
+ * than __builtin_floor (which would emit a call to floor() -- SSE4.1 roundsd is
+ * not in the x86-64 baseline -- and recurse). Transcendentals use range
+ * reduction + series; browser-grade precision, not libm-grade.
+ */
 #include <stdint.h>
 #include "math.h"
 
@@ -124,7 +124,7 @@ double pow(double x, double y) {
 double cbrt(double x) {
     if (x == 0.0) return 0.0;
     double a = fabs(x), g = exp(log(a) / 3.0);
-    for (int i = 0; i < 3; i++) g = (2.0 * g + a / (g * g)) / 3.0;   /* Newton */
+    for (int i = 0; i < 3; i++) g = (2.0 * g + a / (g * g)) / 3.0;   /* Newton, 3 steps is plenty from an exp/log seed */
     return x < 0 ? -g : g;
 }
 double hypot(double a, double b) { a = fabs(a); b = fabs(b);

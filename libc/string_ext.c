@@ -1,8 +1,6 @@
-/* ===========================================================================
- *  libc/string_ext.c -- the rest of <string.h>/<strings.h> beyond the handful
- *  of primitives the kernel already shipped in libc/string.c. Kept separate so
- *  the original file (memset/memcpy/strlen/strcmp/...) stays untouched.
- * ===========================================================================*/
+/* libc/string_ext.c -- the rest of <string.h>/<strings.h> beyond the handful
+ * of primitives the kernel already shipped in libc/string.c. Kept separate so
+ * the original file (memset/memcpy/strlen/strcmp/...) stays untouched. */
 #include <stddef.h>
 #include <stdint.h>
 #include "string.h"

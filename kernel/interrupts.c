@@ -83,10 +83,6 @@ static const char *exc[32] = {
 
 static inline uint64_t read_cr3(void) { uint64_t v; __asm__ volatile("mov %%cr3,%0":"=r"(v)); return v; }
 
-/* Walk the saved RBP frame chain and print return addresses. The kernel keeps
- * frame pointers for non-leaf functions; bogus links are filtered by requiring
- * a forward-moving, 8-aligned RBP within a stack-sized window, so a corrupt
- * stack can't send us reading wild memory and triple-faulting the dump. */
 /* A frame pointer is only safe to dereference if it lands in mapped memory:
  * either identity-mapped low RAM or the higher-half kernel window (where this
  * kernel's stacks live). Anything else ends the walk rather than risking a

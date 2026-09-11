@@ -43,6 +43,9 @@ static int status(void) {
 
 int cmd_vault(int argc, char **argv) {
     const char *sub = argc > 1 ? argv[1] : "status";
+    /* TODO: pw (and `again` below) sit on the stack in plaintext and are never
+     * wiped after use. Not the leak the commit history worried about, but a
+     * real one; just hasn't come up. */
     char pw[64];
 
     if (!strcmp(sub, "status")) return status();

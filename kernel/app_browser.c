@@ -685,7 +685,16 @@ static const char *json_str(const char *p, const char *end, char *out, uint32_t 
     out[o]=0;
     return p;
 }
-/* Build a plain-HTML page from YouTube's embedded JSON. Returns length. */
+/* Build a plain-HTML page from YouTube's embedded JSON. Returns length.
+ *
+ * this took a while to get working and it is still held together with tape:
+ * there's no real JSON parser here, just find_sub() hunting for known key
+ * strings inside ytInitialData and a scan window (the +2500/+4000/+8000
+ * offsets below) picked by looking at how far a title/description actually
+ * sits from its videoId/videoDetails marker in real page captures. YouTube
+ * changes this blob's shape without warning, so when search results come back
+ * empty first check whether the marker strings still exist before assuming
+ * the network path broke. */
 static int youtube_build(const char *raw, uint32_t len, char *out, uint32_t outcap, const char *url) {
     const char *end = raw + len; uint32_t o = 0;
     #define YPUT(s) do { for (const char *q=(s); *q && o<outcap-1; ) out[o++]=*q++; } while(0)

@@ -1,7 +1,5 @@
-/* ===========================================================================
- *  libc/support.c -- odds and ends: the global errno, assert handler, and the
- *  C-locale localeconv()/setlocale() that number formatting consults.
- * ===========================================================================*/
+/* libc/support.c -- odds and ends: the global errno, assert handler, and the
+ * C-locale localeconv()/setlocale() that number formatting consults. */
 #include "errno.h"
 #include "locale.h"
 #include "kprintf.h"

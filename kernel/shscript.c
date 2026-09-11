@@ -369,7 +369,10 @@ static int split(char *text, char **seg, int max) {
     char *start = p;
     for (;; p++) {
         char c = *p;
-        /* A comment runs to the newline, even when it contains semicolons. */
+        /* A comment runs to the newline, even when it contains semicolons.
+         * Blanking it out in place (rather than skipping it) keeps every
+         * later offset into `text` valid -- getting this wrong once turned
+         * a `#` inside a later quoted string into part of the comment. */
         if (!quote && c == '#' && (p == start || p[-1] == ' ' || p[-1] == '\t')) {
             while (*p && *p != '\n') *p++ = ' ';
             c = *p;

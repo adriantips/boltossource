@@ -50,7 +50,9 @@ void doom_pump(void) {
 
     if (!g_created) {
         /* First activation: paint the loading notice for one frame, then boot
-         * the engine -- a multi-second, blocking WAD load + table build. */
+         * the engine -- a multi-second, blocking WAD load + table build. Two
+         * frames, not one, because the notice has to actually reach the
+         * screen before we block the desktop loop for the load. */
         if (!g_loading) { g_loading = 1; gui_request_redraw(); return; }
         g_created = 1;
         dg_boltos_create();

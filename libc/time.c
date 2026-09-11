@@ -1,9 +1,8 @@
-/* ===========================================================================
- *  libc/time.c -- calendar/clock for BoltOS's freestanding libc.
- *  Wall-clock comes from the CMOS RTC (rtc_now); a monotonic millisecond clock
- *  comes from the PIT tick counter. Epoch math uses Howard Hinnant's civil-day
- *  algorithm so the full 1970.. range round-trips.
- * ===========================================================================*/
+/* libc/time.c -- calendar/clock for BoltOS's freestanding libc.
+ * Wall-clock comes from the CMOS RTC (rtc_now); a monotonic millisecond clock
+ * comes from the PIT tick counter. Epoch math uses Howard Hinnant's civil-day
+ * algorithm (the one from his chrono paper) so the full 1970.. range round-trips
+ * without the usual off-by-one-day nonsense around leap years. */
 #include <stdint.h>
 #include "time.h"
 #include "string.h"

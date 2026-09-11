@@ -77,7 +77,10 @@ static void paint_drag(window_t *w, int lx, int ly) {
 }
 
 /* Export the canvas as a 24-bit BMP. Bare names go to /home/Pictures with a
- * .bmp default; an absolute path is used verbatim. */
+ * .bmp default; an absolute path is used verbatim.
+ * TODO: this hand-rolls the same BMP header png_enc.c/screenshots already
+ * know how to write out as PNG -- predates that code, never got around to
+ * swapping it over. */
 static void paint_saveas_cb(const char *name) {
     if (!canvas || !name || !name[0]) return;
     char path[FS_PATH_MAX];

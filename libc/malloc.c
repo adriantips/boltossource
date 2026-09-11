@@ -1,21 +1,22 @@
-/* ===========================================================================
- *  libc/malloc.c -- C heap allocator for BoltOS's freestanding libc.
+/* libc/malloc.c -- C heap allocator for BoltOS's freestanding libc.
  *
- *  The kernel heap (mm/kheap.c) exposes only kmalloc/kfree with no size query
- *  and no realloc, so this layer stores a 16-byte bookkeeping prefix in front of
- *  every block: a magic tag and the payload size (for realloc/calloc). The user
- *  pointer therefore stays 16-byte aligned, satisfying max_align_t.
+ * The kernel heap (mm/kheap.c) exposes only kmalloc/kfree with no size query
+ * and no realloc, so this layer stores a 16-byte bookkeeping prefix in front of
+ * every block: a magic tag and the payload size (for realloc/calloc). The user
+ * pointer therefore stays 16-byte aligned, satisfying max_align_t.
  *
- *  Over-aligned blocks (aligned_alloc, align>16) additionally stash the original
- *  kmalloc base pointer in the 8 bytes just below the header so free() can route
- *  back to kfree() regardless of how far the payload was bumped up for alignment.
- * ===========================================================================*/
+ * Over-aligned blocks (aligned_alloc, align>16) additionally stash the original
+ * kmalloc base pointer in the 8 bytes just below the header so free() can route
+ * back to kfree() regardless of how far the payload was bumped up for alignment.
+ */
 #include <stdint.h>
 #include <stddef.h>
 #include "kheap.h"
 #include "string.h"
 
 #define HDR     16u
+/* 0xA110C8ED / 0xA11C9ED read as ALLOCATED / ALIGNED if you squint -- picked
+ * so a stomped header shows up as garbage instead of as a plausible value. */
 #define MAGIC_N 0xA110C8EDu     /* normal block: header sits at the kmalloc base */
 #define MAGIC_A 0xA11C9EDu      /* aligned block: real base stored at hdr-8       */
 

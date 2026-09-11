@@ -66,7 +66,9 @@ static void synth_note(int freq, int frames, int off) {
     }
     int half = SR / (freq * 2); if (half < 1) half = 1;
     int amp = 6500, lvl = amp, cnt = 0;
-    int atk = frames / 16; if (atk < 1) atk = 1;     /* click-free attack/release */
+    /* hack: a bare square wave pops at every note boundary without this ramp --
+     * found out the hard way with headphones on */
+    int atk = frames / 16; if (atk < 1) atk = 1;
     for (int i = 0; i < frames; i++) {
         if (++cnt >= half) { cnt = 0; lvl = -lvl; }
         int env = 256;

@@ -1,21 +1,20 @@
 #include "ulibc.h"
 #include "string.h"
 
-/* ===========================================================================
- *  /bin/crashme  -  a ring-3 program that faults on purpose.
+/* /bin/crashme -- a ring-3 program that faults on purpose.
  *
- *  Exists so per-process fault isolation can be demonstrated and regression
- *  tested: run it, watch the kernel reap it and report the fault, and confirm
- *  the machine (and the desktop, and everything else running) carries straight
- *  on. Drive it from the shell with `crash ring3 [null|div|ud|stack]`.
+ * Exists so per-process fault isolation can be demonstrated and regression
+ * tested: run it, watch the kernel reap it and report the fault, and confirm
+ * the machine (and the desktop, and everything else running) carries straight
+ * on. Drive it from the shell with `crash ring3 [null|div|ud|stack]`.
  *
- *  Each mode raises a different CPU exception, because they take different
- *  paths through the fault handler:
- *    null   #PF  (14) -- a bad data pointer, the ordinary case
- *    div    #DE  (0)  -- a fault with no error code
- *    ud     #UD  (6)  -- a bad instruction, i.e. a corrupt code path
- *    stack  #PF  (14) -- unbounded recursion off the end of the user stack
- * ===========================================================================*/
+ * Each mode raises a different CPU exception, because they take different
+ * paths through the fault handler:
+ *   null   #PF  (14) -- a bad data pointer, the ordinary case
+ *   div    #DE  (0)  -- a fault with no error code
+ *   ud     #UD  (6)  -- a bad instruction, i.e. a corrupt code path
+ *   stack  #PF  (14) -- unbounded recursion off the end of the user stack
+ */
 
 static int recurse(int depth) {
     volatile char pad[4096];              /* burn a page per frame */

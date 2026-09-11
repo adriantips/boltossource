@@ -1,13 +1,12 @@
-/* ===========================================================================
- *  libc/printf.c -- the printf family for BoltOS's freestanding libc.
+/* libc/printf.c -- the printf family for BoltOS's freestanding libc.
  *
- *  One engine (emit) drives every variant through a small "sink" abstraction:
- *  snprintf/vsnprintf fill a caller buffer, printf/vprintf push to the kernel
- *  console (kputc), asprintf allocates. Supports the C99 conversion set incl.
- *  flags (-+ #0), '*' width/precision, length modifiers (hh h l ll z j t L) and
- *  floating point (%f/%e/%g and upper variants) computed on SSE doubles -- no
- *  x87, since the kernel builds -mno-80387.
- * ===========================================================================*/
+ * One engine (emit) drives every variant through a small "sink" abstraction:
+ * snprintf/vsnprintf fill a caller buffer, printf/vprintf push to the kernel
+ * console (kputc), asprintf allocates. Supports the C99 conversion set incl.
+ * flags (-+ #0), '*' width/precision, length modifiers (hh h l ll z j t L) and
+ * floating point (%f/%e/%g and upper variants) computed on SSE doubles -- no
+ * x87, since the kernel builds -mno-80387.
+ */
 #include <stdint.h>
 #include <stddef.h>
 #include <stdarg.h>
@@ -96,7 +95,9 @@ static int fmt_double(char *out, double x, int prec, char conv) {
         return n;
     }
     if (c == 'g') {
-        /* choose %e if exponent < -4 or >= precision; trim trailing zeros */
+        /* choose %e if exponent < -4 or >= precision; trim trailing zeros.
+         * took a couple of wrong attempts to get the zero-trim right without
+         * eating a legit trailing zero in the exponent -- leave this alone. */
         int P = prec ? prec : 1;
         int exp = 0; double t = x;
         if (t != 0.0) { while (t >= 10.0) { t /= 10.0; exp++; } while (t < 1.0) { t *= 10.0; exp--; } }

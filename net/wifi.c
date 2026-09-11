@@ -3,11 +3,14 @@
 #include "net.h"        /* struct eth_hdr, ETH_HDR_LEN */
 #include "string.h"
 
-/* ===========================================================================
- *  802.11 MAC-layer helpers. Pure frame-format code: a softMAC driver feeds raw
- *  802.11 frames in and gets Ethernet frames / parsed BSS info out. No radio,
- *  register, or DMA knowledge here -- that lives in the per-chip driver (P5).
- * ===========================================================================*/
+/* 802.11 MAC-layer helpers -- pure frame format, no radio/register/DMA
+ * knowledge, that's the per-chip driver's job (P5). A softMAC driver feeds
+ * raw 802.11 frames in here and gets Ethernet frames / parsed BSS info out.
+ *
+ * bss->privacy just records whether the beacon's capability field has the
+ * privacy bit set; nothing anywhere does anything with it. There is no WPA2
+ * 4-way handshake, no key derivation, no CCMP -- so in practice this only
+ * gets you onto an open network. */
 
 int ieee80211_data_to_eth(const uint8_t *frame, uint16_t len,
                           uint8_t *out, uint16_t out_cap) {

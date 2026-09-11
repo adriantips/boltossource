@@ -27,7 +27,7 @@ void arp_cache_put(uint32_t ip, const uint8_t mac[6]) {
         if (cache[i].valid && cache[i].ip == ip) { memcpy(cache[i].mac, mac, 6); return; }
     for (int i = 0; i < ARP_CACHE; i++)
         if (!cache[i].valid) { cache[i].valid = 1; cache[i].ip = ip; memcpy(cache[i].mac, mac, 6); return; }
-    cache[0].ip = ip; memcpy(cache[0].mac, mac, 6);   /* evict slot 0 */
+    cache[0].ip = ip; memcpy(cache[0].mac, mac, 6);   /* full: evict slot 0, not LRU -- good enough for a 16-entry table */
 }
 
 void arp_request(struct netif *nif, uint32_t ip) {

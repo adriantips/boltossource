@@ -1,14 +1,13 @@
-/* ===========================================================================
- *  sdk/hello.c  -  a third-party BoltOS program.
+/* sdk/hello.c -- a third-party BoltOS program.
  *
- *  Nothing in here is privileged and nothing in here is built into the kernel.
- *  It is compiled outside BoltOS with sdk/build.sh, carried onto a machine by
- *  whatever means (`download`, `pkg install`, a copy into /bin) and started
- *  with `run` -- the path SDK.md describes, which is the path any program that
- *  did not ship with the OS has to take.
+ * Nothing in here is privileged and nothing in here is built into the kernel.
+ * It is compiled outside BoltOS with sdk/build.sh, carried onto a machine by
+ * whatever means (`download`, `pkg install`, a copy into /bin) and started
+ * with `run` -- the path SDK.md describes, which is the path any program that
+ * did not ship with the OS has to take.
  *
- *      sdk/build.sh -o build/sdkhello sdk/hello.c
- * ===========================================================================*/
+ *     sdk/build.sh -o build/sdkhello sdk/hello.c
+ */
 #include "ulibc.h"
 #include "stdio.h"
 #include "stdlib.h"

@@ -442,6 +442,11 @@ static int dir_repoint(const dir_loc *at, uint32_t first, uint32_t len) {
     return dir_ent_commit(at);
 }
 
+/* TODO: there is still no journal here. The ordering below means a crash
+ * leaves either the old file or the new one, which is the property that
+ * matters, but a crash between the switch and the free leaks clusters and
+ * nothing ever reclaims them. fsck would have to grow a chain walk. */
+
 /* Barrier for the mounted volume: everything written so far is on media. */
 int fat32_flush(void) {
     if (!fs.mounted) return 0;

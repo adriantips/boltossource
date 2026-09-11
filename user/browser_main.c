@@ -1,24 +1,22 @@
-/* ===========================================================================
- *  BoltOS  -  user/browser_main.c
- *  A web browser that runs entirely in RING 3.
+/* user/browser_main.c -- a web browser that runs entirely in RING 3.
  *
- *  Everything privilege-sensitive about rendering a web page -- the HTML
- *  tokeniser + DOM tree builder (kernel/dom.c), the CSS cascade + box/flex/grid
- *  layout engine (kernel/layout.c), and the BoltJS interpreter (kernel/js.c) --
- *  is compiled into THIS userland ELF and executes in ring 3. The kernel keeps
- *  only the privileged primitives behind syscalls:
- *      SYS_FBINFO  - map the framebuffer + pause the compositor
- *      SYS_GETKEY  - read the keyboard
- *      SYS_HTTPGET - fetch a URL over the network stack (TCP/TLS in ring 0)
- *      SYS_FBEND   - hand the screen back to the desktop
- *  No DOM construction, layout, or script execution happens in kernel mode.
+ * Everything privilege-sensitive about rendering a web page -- the HTML
+ * tokeniser + DOM tree builder (kernel/dom.c), the CSS cascade + box/flex/grid
+ * layout engine (kernel/layout.c), and the BoltJS interpreter (kernel/js.c) --
+ * is compiled into THIS userland ELF and executes in ring 3. The kernel keeps
+ * only the privileged primitives behind syscalls:
+ *     SYS_FBINFO  - map the framebuffer + pause the compositor
+ *     SYS_GETKEY  - read the keyboard
+ *     SYS_HTTPGET - fetch a URL over the network stack (TCP/TLS in ring 0)
+ *     SYS_FBEND   - hand the screen back to the desktop
+ * No DOM construction, layout, or script execution happens in kernel mode.
  *
- *      usage:  browser [url-or-path]
+ *     usage:  browser [url-or-path]
  *
- *  Keys:  arrows / PgUp / PgDn / Space  scroll      Tab    next link
- *         Enter   follow link                       g      edit address
- *         r       reload                            q/Esc  quit
- * ===========================================================================*/
+ * Keys:  arrows / PgUp / PgDn / Space  scroll      Tab    next link
+ *        Enter   follow link                       g      edit address
+ *        r       reload                            q/Esc  quit
+ */
 #include "ulibc.h"
 #include "string.h"
 #include "dom.h"
@@ -135,8 +133,9 @@ static void host_init(void) {
 }
 
 /* ----------------------------------------------------------- page loading --*/
-/* Pull every <style>...</style> block (and inline <link rel=stylesheet> is left
- * to the kernel build; here we honour embedded CSS, which covers most pages). */
+/* Pull every <style>...</style> block. <link rel=stylesheet> is not fetched here
+ * -- just embedded CSS -- which is enough for every page this has been pointed
+ * at so far, but a real external stylesheet would silently render unstyled. */
 static void collect_css(const char *html, int hlen) {
     csslen = 0;
     for (int i = 0; i + 6 < hlen; i++) {

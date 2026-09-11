@@ -221,5 +221,3 @@ Each phase is independently buildable and improves real pages.
   Numbers stay int64 (no float); `Math.random` still 0.
 - iter7: positioning (relative/absolute), overflow/scroll containers, transforms
   (integer), animations (PIT-tick), HTTP/2, response cache, CSP.
-</content>
-</invoke>

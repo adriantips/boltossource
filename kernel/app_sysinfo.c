@@ -72,7 +72,7 @@ static void si_draw(window_t *win, int cx, int cy, int cw, int ch) {
     if (gpu_present()) {
         buf[0] = 0;
         kstrlcat(buf, gpu_name(), sizeof(buf));
-        if (g_text_width(buf, 1) > w - 150) buf[20] = 0;   /* keep room for label */
+        if (g_text_width(buf, 1) > w - 150) buf[20] = 0;   /* crude truncation, but the card is only so wide */
         if (gpu_vram_bytes()) {
             sh_human(gpu_vram_bytes(), a);
             kstrlcat(buf, "  ", sizeof(buf)); kstrlcat(buf, a, sizeof(buf));

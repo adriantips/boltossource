@@ -7,13 +7,21 @@
 #include "string.h"
 #include "kprintf.h"
 
-/* ===========================================================================
- *  TLS 1.2 client. Single cipher family: ECDHE-X25519 + AES-128-GCM + SHA-256
- *  (cipher suites 0xC02B / 0xC02F). The handshake follows RFC 5246 (+ RFC 5288
- *  for the AEAD record format and RFC 7748 for the key exchange). The server
- *  Certificate is consumed but NOT validated -- see tls.h. Layered straight on
- *  top of tcp_* and driven by their blocking, poll-pumped I/O.
- * ===========================================================================*/
+/* TLS client, RFC 5246 (1.2) with an RFC 8446 (1.3) path bolted on once the
+ * ServerHello says the peer wants it -- see do_handshake's HS_SERVER_HELLO
+ * case, which just hands off to tls13_finish() mid-flight. 1.2 suites are
+ * ECDHE-X25519 or ECDHE-P256 with AES-128/256-GCM (0xC02B/C02F/C02C/C030);
+ * 1.3 is the two mandatory AES-GCM suites (0x1301/0x1302). RFC 5288 covers
+ * the AEAD record format, RFC 7748 the X25519 math. Sits straight on tcp_*
+ * and its blocking, poll-pumped I/O.
+ *
+ * Certificate verification is NOT symmetric between the two versions, and
+ * that's a real gap, not a design choice: the 1.3 path runs the chain
+ * through tls_verify_chain() before trusting anything (see tls13_finish),
+ * but the 1.2 path below just has "case HS_CERTIFICATE: break;" -- x509.c
+ * got wired into the 1.3 flight because that's what needed CertificateVerify
+ * signature checking, and nobody has gone back to plug it into 1.2 since.
+ * A MITM against a 1.2-only server still goes through clean. */
 
 #define TLS_DEBUG 0
 #if TLS_DEBUG

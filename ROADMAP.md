@@ -13,7 +13,8 @@ Two bars everything here serves:
 Nothing on this list is here to pad a feature count. Each item is something the
 OS cannot currently do that one of those two bars requires.
 
-Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
+Status: `[x]` shipped · `[~]` in progress · `[ ]` not started · `[!]` blocked,
+with the reason given
 
 ## Phase 0 — Boot & install
 
@@ -94,7 +95,7 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
         netif_poll_all() could be re-entered from inside a packet handler
 - [x] 39. SLAAC autoconfiguration: router solicitation, the prefix out of the
         advertisement, and a global address formed and checked before it is
-        used. No server involved, which is the point of it
+        used. No server involved at all -- that's the whole idea
 - [ ] 39b. TCP and UDP over IPv6. The sockets, the resolver and everything
         above them take a uint32_t address; until that is widened, IPv6
         reaches a neighbour and a router but not a web page
@@ -107,10 +108,32 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
         idle at a prompt answered nothing at all, because the NIC's interrupt
         line was never opened in the IO-APIC
 - [x] 43. SSH server (remote administration and development)
-- [ ] 44. Wi-Fi radio driver
-- [ ] 45. WPA2 four-way handshake
-- [ ] 46. Wi-Fi GUI picker (SSID list, passphrase entry) wired to DHCP
-- [ ] 47. Wi-Fi credential store, persisted
+- [!] 44. Wi-Fi radio driver -- **blocked, not deferred.** QEMU emulates no
+        802.11 device of any kind, and there is no Wi-Fi hardware on the
+        development machine, so a radio driver could be written but never once
+        executed. Writing several thousand lines of register programming that
+        has never run, and marking it done, would be worse than leaving it
+        undone and saying so. What it needs is either an 802.11 device in the
+        emulator or a real card to test against
+- [!] 45. WPA2 four-way handshake -- blocked behind 44 for the same reason.
+        The key schedule itself (PBKDF2 PSK, PRF-384, the MIC, unwrapping the
+        GTK) is pure arithmetic and could be checked against the published
+        IEEE test vectors without any radio, but it is a large amount of new
+        crypto -- SHA-1, HMAC-SHA1, AES decryption, RFC 3394 key unwrap, and
+        then CCMP to carry a single byte of traffic -- that would sit behind a
+        driver that does not exist
+- [!] 46. Wi-Fi GUI picker -- blocked behind 44. A network picker with no radio
+        is a dialog that lists nothing, and shipping one would say the machine
+        does Wi-Fi when it does not
+- [x] 47. Wi-Fi credential store, persisted: /etc/wifi.conf, one `ssid psk`
+        line per remembered network, mode 0600 because a passphrase is a
+        credential. Already in net/netcfg.c; it was the roadmap that was stale
+
+The 802.11 MAC helpers in `net/wifi.c` are real and unit-testable -- beacons
+parse, data frames convert to Ethernet, probe requests build -- and `wifi` says
+plainly that there is no radio bound rather than pretending. The wired path
+satisfies the "connect to a network" bar, which is why the definition of done
+says "wired or Wi-Fi".
 
 ## Phase 4 — Development platform
 

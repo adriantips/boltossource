@@ -257,7 +257,8 @@ int cmd_trash(int argc, char **argv) {
         if (!n) continue;
         char orig[FS_TRASH_MAX]; fs_abspath(n, orig, sizeof(orig));
         char name[FS_NAME_MAX]; strncpy(name, n->name, sizeof(name));
-        /* avoid name clash inside /.trash */
+        /* avoid name clash inside /.trash -- two files named the same thing
+         * from two different directories both land here flat */
         int suffix = 1;
         while (fs_child(tr, name)) {
             char base[FS_NAME_MAX]; strncpy(base, n->name, sizeof(base));

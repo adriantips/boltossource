@@ -1,8 +1,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* The compiler may emit calls to these for struct copies / zeroing even in a
- * freestanding build, so they must exist. */
+/* the handful of primitives the kernel shipped with from day one -- everything
+ * added later for a real libc lives in string_ext.c instead, so this file is
+ * just what a freestanding build needs the compiler to be able to call. */
 void *memset(void *d, int c, size_t n) {
     uint8_t *p = d;
     while (n--) *p++ = (uint8_t)c;

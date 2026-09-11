@@ -8,6 +8,11 @@
  *   - mmap() maps an anonymous page
  *   - open()/read()/close() reads /proc/meminfo through the VFS
  *   - returns -> crt0 calls exit()
+ *
+ * this is also the program that broke every serial-shell test at once: it
+ * runs on its own thread and writes to the same serial port as the kernel,
+ * so its "libm: sqrt(2)=..." line can land character-by-character in the
+ * middle of the "BoltShell ready" banner. see test/boltvm.py reach_shell().
  */
 int main(int argc, char **argv) {
     printf("hello from ring3 (pid=%d)\n", getpid());

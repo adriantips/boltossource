@@ -1,13 +1,12 @@
-/* ===========================================================================
- *  libc/stdio_file.c -- FILE streams for BoltOS's freestanding libc.
+/* libc/stdio_file.c -- FILE streams for BoltOS's freestanding libc.
  *
- *  Three stream flavours behind one FILE:
- *    - FD     : a kernel vfs file* (fopen of a real path)
- *    - MEMR   : a fixed read-only byte buffer (fmemopen)
- *    - MEMW   : a growable heap buffer that publishes to *bufp/*sizep
- *               (open_memstream) -- libcss/libdom use these to assemble output
- *    - CONS   : stdout/stderr, writes funnel to the kernel console (kputc)
- * ===========================================================================*/
+ * Three stream flavours behind one FILE:
+ *   - FD     : a kernel vfs file* (fopen of a real path)
+ *   - MEMR   : a fixed read-only byte buffer (fmemopen)
+ *   - MEMW   : a growable heap buffer that publishes to *bufp/*sizep
+ *              (open_memstream) -- libcss/libdom use these to assemble output
+ *   - CONS   : stdout/stderr, writes funnel to the kernel console (kputc)
+ */
 #include <stdint.h>
 #include <stddef.h>
 #include <stdarg.h>

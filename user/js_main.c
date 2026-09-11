@@ -1,15 +1,17 @@
-/* ===========================================================================
- *  BoltOS  -  user/js_main.c
- *  Ring-3 BoltJS interpreter. Same engine as kernel/js.c, but compiled as a
- *  userland ELF and run in ring 3: it reads a script file through the SYS_OPEN/
- *  SYS_READ/SYS_FSTAT syscalls and prints console.log()/document.write() output
- *  through SYS_WRITE. No part of the language runtime executes in kernel mode.
+/* user/js_main.c -- ring-3 BoltJS interpreter.
  *
- *      usage:  js <file.js>
+ * Same engine as kernel/js.c, but compiled as a userland ELF and run in ring 3:
+ * it reads a script file through the SYS_OPEN/SYS_READ/SYS_FSTAT syscalls and
+ * prints console.log()/document.write() output through SYS_WRITE. No part of
+ * the language runtime executes in kernel mode.
  *
- *  There is no DOM in this standalone host (document.* is inert) and fetch() is
- *  unavailable until ring-3 networking syscalls land; both degrade gracefully.
- * ===========================================================================*/
+ *     usage:  js <file.js>
+ *
+ * There is no DOM in this standalone host (document.* is inert) and fetch()
+ * has nothing behind it here -- sockets exist now (see user/netget.c) but
+ * nothing has wired this host's fetch callback up to them yet. Both degrade
+ * gracefully rather than crashing a script that touches them.
+ */
 #include "ulibc.h"
 #include "js.h"
 

@@ -1,9 +1,7 @@
-/* ===========================================================================
- *  BoltOS userland libm  -  hardware double-precision math (SSE2).
- *  Enabled now that the kernel runs with CR4.OSFXSR and the scheduler
- *  FXSAVE/FXRSTORs FPU state across switches. Accuracy is "good enough for
- *  applications" (range-reduced minimax / Taylor), not bit-exact libm.
- * ========================================================================= */
+/* user/libm.c -- BoltOS userland libm: hardware double-precision math (SSE2).
+ * Enabled now that the kernel runs with CR4.OSFXSR and the scheduler
+ * FXSAVE/FXRSTORs FPU state across switches. Accuracy is "good enough for
+ * applications" (range-reduced minimax / Taylor), not bit-exact libm. */
 #include "math.h"
 
 union du { double d; unsigned long u; };

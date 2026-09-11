@@ -145,7 +145,8 @@ int cmd_ssh(int argc, char **argv) {
     i++;
 
     /* The rest of the line is the remote command, put back together with the
-     * single spaces the shell split it on. */
+     * single spaces the shell split it on -- any quoting the user typed is
+     * long gone by this point, so `ssh host echo "a  b"` arrives as "a b". */
     char command[256];
     command[0] = 0;
     for (int k = i; k < argc; k++) {

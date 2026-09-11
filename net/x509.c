@@ -9,15 +9,21 @@
 int p384_ecdsa_verify(const uint8_t *hash, uint32_t hlen,
                       const uint8_t pub[97], const uint8_t *r, const uint8_t *s);
 
-/* ===========================================================================
- *  X.509 v3 certificate parsing + chain validation (DER).
+/* X.509 v3 certificate parsing + chain validation (DER).
  *
- *  Scope: what a TLS client needs. Per cert we extract the TBS bytes, the
- *  signature + its algorithm, issuer/subject DNs (raw, for linkage), validity
- *  window, the SubjectPublicKeyInfo, and the SubjectAltName dNSNames. We then
- *  enforce hostname, dates, and the chain signatures (RSA PKCS#1v1.5 / PSS and
- *  ECDSA P-256). Trust anchors live in a small runtime store (see x509_add_root).
- * ===========================================================================*/
+ * Scope is what a TLS client needs, not a general X.509 toolkit: per cert we
+ * pull the TBS bytes, signature + algorithm, issuer/subject DNs (kept raw,
+ * only ever compared byte-for-byte, never actually decoded as a name -- that
+ * is enough to walk the chain and would be wrong if two CAs ever encoded the
+ * same DN differently), validity window, SubjectPublicKeyInfo, and SAN
+ * dNSNames. Enforced: hostname, dates, and the chain signatures (RSA
+ * PKCS#1v1.5 / PSS, ECDSA P-256 and P-384). Trust anchors are a small
+ * runtime store, see x509_add_root.
+ *
+ * No revocation checking at all -- no CRL, no OCSP, no stapling. A cert that
+ * was valid when issued and hasn't expired is accepted even if the CA has
+ * since revoked it. Every other piece of this (chain, dates, hostname) is
+ * real; that gap just hasn't been worth closing yet. */
 
 #define X509_DEBUG 0
 #if X509_DEBUG
@@ -125,6 +131,10 @@ static uint64_t parse_time(uint8_t tag, const uint8_t *b, uint32_t l) {
     return ((((year*100+mon)*100+day)*100+hh)*100+mm)*100+ss;
 }
 #undef DIG
+/* This is only as trustworthy as the clock. On a VM the RTC is often wrong
+ * from the moment it boots, which used to make every real cert look expired
+ * or not-yet-valid and present as "HTTPS is broken" -- net/ntp.c corrects the
+ * clock at boot for exactly this reason; see its file comment. */
 static uint64_t rtc_code(void) {
     struct rtc_time t; rtc_now(&t);
     return ((((( uint64_t)t.year*100+t.mon)*100+t.day)*100+t.hour)*100+t.min)*100+t.sec;

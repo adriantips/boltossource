@@ -954,7 +954,10 @@ static void ide_key(window_t *w, char c) {
     case '\n': {
         /* auto-indent: copy the current line's leading whitespace, and add one
          * level if the line ends in an opening brace. Capture both from the
-         * original buffer before inserting (insertion shifts later indices). */
+         * original buffer before inserting (insertion shifts later indices).
+         * hack: doesn't dedent on a closing brace typed on its own line, so a
+         * pasted-in block that relies on that will look wrong until you fix
+         * it by hand. Wasn't worth a real indent stack for one text box. */
         int ls = line_start(e->cur);
         int last = e->cur - 1;
         while (last >= ls && (e->buf[last] == ' ' || e->buf[last] == '\t')) last--;

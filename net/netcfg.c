@@ -1,12 +1,9 @@
-/* ===========================================================================
- *  BoltOS  -  net/netcfg.c
- *  Persistent network configuration. See include/netcfg.h for the model.
+/* Persistent network configuration -- see include/netcfg.h for the model.
  *
- *  Everything here is plain text on the filesystem, deliberately: a machine
- *  whose network is broken is exactly the machine where you want to be able to
- *  read and fix the settings with `cat` and the text editor rather than a
- *  binary blob and a tool that needs the network to download.
- * ===========================================================================*/
+ * Plain text on the filesystem, deliberately. A machine whose network is
+ * broken is exactly the machine where you want to fix the settings with cat
+ * and a text editor, not a binary blob and a tool that needs the network to
+ * go fetch. */
 #include <stdint.h>
 #include "netcfg.h"
 #include "net.h"

@@ -273,7 +273,11 @@ static int e1000_probe(struct device *d) {
     dev.nif.name[0]='e'; dev.nif.name[1]='t'; dev.nif.name[2]='h';
     dev.nif.name[3]='0'; dev.nif.name[4]=0;
 
-    /* wire the legacy INTx line and enable RX interrupts */
+    /* wire the legacy INTx line and enable RX interrupts.
+     * Do not "simplify" this back to irq_install(): that installs the handler
+     * and leaves the line masked, which is what it did for months, and the
+     * only symptom is that an idle machine answers nothing on the network.
+     * Cost me an afternoon and a packet capture to find. */
     uint8_t line = pci_interrupt_line(pd);
     irq_install_pci(line, e1000_isr);
     ew(REG_IMS, INT_RXT0 | INT_RXDMT0 | INT_RXO | INT_LSC);

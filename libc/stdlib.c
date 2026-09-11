@@ -1,8 +1,6 @@
-/* ===========================================================================
- *  libc/stdlib.c -- conversions, sort/search, PRNG, process control.
- *  Floating conversions (strtod) run on SSE doubles. exit()/abort() funnel into
- *  the kernel panic path since libc code lives inside the kernel address space.
- * ===========================================================================*/
+/* libc/stdlib.c -- conversions, sort/search, PRNG, process control.
+ * Floating conversions (strtod) run on SSE doubles. exit()/abort() funnel into
+ * the kernel panic path since libc code lives inside the kernel address space. */
 #include <stdint.h>
 #include <stddef.h>
 #include "stdlib.h"
@@ -148,7 +146,9 @@ void srand(unsigned s) { rng = s ? ((uint64_t)s << 1) | 1 : 1; }
 long random(void)      { return rand(); }
 void srandom(unsigned s){ srand(s); }
 
-/* ----------------------------- environment ----------------------------- */
+/* ----------------------------- environment -----------------------------
+ * flat 32-slot table, no growth. fine for what BoltOS programs actually
+ * set; would need revisiting if something started exporting a real env. */
 static struct { char key[48]; char val[160]; int used; } envtab[32];
 char *getenv(const char *name) {
     for (unsigned i = 0; i < 32; i++)

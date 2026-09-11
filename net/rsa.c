@@ -3,14 +3,16 @@
 #include "crypto.h"
 #include "string.h"
 
-/* ===========================================================================
- *  RSA public-key signature verification (PKCS#1 v1.5 and PSS / MGF1).
+/* RSA public-key signature verification (PKCS#1 v1.5 and PSS / MGF1). Verify
+ * only -- there is no private-key path anywhere in this file, which is also
+ * why bn_modexp's square-and-multiply branching on the exponent bits isn't a
+ * problem: the exponent here is always the public one (e=65537, not secret),
+ * never a private d. Don't reuse this for signing without fixing that.
  *
- *  Pure integer bignum: values are little-endian arrays of 32-bit limbs.
- *  Modular reduction is plain binary long division -- obviously correct, and
- *  verification needs only ~34 modmuls for e=65537, so speed is a non-issue.
- *  Supports moduli up to 4096 bits (128 limbs).
- * ===========================================================================*/
+ * Pure integer bignum, little-endian 32-bit limbs, moduli up to 4096 bits
+ * (128 limbs). Modular reduction is the same plain binary long division as
+ * p256.c/p384.c -- obviously correct, and a chain verify is maybe a dozen
+ * modexps total, so it has never been worth making faster. */
 
 #define MAXL 128
 

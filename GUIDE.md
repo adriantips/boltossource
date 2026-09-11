@@ -190,19 +190,19 @@ a reboot.
 
 Twenty-six of them, all in the Start menu. The ones you are most likely to want:
 
-- **Browser** — a real web browser, over HTTPS.
-- **File Explorer** — your files.
-- **Notes** — writing, saved to disk.
-- **Terminal** — the shell, in a window.
-- **Code** — a programming environment; see [DEVELOPING.md](DEVELOPING.md).
-- **Settings** — themes, resolution, wallpaper, fonts.
-- **Security** — the lock timer, the firewall, and the account list.
-- **Media** — plays sound files. Open a `.wav` from File Explorer, or open the
+- Browser — a real web browser, over HTTPS.
+- File Explorer — your files.
+- Notes — writing, saved to disk.
+- Terminal — the shell, in a window.
+- Code — a programming environment; see [DEVELOPING.md](DEVELOPING.md).
+- Settings — themes, resolution, wallpaper, fonts.
+- Security — the lock timer, the firewall, and the account list.
+- Media — plays sound files. Open a `.wav` from File Explorer, or open the
   app and pick one: the folder it came out of becomes the playlist, and it
   moves on to the next track by itself. It keeps playing while you do something
   else -- minimise it, switch desktop, lock the screen, it carries on.
-- **Photos**, **Music**, **Paint**, **Sheets**, **Calendar**, **Contacts**,
-  **Calculator**, **Clock**, and a shelf of games including **DOOM**.
+- Photos, Music, Paint, Sheets, Calendar, Contacts, Calculator, Clock, and a
+  shelf of games including DOOM.
 
 ---
 

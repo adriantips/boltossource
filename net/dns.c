@@ -40,6 +40,12 @@ struct dns_entry {
 static struct dns_entry cache[DNS_CACHE_N];
 static int              cache_next;         /* round-robin eviction cursor    */
 
+/* TODO: A records only, no AAAA. Matches the rest of the stack -- sockets,
+ * the resolver's own callers, everything above this takes a uint32_t address
+ * -- but it means a AAAA-only name just fails here even after SLAAC gave the
+ * machine a real IPv6 address (see net/nd6.c). Widening this is the same
+ * "not something to do halfway" as widening the socket layer, so it waits on
+ * that. */
 static int name_eq(const char *a, const char *b) {
     for (; *a && *b; a++, b++) {
         char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;

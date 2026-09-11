@@ -208,6 +208,10 @@ struct tcp_conn *tcp_connect(uint32_t dst_ip, uint16_t dport, uint32_t timeout_m
     c->peer_ip    = dst_ip;
     c->peer_port  = dport;
     c->local_port = next_port++; if (next_port == 0) next_port = 49152;
+    /* Knuth's multiplicative hash of the tick count, not a CSPRNG -- the ISN
+     * only needs to not collide with a recently-closed connection here, not
+     * resist blind off-path spoofing. Worth revisiting if this ever listens
+     * on anything but a QEMU NAT. */
     isn_seed += (uint32_t)pit_ticks() * 2654435761u + 0x9E3779B9u;
     c->snd_nxt = c->snd_una = isn_seed;
     c->state   = SYN_SENT;
