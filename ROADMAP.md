@@ -35,8 +35,13 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 - [x] 11. Atomic BoltFS commits (A/B slots + mirrored superblock)
 - [x] 12. Device cache-flush barriers (ATA / AHCI / NVMe)
 - [x] 13. Unclean-shutdown detection and automatic check
-- [~] 14. FAT32 overwrite ordering; startup/recovery no longer formats unknown
-        disks. I/O-error propagation and torn directory-sector safety remain.
+- [x] 14. FAT32: overwrite ordering, and startup/recovery no longer formats
+        unknown disks. Every FAT and directory read can now fail and be
+        reported as a failure instead of as an end of chain or an absent
+        file, a directory entry is published by writing the one sector it is
+        in rather than read-modify-writing its whole cluster, a new
+        directory cluster is written before the FAT links it, and a file
+        named by long-name entries can finally be overwritten
 - [x] 15. Per-process fault isolation for ring-3 crashes
 - [x] 16. Persistent crash log surviving reboot (`crashlog`)
 - [x] 17. Kernel message ring and `dmesg`

@@ -437,10 +437,24 @@ and can be retried after memory is freed.
 cluster chain and delete the directory entry *first*, so a crash mid-write
 destroyed the file outright. It now writes the new data to freshly allocated
 clusters while the old copy is still intact, switches the directory entry over in
-a single sector write, and only then releases the old chain. FAT32 still needs
-complete I/O-error propagation and protection against torn directory sectors;
-it does not have BoltFS's mirrored commit protocol. Startup never treats a
-failed FAT32 mount as permission to format an unknown disk, and recovery mode
+a single sector write, and only then releases the old chain — and that switch
+really is one sector. Publishing a file used to read the whole cluster the entry
+lives in, change 32 bytes and write all of it back, putting up to 1023 unrelated
+files through the drive to change four fields in one of them.
+
+Every FAT read can now fail. `fat_get()` reported a failed FAT read as an end of
+chain, which is indistinguishable from a real one: a read error in the middle of
+a file truncated it and still returned success, and freeing a chain stopped
+halfway. Chain walks, directory walks, `fat32_read`, `fat32_list` and
+`fat32_write` all report I/O errors as errors, a chain that ends before the
+length in its directory entry is a failure rather than a short file, and a write
+that cannot read the parent directory refuses rather than concluding the file is
+absent and filing a second entry for it. `test/host/fat.c` runs the real driver
+against a disk that fails reads, fails writes, tears sectors and loses power;
+`test/t_fat.py` runs it and then writes to the actual volume and reboots.
+
+FAT32 still does not have BoltFS's mirrored commit protocol. Startup never treats
+a failed FAT32 mount as permission to format an unknown disk, and recovery mode
 blocks FAT32 formatting, writes and directory creation.
 
 ### Standard filesystems (EXT2 / FAT32)

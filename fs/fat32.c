@@ -57,15 +57,22 @@ static uint32_t clus_lba(uint32_t c) { return fs.data_start + (c - 2) * fs.sec_p
 /* Cluster I/O is multi-sector, so it adds the base itself. */
 static uint64_t clus_dev_lba(uint32_t c) { return fs.base + clus_lba(c); }
 
-static uint32_t fat_get(uint32_t clus) {
+/* Follow one link of a cluster chain. The old fat_get() reported a failed FAT
+ * read as EOC, which is indistinguishable from a real end of chain: a read
+ * error in the middle of a file truncated it and still returned success, and
+ * free_chain() stopped halfway and leaked the rest of the clusters. Every walk
+ * goes through this now, and a failure is an error the caller has to handle. */
+static int fat_next(uint32_t clus, uint32_t *out) {
     uint32_t off = clus * 4;
     uint32_t sec = fs.fat_start + off / SECSZ;
-    uint32_t idx = off % SECSZ;
     if (sec != fatcache_sec) {
-        if (rd_sec(sec, fatcache) != 0) return EOC;
+        /* A failed read may have left part of the sector in the buffer, so the
+         * cache is marked invalid rather than trusted on the next call. */
+        if (rd_sec(sec, fatcache) != 0) { fatcache_sec = 0xFFFFFFFFu; return -1; }
         fatcache_sec = sec;
     }
-    return (*(uint32_t *)(fatcache + idx)) & 0x0FFFFFFFu;
+    *out = (*(uint32_t *)(fatcache + off % SECSZ)) & 0x0FFFFFFFu;
+    return 0;
 }
 static int fat_set(uint32_t clus, uint32_t val) {
     uint32_t off = clus * 4;
@@ -94,7 +101,9 @@ static uint32_t fat_alloc(void) {
         uint32_t from = pass ? 2 : start;
         uint32_t to   = pass ? start : last;
         for (uint32_t c = from; c < to; c++) {
-            if (fat_get(c) != 0) continue;
+            uint32_t v;
+            if (fat_next(c, &v) != 0) return 0;        /* the FAT is unreadable */
+            if (v != 0) continue;
             if (fat_set(c, EOC) != 0) return 0;
             fs.next_free = c + 1;
             return c;
@@ -157,9 +166,17 @@ static void short_to_name(const uint8_t *e, char *out) {
 }
 
 /* ---- directory iteration ------------------------------------------------ */
+/* Where a directory entry lives. Everything that changes an entry addresses it
+ * this way, so the change is one 512-byte sector write rather than a
+ * read-modify-write of the cluster it happens to share with other files. */
+typedef struct { uint32_t clus; uint32_t idx; } dir_loc;
+
 /* Walk every entry of the directory whose first cluster is dir_clus, invoking
- * cb for each live file/subdir. Returns via callback. */
-typedef int (*dir_cb)(const uint8_t *ent, const char *name, void *ctx);
+ * cb for each live file/subdir, with where that entry sits. Returns 0 at the
+ * end of the directory, the callback's value if it asked to stop, or -1 if the
+ * directory could not be read. */
+typedef int (*dir_cb)(const uint8_t *ent, const char *name,
+                      const dir_loc *at, void *ctx);
 
 static int walk_dir(uint32_t dir_clus, dir_cb cb, void *ctx) {
     char lfn[256]; int lfn_len = 0; int have_lfn = 0;
@@ -191,17 +208,19 @@ static int walk_dir(uint32_t dir_clus, dir_cb cb, void *ctx) {
             if (have_lfn) { for (int k = 0; k < lfn_len; k++) name[k] = lfn[k]; name[lfn_len] = 0; }
             else short_to_name(e, name);
             have_lfn = 0; lfn_len = 0;
-            int r = cb(e, name, ctx);
+            dir_loc at = { c, i };
+            int r = cb(e, name, &at, ctx);
             if (r) return r;                          /* cb requested stop */
         }
-        c = fat_get(c);
+        if (fat_next(c, &c) != 0) return -1;
     }
     return 0;
 }
 
 /* ---- path resolution ---------------------------------------------------- */
-struct find_ctx { const char *want; uint32_t clus; uint32_t size; uint8_t attr; int found; };
-static int find_cb(const uint8_t *e, const char *name, void *vctx) {
+struct find_ctx { const char *want; uint32_t clus; uint32_t size; uint8_t attr;
+                  int found; dir_loc at; };
+static int find_cb(const uint8_t *e, const char *name, const dir_loc *at, void *vctx) {
     struct find_ctx *fc = vctx;
     /* case-insensitive compare */
     const char *a = name, *b = fc->want;
@@ -216,14 +235,19 @@ static int find_cb(const uint8_t *e, const char *name, void *vctx) {
     fc->clus = ((uint32_t)(e[20] | (e[21] << 8)) << 16) | (e[26] | (e[27] << 8));
     fc->size = *(uint32_t *)(e + 28);
     fc->attr = e[11];
+    fc->at = *at;
     fc->found = 1;
     return 1;
 }
 
-/* split path; resolve to (cluster,size,attr). Returns 0 if found. Also returns
- * the parent directory cluster in *parent (for create operations). */
+/* Split path; resolve to (cluster,size,attr). Returns 0 if found, -1 if the
+ * name is not there, and -2 if a directory along the way could not be read --
+ * a distinction that matters, because treating an I/O error as "not found" is
+ * how a write ends up creating a second directory entry for a file that is
+ * already on the disk. Also returns the parent directory cluster in *parent
+ * (for create operations) and the leaf's own entry location in *at. */
 static int resolve(const char *path, uint32_t *clus, uint32_t *size, uint8_t *attr,
-                   uint32_t *parent, char *leaf) {
+                   uint32_t *parent, char *leaf, dir_loc *at) {
     uint32_t cur = fs.root_clus;
     uint32_t par = fs.root_clus;
     char comp[256];
@@ -239,14 +263,17 @@ static int resolve(const char *path, uint32_t *clus, uint32_t *size, uint8_t *at
         if (*p == '/') p++;
         if (n == 0) break;
         if (leaf) strcpy(leaf, comp);
-        struct find_ctx fc = { comp, 0, 0, 0, 0 };
+        struct find_ctx fc = { comp, 0, 0, 0, 0, { 0, 0 } };
         par = cur;
-        if (walk_dir(cur, find_cb, &fc) <= 0 || !fc.found) {
+        int wr = walk_dir(cur, find_cb, &fc);
+        if (wr < 0) return -2;                        /* unreadable directory */
+        if (wr == 0 || !fc.found) {
             if (parent) *parent = cur;
             return -1;                                /* not found */
         }
         cur = fc.clus ? fc.clus : fs.root_clus;
         csize = fc.size; cattr = fc.attr;
+        if (at) *at = fc.at;
         is_dir = (fc.attr & FAT_ATTR_DIR) != 0;
     }
     (void)is_dir;
@@ -259,8 +286,9 @@ static int resolve(const char *path, uint32_t *clus, uint32_t *size, uint8_t *at
 
 /* ---- public: list ------------------------------------------------------- */
 struct list_ctx { fat_dirent *out; int max; int n; };
-static int list_cb(const uint8_t *e, const char *name, void *vctx) {
+static int list_cb(const uint8_t *e, const char *name, const dir_loc *at, void *vctx) {
     struct list_ctx *lc = vctx;
+    (void)at;
     if (lc->n >= lc->max) return 1;
     if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0))) return 0;
     fat_dirent *d = &lc->out[lc->n++];
@@ -275,9 +303,15 @@ int fat32_list(const char *path, fat_dirent *out, int max) {
     if (!fs.mounted) return -1;
     uint32_t clus; uint8_t attr;
     if (path[0] == 0 || (path[0] == '/' && path[1] == 0)) clus = fs.root_clus;
-    else if (resolve(path, &clus, 0, &attr, 0, 0) != 0) return -1;
+    else if (resolve(path, &clus, 0, &attr, 0, 0, 0) != 0) return -1;
+    else if (!(attr & FAT_ATTR_DIR)) return -1;       /* a file's data is not a
+                                                       * directory, however
+                                                       * willingly it parses as
+                                                       * one */
     struct list_ctx lc = { out, max, 0 };
-    walk_dir(clus, list_cb, &lc);
+    if (walk_dir(clus, list_cb, &lc) < 0) return -1;   /* a partial listing is a
+                                                        * wrong answer, not a
+                                                        * shorter one */
     return lc.n;
 }
 
@@ -287,7 +321,7 @@ int fat32_list(const char *path, fat_dirent *out, int max) {
 int64_t fat32_size(const char *path) {
     if (!fs.mounted) return -1;
     uint32_t clus, size; uint8_t attr;
-    if (resolve(path, &clus, &size, &attr, 0, 0) != 0) return -1;
+    if (resolve(path, &clus, &size, &attr, 0, 0, 0) != 0) return -1;
     if (attr & FAT_ATTR_DIR) return -1;
     return (int64_t)size;
 }
@@ -295,7 +329,7 @@ int64_t fat32_size(const char *path) {
 int fat32_read(const char *path, void *buf, uint32_t max) {
     if (!fs.mounted) return -1;
     uint32_t clus, size; uint8_t attr;
-    if (resolve(path, &clus, &size, &attr, 0, 0) != 0) return -1;
+    if (resolve(path, &clus, &size, &attr, 0, 0, 0) != 0) return -1;
     if (attr & FAT_ATTR_DIR) return -1;
     uint8_t *out = buf;
     uint32_t got = 0;
@@ -307,67 +341,105 @@ int fat32_read(const char *path, void *buf, uint32_t max) {
         if (got + chunk > max)  chunk = max - got;
         memcpy(out + got, clusbuf, chunk);
         got += chunk;
-        c = fat_get(c);
+        if (fat_next(c, &c) != 0) return -1;
     }
+    /* Stopping short of the length in the directory entry means the chain ran
+     * out early: the file on disk is not the file the directory describes, and
+     * handing back a short count as success would let a caller install a
+     * truncated kernel and call it done. */
+    if (got < size && got < max) return -1;
     return (int)got;
 }
 
 /* ---- public: write (create/overwrite) ----------------------------------- */
-/* find a free 32-byte slot in dir cluster chain; returns sector+offset, may
- * extend the directory by a cluster. */
+/* The device sector holding a given entry. An entry is 32 bytes and a sector
+ * is a whole number of entries, so an entry never straddles two of them. */
+static uint32_t dir_ent_lba(const dir_loc *at) {
+    return clus_lba(at->clus) + (at->idx * 32) / SECSZ;
+}
+
+/* Read the sector an entry lives in, hand it to the caller to amend, write it
+ * back -- and touch nothing else.
+ *
+ * Publishing a file used to read the whole cluster, change 32 bytes of it and
+ * write all of it back. That put every other entry in the cluster through the
+ * drive on every single write -- on a 32 KiB cluster, 1023 other files, 64 KiB
+ * of I/O to change four fields -- and left the claim that a file switches over
+ * atomically resting on the driver having read those neighbours correctly and
+ * written them back byte for byte. Changing the one sector that actually
+ * differs makes the claim structural: nothing else is in flight to be got
+ * wrong. */
+static uint8_t *dir_ent_begin(const dir_loc *at) {
+    if (rd_sec(dir_ent_lba(at), secbuf) != 0) return 0;
+    return secbuf + (at->idx * 32) % SECSZ;
+}
+static int dir_ent_commit(const dir_loc *at) { return wr_sec(dir_ent_lba(at), secbuf); }
+
+/* Find a free 32-byte slot in the directory's cluster chain, extending it by a
+ * cluster if every slot is taken. */
 static int dir_put_entry(uint32_t dir_clus, const uint8_t ent[32]) {
     uint32_t c = dir_clus, last = dir_clus;
+    int prev_lfn = 0;
     while (c >= 2 && c < EOC) {
         if (read_cluster(c, clusbuf) != 0) return -1;
         uint32_t entries = fs.clus_bytes / 32;
         for (uint32_t i = 0; i < entries; i++) {
             uint8_t *e = clusbuf + i * 32;
+            /* A deleted 8.3 slot can be the tail of a long-name run whose own
+             * entries another system left behind. Dropping a new file into it
+             * would give that file the deleted one's long name, so a slot with
+             * an orphaned name entry in front of it is passed over. */
+            if (e[0] == 0xE5 && e[11] != 0x0F && prev_lfn) { prev_lfn = 0; continue; }
             if (e[0] == 0x00 || e[0] == 0xE5) {
-                memcpy(e, ent, 32);
-                return write_cluster(c, clusbuf);
+                dir_loc at = { c, i };
+                uint8_t *slot = dir_ent_begin(&at);
+                if (!slot) return -1;
+                memcpy(slot, ent, 32);
+                return dir_ent_commit(&at);
             }
+            prev_lfn = (e[11] == 0x0F);
         }
         last = c;
-        c = fat_get(c);
+        if (fat_next(c, &c) != 0) return -1;
     }
-    /* extend directory */
+    /* Extend. The new cluster has to hold the entry, and be on the disk,
+     * before the FAT links it into the directory -- linking first left a crash
+     * in that window showing whatever the disk happened to have there as
+     * directory entries. */
     uint32_t nc = fat_alloc();
     if (!nc) return -1;
-    fat_set(last, nc);
     memset(clusbuf, 0, fs.clus_bytes);
     memcpy(clusbuf, ent, 32);
-    return write_cluster(nc, clusbuf);
-}
-
-static int free_chain(uint32_t c) {
-    while (c >= 2 && c < EOC) { uint32_t nx = fat_get(c); fat_set(c, 0); c = nx; }
+    if (write_cluster(nc, clusbuf) != 0 || blk_flush(fs.dev) != 0 ||
+        fat_set(last, nc) != 0) { fat_set(nc, 0); return -1; }
     return 0;
 }
 
-/* Repoint an existing 8.3 entry at a new cluster chain and length, in place.
- * The whole entry lives inside one sector, so the disk sees the switch from the
- * old file to the new one as a single sector write -- which is what makes
- * overwriting a file power-loss safe rather than a delete-then-create race.
- * Returns 0 if the entry was found and rewritten. */
-static int dir_update_entry(uint32_t dir_clus, const char short_name[11],
-                            uint32_t first, uint32_t len) {
-    uint32_t c = dir_clus;
+static int free_chain(uint32_t c) {
     while (c >= 2 && c < EOC) {
-        if (read_cluster(c, clusbuf) != 0) return -1;
-        uint32_t entries = fs.clus_bytes / 32;
-        for (uint32_t i = 0; i < entries; i++) {
-            uint8_t *e = clusbuf + i * 32;
-            if (e[0] == 0x00) return -1;                   /* end of directory */
-            if (e[11] == 0x0F || e[0] == 0xE5) continue;   /* LFN / deleted    */
-            if (memcmp(e, short_name, 11) != 0) continue;
-            e[20] = (uint8_t)(first >> 16); e[21] = (uint8_t)(first >> 24);
-            e[26] = (uint8_t)(first);       e[27] = (uint8_t)(first >> 8);
-            *(uint32_t *)(e + 28) = len;
-            return write_cluster(c, clusbuf);
-        }
-        c = fat_get(c);
+        uint32_t nx;
+        if (fat_next(c, &nx) != 0) return -1;
+        if (fat_set(c, 0) != 0) return -1;
+        c = nx;
     }
-    return -1;
+    return 0;
+}
+
+/* Repoint an existing entry at a new cluster chain and length, in place. That
+ * one sector write is the moment the file becomes the new one, which is what
+ * makes overwriting power-loss safe rather than a delete-then-create race.
+ *
+ * The entry is addressed by where the lookup found it, not by matching a
+ * reconstructed 8.3 name: a file another system created is named by its
+ * long-name entries and its short name is something like README~1.TXT, which
+ * never matched, so every overwrite of such a file failed. */
+static int dir_repoint(const dir_loc *at, uint32_t first, uint32_t len) {
+    uint8_t *e = dir_ent_begin(at);
+    if (!e) return -1;
+    e[20] = (uint8_t)(first >> 16); e[21] = (uint8_t)(first >> 24);
+    e[26] = (uint8_t)(first);       e[27] = (uint8_t)(first >> 8);
+    *(uint32_t *)(e + 28) = len;
+    return dir_ent_commit(at);
 }
 
 /* Barrier for the mounted volume: everything written so far is on media. */
@@ -378,9 +450,13 @@ int fat32_flush(void) {
 
 int fat32_write(const char *path, const void *data, uint32_t len) {
     if (!fs.mounted || boot_is_recovery()) return -1;
-    uint32_t parent; char leaf[256];
+    uint32_t parent; char leaf[256]; dir_loc at = { 0, 0 };
     uint32_t old_clus, old_size; uint8_t old_attr;
-    int exists = (resolve(path, &old_clus, &old_size, &old_attr, &parent, leaf) == 0);
+    int rr = resolve(path, &old_clus, &old_size, &old_attr, &parent, leaf, &at);
+    if (rr == -2) return -1;      /* the directory could not be read; carrying on
+                                   * as if the file were absent would file a
+                                   * second entry for one already on the disk */
+    int exists = (rr == 0);
     if (exists && (old_attr & FAT_ATTR_DIR)) return -1;
     if (leaf[0] == 0) return -1;
 
@@ -402,7 +478,7 @@ int fat32_write(const char *path, const void *data, uint32_t len) {
         uint32_t nc = fat_alloc();
         if (!nc) { if (first) free_chain(first); return -1; }
         if (!first) first = nc;
-        if (prev) fat_set(prev, nc);
+        if (prev && fat_set(prev, nc) != 0) { free_chain(first); return -1; }
         memset(clusbuf, 0, fs.clus_bytes);
         uint32_t chunk = len - written;
         if (chunk > fs.clus_bytes) chunk = fs.clus_bytes;
@@ -412,14 +488,14 @@ int fat32_write(const char *path, const void *data, uint32_t len) {
         prev = nc;
     }
     /* The data and its FAT chain must be durable before any entry names them. */
-    blk_flush(fs.dev);
+    if (blk_flush(fs.dev) != 0) { if (first) free_chain(first); return -1; }
 
     /* 2. publish it: repoint the existing entry, or add a new one */
-    char sn[11]; to_short(leaf, sn);
     int rc;
     if (exists) {
-        rc = dir_update_entry(parent, sn, first, len);
+        rc = dir_repoint(&at, first, len);
     } else {
+        char sn[11]; to_short(leaf, sn);
         uint8_t ent[32]; memset(ent, 0, 32);
         memcpy(ent, sn, 11);
         ent[11] = 0x20;                               /* archive */
@@ -429,7 +505,12 @@ int fat32_write(const char *path, const void *data, uint32_t len) {
         rc = dir_put_entry(parent, ent);
     }
     if (rc != 0) { if (first) free_chain(first); return -1; }
-    blk_flush(fs.dev);
+    /* A failed flush here leaves the switch in doubt, and both answers -- the
+     * old file or the new one -- are a consistent filesystem. What must not
+     * happen is freeing the old chain on the strength of a switch that may not
+     * have reached the disk, so this returns before step 3 rather than
+     * continuing. The leaked new chain is fsck's problem, not the file's. */
+    if (blk_flush(fs.dev) != 0) return -1;
 
     /* 3. the switch is durable, so the old chain is finally safe to release */
     if (exists && old_clus) { free_chain(old_clus); blk_flush(fs.dev); }
@@ -440,7 +521,9 @@ int fat32_mkdir(const char *path) {
     if (!fs.mounted || boot_is_recovery()) return -1;
     uint32_t parent; char leaf[256];
     uint32_t cc, cs; uint8_t ca;
-    if (resolve(path, &cc, &cs, &ca, &parent, leaf) == 0) return -1;  /* exists */
+    /* Anything but a clean "not found" -- it already exists, or a directory on
+     * the way could not be read -- is a reason not to create it. */
+    if (resolve(path, &cc, &cs, &ca, &parent, leaf, 0) != -1) return -1;
     if (leaf[0] == 0) return -1;
 
     uint32_t nc = fat_alloc();
@@ -455,21 +538,33 @@ int fat32_mkdir(const char *path) {
     uint32_t pc = (parent == fs.root_clus) ? 0 : parent;
     dotdot[20] = (uint8_t)(pc >> 16); dotdot[21] = (uint8_t)(pc >> 24);
     dotdot[26] = (uint8_t)(pc); dotdot[27] = (uint8_t)(pc >> 8);
-    if (write_cluster(nc, clusbuf) != 0) return -1;
+    /* The . and .. entries have to be durable before the parent names this
+     * cluster as a directory, or a crash in between leaves a directory whose
+     * contents are whatever the disk had there. */
+    if (write_cluster(nc, clusbuf) != 0 || blk_flush(fs.dev) != 0) {
+        fat_set(nc, 0);
+        return -1;
+    }
 
     uint8_t ent[32]; memset(ent, 0, 32);
     to_short(leaf, (char *)ent);
     ent[11] = FAT_ATTR_DIR;
     ent[20] = (uint8_t)(nc >> 16); ent[21] = (uint8_t)(nc >> 24);
     ent[26] = (uint8_t)(nc); ent[27] = (uint8_t)(nc >> 8);
-    return dir_put_entry(parent, ent);
+    if (dir_put_entry(parent, ent) != 0) { fat_set(nc, 0); return -1; }
+    return blk_flush(fs.dev);
 }
 
 uint64_t fat32_total_bytes(void) { return (uint64_t)fs.total_clus * fs.clus_bytes; }
 uint64_t fat32_free_bytes(void) {
     if (!fs.mounted) return 0;
     uint64_t freec = 0;
-    for (uint32_t c = 2; c < fs.total_clus + 2; c++) if (fat_get(c) == 0) freec++;
+    for (uint32_t c = 2; c < fs.total_clus + 2; c++) {
+        uint32_t v;
+        if (fat_next(c, &v) != 0) return 0;   /* unreadable: claim no free space
+                                               * rather than invent some */
+        if (v == 0) freec++;
+    }
     return freec * fs.clus_bytes;
 }
 
@@ -584,7 +679,7 @@ int fat32_format_at(blkdev_t *dev, uint64_t base, uint64_t span, const char *lab
     memcpy(secbuf + 82, "FAT32   ", 8);
     secbuf[510] = 0x55; secbuf[511] = 0xAA;
     if (blk_write(dev, base + 0, 1, secbuf) != 0) return -1;
-    blk_write(dev, base + 6, 1, secbuf);               /* backup */
+    if (blk_write(dev, base + 6, 1, secbuf) != 0) return -1;   /* backup */
 
     /* FSInfo */
     memset(secbuf, 0, SECSZ);
@@ -593,26 +688,29 @@ int fat32_format_at(blkdev_t *dev, uint64_t base, uint64_t span, const char *lab
     *(uint32_t *)(secbuf + 488) = 0xFFFFFFFF;          /* free count unknown */
     *(uint32_t *)(secbuf + 492) = 0xFFFFFFFF;          /* next free unknown */
     secbuf[510] = 0x55; secbuf[511] = 0xAA;
-    blk_write(dev, base + 1, 1, secbuf);
+    if (blk_write(dev, base + 1, 1, secbuf) != 0) return -1;
 
-    /* zero the FATs */
+    /* Every write below is checked. A FAT sector that silently failed to zero
+     * leaves clusters that read as allocated to nothing, and the first file
+     * written to the volume is handed a cluster some other file already owns:
+     * a mount that succeeds onto a volume that was never really formatted. */
     memset(secbuf, 0, SECSZ);
     for (uint32_t f = 0; f < num_fats; f++)
         for (uint32_t s = 0; s < fatsz; s++)
-            blk_write(dev, base + reserved + f * fatsz + s, 1, secbuf);
+            if (blk_write(dev, base + reserved + f * fatsz + s, 1, secbuf) != 0) return -1;
 
     /* FAT[0]=media|EOC, FAT[1]=EOC, FAT[2]=EOC (root) */
     *(uint32_t *)(secbuf + 0) = 0x0FFFFFF8;
     *(uint32_t *)(secbuf + 4) = 0x0FFFFFFF;
     *(uint32_t *)(secbuf + 8) = 0x0FFFFFFF;
     for (uint32_t f = 0; f < num_fats; f++)
-        blk_write(dev, base + reserved + f * fatsz, 1, secbuf);
+        if (blk_write(dev, base + reserved + f * fatsz, 1, secbuf) != 0) return -1;
 
     /* zero the root directory cluster */
     memset(secbuf, 0, SECSZ);
     for (uint32_t s = 0; s < spc; s++)
-        blk_write(dev, base + data_start + s, 1, secbuf);
-    blk_flush(dev);
+        if (blk_write(dev, base + data_start + s, 1, secbuf) != 0) return -1;
+    if (blk_flush(dev) != 0) return -1;
 
     kprintf("[fat32] formatted %s@LBA%lu: %u sectors, FAT %u sec, %u clusters\n",
             dev->name, (unsigned long)base, total, fatsz, (total - data_start) / spc);
