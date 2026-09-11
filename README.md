@@ -20,7 +20,8 @@ honest account of what it cannot do yet.
 > NVMe / AHCI SATA disks (HDD/SSD) behind a VFS and generic block layer, **EXT2
 > and FAT32** standard filesystem support, hardware interrupts, keyboard and
 > mouse drivers, an **xHCI USB** host-controller driver with **HID** support,
-> **Intel HDA + AC97 audio** drivers, an interactive shell, a full **IPv4/TCP/UDP/TLS
+> **Intel HDA + AC97 audio** drivers, an interactive shell, **IPv6 addressing with
+> Neighbour Discovery and SLAAC**, a full **IPv4/TCP/UDP/TLS
 > 1.2+1.3 network stack** (with X.509 certificate verification, **DHCP**,
 > persistent configuration, a DNS cache and an **SNTP** clock)
 > on **e1000** and **virtio-net** NICs, a **standards-ish web browser** with a real DOM tree, CSS
@@ -608,6 +609,40 @@ receive and transmit virtqueues in one contiguous DMA allocation, reads the MAC
 from the device configuration, and takes completions on a PCI interrupt.
 `test/t_net.py` boots the same system on both adapters and expects a DHCP lease
 on each.
+
+### IPv6: an address nobody handed out
+
+`net/ip6.c`, `net/nd6.c` and `net/icmp6.c` add **IPv6 addressing, Neighbour
+Discovery and SLAAC**. At boot the interface forms a **link-local** address from
+its own MAC as a modified EUI-64, checks with **Duplicate Address Detection**
+that nobody else has it, solicits a router, and builds a **global address** out
+of whatever prefix comes back — with no server involved anywhere, which is the
+point of stateless autoconfiguration. `ifconfig` shows both addresses, the
+router and the neighbour cache; `ping6` reaches a neighbour or the router it
+discovered.
+
+Neighbour Discovery is ARP's job reached differently: a solicitation goes to the
+target's **solicited-node multicast group** rather than to the whole broadcast
+domain, and the reply carries the link-layer address in an option. Every ICMPv6
+message is checksummed over a pseudo-header of both addresses — unlike IPv4's,
+that checksum is mandatory, and it is verified before an advertisement is
+allowed to put anything in the neighbour cache.
+
+Two things had to be fixed to make any of it work. The **e1000 accepted
+broadcast but not multicast**, so every router advertisement and every
+solicitation was discarded by the NIC before the stack saw it — IPv4 never
+noticed, because ARP and DHCP are broadcast. And `netif_poll_all()` could be
+re-entered from inside a packet handler: an advertisement ran duplicate
+detection, which polled, which delivered the next advertisement, until the
+kernel stack ran out. It now refuses to re-enter, and the work that needs to
+poll happens outside the handler.
+
+**TCP and UDP are still IPv4-only.** The sockets, the resolver and everything
+above them take a `uint32_t` address, and widening that is its own change rather
+than something to do halfway — so this reaches a neighbour and a router, not a
+web page. `test/host/ip6.c` checks the address text forms with no machine at
+all (where `::` printing as `:::` and `fe80:::1` parsing as `fe80::1` were both
+found), and `test/t_ipv6.py` boots against slirp's own NDP router.
 
 ### Configuration that survives the reboot
 

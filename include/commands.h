@@ -72,7 +72,7 @@ int cmd_service(int, char **);int cmd_jobs(int, char **);   int cmd_priority(int
 int cmd_monitor(int, char **); int cmd_winrun(int, char **); int cmd_compile(int, char **);
 
 /* ---- handlers: Networking ----------------------------------------------- */
-int cmd_netinfo(int, char **);int cmd_ping(int, char **);   int cmd_trace(int, char **);
+int cmd_netinfo(int, char **);int cmd_ping(int, char **);   int cmd_ping6(int, char **);   int cmd_trace(int, char **);
 int cmd_ports(int, char **);  int cmd_download(int, char **);int cmd_upload(int, char **);
 int cmd_wifi(int, char **);   int cmd_firewall(int, char **);int cmd_share(int, char **);
 int cmd_scan(int, char **);   int cmd_browse(int, char **); int cmd_domq(int, char **);

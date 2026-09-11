@@ -2,6 +2,7 @@
 #include "commands.h"
 #include "hw.h"
 #include "net.h"
+#include "net6.h"
 #include "netif.h"
 #include "http.h"
 #include "html.h"
@@ -104,6 +105,75 @@ int cmd_ping(int argc, char **argv) {
     kprintf("--- "); print_ip(dst);
     kprintf(" statistics: %d sent, %d received, %d%% loss\n",
             sent, recv, sent ? (100 * (sent - recv) / sent) : 0);
+    return recv ? 0 : 1;
+}
+
+/* ------------------------------- ping6 ------------------------------------ */
+int cmd_ping6(int argc, char **argv) {
+    struct netif *nif = netif_default();
+    if (!nif) { kprintf("ping6: no network interface\n"); return 1; }
+    if (ip6_is_zero(&net6_link)) {
+        kprintf("ping6: IPv6 is not configured on this interface\n");
+        return 1;
+    }
+    if (argc < 2) {
+        /* No argument: the router, if one advertised itself. Typing out a
+         * link-local address by hand is nobody's idea of a good time. */
+        if (!net6_have_gw) { kprintf("usage: ping6 ADDRESS\n"); return 1; }
+        char g[46]; ip6_format(&net6_gw, g);
+        kprintf("ping6: no address given; using the router %s\n", g);
+    }
+
+    ip6_addr dst;
+    if (argc >= 2) {
+        if (!ip6_parse(argv[1], &dst)) {
+            kprintf("ping6: not an IPv6 address: '%s'\n", argv[1]);
+            return 1;
+        }
+    } else {
+        ip6_copy(&dst, &net6_gw);
+    }
+
+    char txt[46];
+    ip6_format(&dst, txt);
+    /* :: is the address a machine uses before it has one. It is not somewhere
+     * to send a packet, and waiting out four timeouts to discover that is a
+     * poor way to say so. */
+    if (ip6_is_zero(&dst)) {
+        kprintf("ping6: %s is the unspecified address; there is nothing there\n", txt);
+        return 1;
+    }
+    uint8_t mac[6];
+    if (!ip6_is_multicast(&dst) && !nd6_resolve(nif, &dst, mac, 1500)) {
+        /* Off-link destinations are resolved through the router, so a failure
+         * here is either an unreachable neighbour or no router at all. */
+        int offlink = !ip6_is_link_local(&dst) &&
+                      (!net6_have_addr ||
+                       memcmp(dst.b, net6_addr.b, (size_t)(net6_prefix_len / 8)) != 0);
+        if (!offlink || !net6_have_gw || !nd6_resolve(nif, &net6_gw, mac, 1500)) {
+            kprintf("ping6: no neighbour answered for %s\n", txt);
+            return 1;
+        }
+    }
+
+    uint16_t id = 0x4236;                  /* 'B6' */
+    int sent = 0, recv = 0;
+    kprintf("PING6 %s 32 bytes of data:\n", txt);
+    for (uint16_t seq = 1; seq <= 4; seq++) {
+        uint64_t t0 = pit_ticks();
+        if (icmp6_echo_send(nif, &dst, id, seq) < 0) {
+            kprintf("  send failed seq=%u\n", seq);
+            continue;
+        }
+        sent++;
+        if (icmp6_wait_reply(id, seq, 1000))
+            kprintf("  reply from %s: seq=%u time=%lums\n", txt, seq,
+                    (unsigned long)(pit_ticks() - t0)), recv++;
+        else
+            kprintf("  request timed out seq=%u\n", seq);
+    }
+    kprintf("--- %s statistics: %d sent, %d received, %d%% loss\n",
+            txt, sent, recv, sent ? (100 * (sent - recv) / sent) : 0);
     return recv ? 0 : 1;
 }
 

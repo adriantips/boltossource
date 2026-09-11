@@ -346,6 +346,14 @@ static const manpage_t MAN[] = {
   "The host key's SHA-256 fingerprint, stable across reboots." },
 { "ping", "ping HOST",
   "ICMP echo, with the round-trip time." },
+{ "ping6", "ping6 [ADDRESS]",
+  "ICMPv6 echo. With no address it pings the router that advertised itself,\n"
+  "since typing out a link-local address by hand is nobody's idea of fun.\n"
+  "The interface configures its own IPv6 address at boot: a link-local one\n"
+  "from the MAC, and a global one from whatever prefix a router advertises,\n"
+  "each checked against the network before it is used. `ifconfig` shows both\n"
+  "and the neighbour cache. TCP and UDP are still IPv4-only, so this reaches\n"
+  "a neighbour or a router, not a web page." },
 { "trace", "trace HOST",
   "Placeholder: route tracing is not implemented and the command returns failure." },
 { "ports", "ports",

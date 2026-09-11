@@ -46,6 +46,7 @@
 #include "audio.h"
 #include "dhcp.h"
 #include "netcfg.h"
+#include "net6.h"
 #include "ntp.h"
 #include "hw.h"
 #include "users.h"
@@ -398,6 +399,14 @@ void kmain(struct bootinfo *bi) {
         else
             dhcp_configure(2000);  /* lease IP/mask/gw/DNS; static on timeout */
         netcfg_apply();            /* static values, and a chosen DNS either way */
+
+        /* IPv6 needs no server to hand out an address: the interface forms its
+         * own link-local one from the MAC, asks whether any router is there,
+         * and builds a global address out of the prefix that comes back. A
+         * network with no IPv6 router costs the two seconds this waits and
+         * leaves the machine with a link-local address, which is still enough
+         * to reach anything else on the same wire. */
+        nd6_autoconfigure(netif_default(), 2000);
 
         /* The RTC is usually wrong on a VM, and a wrong clock fails TLS
          * certificate validity checks -- which looks like "HTTPS is broken"

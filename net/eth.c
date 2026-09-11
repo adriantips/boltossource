@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "net.h"
+#include "net6.h"
 #include "netif.h"
 #include "string.h"
 
@@ -68,4 +69,6 @@ void eth_input(struct netif *nif, const uint8_t *frame, uint16_t len) {
         arp_input(nif, frame, len);
     else if (type == ETHERTYPE_IP)
         ip_input(nif, frame + ETH_HDR_LEN, (uint16_t)(len - ETH_HDR_LEN), e);
+    else if (type == ETHERTYPE_IPV6)
+        ip6_input(nif, frame + ETH_HDR_LEN, (uint16_t)(len - ETH_HDR_LEN), e);
 }
