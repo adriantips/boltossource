@@ -17,7 +17,7 @@ the desktop on the screen instead of a shell. `-vga none` gives both at once:
 with no framebuffer the kernel falls back to the serial shell, with the network
 up -- the same arrangement t_net uses.
 """
-import os, re, shutil, subprocess, sys, time
+import os, re, shutil, subprocess, sys
 from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from boltvm import BoltVM, ROOT
@@ -46,25 +46,15 @@ def host_tests():
 
 
 def reach_shell(vm, timeout=180):
-    """Normal boot (entry 1), no framebuffer -> the serial shell, network up."""
-    for _ in range(16):
-        if "boot mode" in vm.serial():
-            break
-        vm.key("1")
-        time.sleep(0.4)
-    boot_log = ""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        boot_log += vm.serial()
-        vm.clear()
-        vm.type(" echo __shell_up__\n")
-        time.sleep(1.2)
-        if "__shell_up__" in vm.serial():
-            time.sleep(0.4)
-            vm._buf = boot_log + vm.serial()
-            return vm._buf
-    raise AssertionError("never reached a shell\n--- serial tail ---\n"
-                         + vm.serial()[-2500:])
+    """Normal boot (entry 1), no framebuffer: a serial shell with the network up.
+
+    Safe mode has a serial shell but skips network bring-up, and a normal boot
+    puts the desktop on the screen instead of a shell. `-vga none` gives both
+    at once: with no framebuffer the kernel falls back to the serial shell,
+    with the network up.
+    """
+    return vm.reach_shell(timeout, "1")
+
 
 # 52:54:00:12:34:56, the address QEMU gives the first NIC, as a Modified
 # EUI-64: the universal/local bit in the first octet is flipped and ff:fe goes

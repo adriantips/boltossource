@@ -52,35 +52,14 @@ def scratch_disks(fresh=True):
 
 
 def reach_shell(vm, timeout=180):
-    """Normal boot (entry 1), no framebuffer -> the serial shell, network up.
+    """Normal boot (entry 1), no framebuffer: a serial shell with the network up.
 
-    The banner is not a reliable signal here: /bin/hello runs in ring 3 on
-    another thread and writes to the same serial port, so "BoltShell ready"
-    routinely arrives cut in half ("BoltShell re" ... "ady."). Probing is
-    reliable where matching a banner is not -- if a marker typed at the prompt
-    comes back, the shell is reading input, which is the thing we actually care
-    about.
+    Safe mode has a serial shell but skips network bring-up, and a normal boot
+    puts the desktop on the screen instead of a shell. `-vga none` gives both
+    at once: with no framebuffer the kernel falls back to the serial shell,
+    with the network up.
     """
-    for _ in range(16):
-        if "boot mode" in vm.serial():
-            break
-        vm.key("1")
-        time.sleep(0.4)
-
-    # Probing clears the buffer, so keep the boot log: it is the only place the
-    # driver bind and the DHCP lease are reported, and callers assert on it.
-    boot_log = ""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        boot_log += vm.serial()
-        vm.clear()
-        vm.type("echo __shell_up__\n")
-        time.sleep(1.2)
-        if "__shell_up__" in vm.serial():
-            time.sleep(0.4)
-            return boot_log + vm.serial()   # incl. whatever landed while probing
-    raise AssertionError("never reached a shell prompt\n--- serial tail ---\n"
-                         + vm.serial()[-2500:])
+    return vm.reach_shell(timeout, "1")
 
 
 def shell(vm, line, expect=None, timeout=30, settle=1.2):
