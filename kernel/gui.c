@@ -343,16 +343,22 @@ static void render_wallpaper(uint32_t *dst) {
 }
 
 #define WALL_PREF "/home/.wallpaper"   /* remembers the image path across reboots */
+#define WALL_DIR  "/usr/share/wallpapers"
+#define WALL_DEF  "mountain"            /* the set seeded by kernel/main.c */
 
-/* Use the image at `path` as the desktop wallpaper (decoded once, then stretched
- * to fill). Persists the choice so it survives a reboot. */
-void gui_set_wallpaper_image(const char *path) {
+/* Load `path` as the wallpaper. `announce` is off for the loads the user did
+ * not ask for -- the boot restore, and the swap that follows a resolution
+ * change -- because a toast for something nobody clicked is just noise. */
+static void wallpaper_load(const char *path, int announce) {
     if (wall_img) { image_free(wall_img); wall_img = 0; }
     wall_img_path[0] = 0;
     if (path && path[0]) {
         fs_node *n = fs_lookup(path);
         if (n && !n->is_dir && n->data && n->size) {
-            wall_img = image_decode(n->data, n->size);
+            /* Decode at panel size, not the browser's 640px: these renders are
+             * cut for this exact mode and shrinking one here would undo that. */
+            int fit = W > H ? W : H;
+            wall_img = image_decode_upto(n->data, n->size, fit);
             if (wall_img) {
                 strncpy(wall_img_path, path, sizeof(wall_img_path) - 1);
                 wall_img_path[sizeof(wall_img_path) - 1] = 0;
@@ -363,20 +369,70 @@ void gui_set_wallpaper_image(const char *path) {
     if (!w) w = fs_create(WALL_PREF, 0);
     if (w) fs_write(w, wall_img_path, (uint32_t)strlen(wall_img_path));
     if (BG) render_wallpaper(BG);
-    if (wall_img_path[0]) gui_toast("Wallpaper updated");
+    if (announce && wall_img_path[0]) gui_toast("Wallpaper updated");
     dirty = 1;
 }
 
-void gui_clear_wallpaper_image(void) { gui_set_wallpaper_image(0); }
+/* Use the image at `path` as the desktop wallpaper (decoded once, then stretched
+ * to fill). Persists the choice so it survives a reboot. */
+void gui_set_wallpaper_image(const char *path) { wallpaper_load(path, 1); }
 
-/* On boot, restore a previously chosen image wallpaper (if any). */
+void gui_clear_wallpaper_image(void) { wallpaper_load(0, 1); }
+
+/* Build WALL_DIR/<stem>-<W>x<H>.jpg. A wallpaper shipped as a set has one file
+ * per mode in the resolution table, and the name is how they are tied together. */
+static void wallpaper_variant(char *dst, uint32_t cap, const char *stem, int w, int h) {
+    snprintf(dst, cap, "%s/%s-%dx%d.jpg", WALL_DIR, stem, w, h);
+}
+
+/* If the live wallpaper came from a per-resolution set, pull out its stem --
+ * "/usr/share/wallpapers/mountain-1920x1080.jpg" -> "mountain". Returns 0 when
+ * the current wallpaper is a one-off the user picked themselves, which must be
+ * left exactly where it is. */
+static int wallpaper_stem(char *dst, uint32_t cap) {
+    const char *p = wall_img_path;
+    uint32_t dlen = (uint32_t)strlen(WALL_DIR "/");
+    if (strncmp(p, WALL_DIR "/", dlen) != 0) return 0;
+    p += dlen;
+    const char *dash = 0;
+    for (const char *q = p; *q; q++) if (*q == '-') dash = q;   /* last dash */
+    if (!dash || dash == p) return 0;
+    uint32_t n = (uint32_t)(dash - p);
+    if (n >= cap) return 0;
+    memcpy(dst, p, n); dst[n] = 0;
+    return 1;
+}
+
+/* After a mode change, swap to the render cut for the new panel. The compositor
+ * stretches whatever it is given with a nearest-neighbour sampler, and that is
+ * brutal on a photograph -- 1024x768 blown up to 4K is a mess of stair-stepped
+ * ridgelines. Swapping the file keeps the stretch loop a straight 1:1 copy. */
+static void wallpaper_follow_res(void) {
+    char stem[64], path[FS_PATH_MAX];
+    if (!wall_img_path[0] || !wallpaper_stem(stem, sizeof(stem))) return;
+    wallpaper_variant(path, sizeof(path), stem, W, H);
+    if (strcmp(path, wall_img_path) == 0) return;      /* already the right one */
+    fs_node *n = fs_lookup(path);
+    if (!n || n->is_dir || !n->data || !n->size) return;   /* no sibling: keep */
+    wallpaper_load(path, 0);
+}
+
+/* On boot, restore a previously chosen image wallpaper. A machine that has
+ * never had one gets the shipped mountain at whatever mode it came up in --
+ * BoltOS renders one per resolution, so there is always a match. */
 static void wallpaper_restore(void) {
-    fs_node *n = fs_lookup(WALL_PREF);
-    if (!n || n->is_dir || !n->data || !n->size) return;
     char path[FS_PATH_MAX];
-    uint32_t len = n->size; if (len > sizeof(path) - 1) len = sizeof(path) - 1;
-    memcpy(path, n->data, len); path[len] = 0;
-    if (path[0]) gui_set_wallpaper_image(path);
+    fs_node *n = fs_lookup(WALL_PREF);
+    if (n && !n->is_dir && n->data && n->size) {
+        uint32_t len = n->size; if (len > sizeof(path) - 1) len = sizeof(path) - 1;
+        memcpy(path, n->data, len); path[len] = 0;
+        /* An empty pref file is a deliberate "no image" -- the user cleared it
+         * in Settings -- and must not be second-guessed back to the default. */
+        if (path[0]) { wallpaper_load(path, 0); wallpaper_follow_res(); }
+        return;
+    }
+    wallpaper_variant(path, sizeof(path), WALL_DEF, W, H);
+    if (fs_lookup(path)) wallpaper_load(path, 0);
 }
 
 /* ===========================================================================
@@ -2432,6 +2488,7 @@ void gui_apply_display(void) {
         }
     }
 
+    wallpaper_follow_res();      /* re-load the render cut for this panel size */
     if (BG) render_wallpaper(BG);
     dirty = 1;
 }
@@ -2524,6 +2581,13 @@ static void login_submit(void) {
     int uid = users_auth(login_user, login_pass);
     if (uid >= 0) {
         users_note_success();
+        /* Nothing anywhere recorded a sign-in at the desktop. sshd has said
+         * "%s authenticated" since it was written, and the one door people
+         * actually use said nothing at all -- so `logs` could not answer who
+         * had been on the machine, and no test could tell a login that worked
+         * from one that was still waiting to be typed. */
+        kprintf("[gui] %s signed in%s\n", login_user,
+                login_locked ? " (session unlocked)" : "");
         if (!login_locked) users_login(uid);   /* unlocking resumes the session */
         login_active = 0; login_locked = 0;
         login_msg[0] = 0;
@@ -2531,6 +2595,7 @@ static void login_submit(void) {
         last_input_tick = pit_ticks();
     } else {
         users_note_failure();
+        kprintf("[gui] failed sign-in for '%s'\n", login_user);
         login_err = 1;
         login_msg[0] = 0;
         login_plen = 0; login_pass[0] = 0;

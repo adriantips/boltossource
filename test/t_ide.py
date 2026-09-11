@@ -55,13 +55,7 @@ def colors(path, step=97):
 
 
 def sign_in(vm):
-    vm.expect("BoltOS is up. Launching desktop.", timeout=180)
-    time.sleep(6.0)                    # let the login screen paint
-    vm.type(LOGIN_USER)
-    vm.key("tab")
-    vm.type(LOGIN_PASS)
-    vm.key("ret")
-    time.sleep(5.0)
+    vm.sign_in(LOGIN_USER, LOGIN_PASS, timeout=180)
 
 
 def main():
