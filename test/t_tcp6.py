@@ -84,6 +84,19 @@ def run(vm, line, expect=None, timeout=60):
     return vm.serial()
 
 
+def flush(vm):
+    """Terminate whatever half-typed line the boot probe left behind.
+
+    reach_shell types its marker over and over until one comes back, and the
+    last one is often still sitting in the shell's line buffer, unterminated,
+    when it does. The next command then appends itself to that fragment: the
+    first run of this test asked the machine to run `__ifconfig`, which is not
+    a command, and then waited a minute for output that was never coming."""
+    vm.type("\n")
+    settle(vm)
+    vm.clear()
+
+
 def link_local(vm):
     """The address the machine gave itself, read back off its own ifconfig."""
     out = run(vm, "ifconfig", "link-local", timeout=60)
@@ -107,6 +120,8 @@ def main():
         try:
             reach_shell(srv)
             reach_shell(cli)
+            flush(srv)
+            flush(cli)
 
             srv6 = link_local(srv)
             cli6 = link_local(cli)
@@ -132,11 +147,11 @@ def main():
             # The fetch. Everything between here and the assert is TCP over
             # IPv6: SYN, SYN|ACK, the request, the response, the close.
             url = "http://[%s]:%d/hello.txt" % (srv6, PORT)
-            o = run(cli, "download %s /tmp/got.txt" % url, "downloaded", timeout=120)
+            o = run(cli, "download %s /got.txt" % url, "downloaded", timeout=120)
             assert "HTTP 200" in o, "the fetch did not succeed:\n" + o[-900:]
             print("  ok: an HTTP exchange over an IPv6 connection")
 
-            o = run(cli, "cat /tmp/got.txt", BODY, timeout=30)
+            o = run(cli, "cat /got.txt", BODY, timeout=30)
             print("  ok: the bytes that arrived are the bytes that were served")
 
             # The server's own log of it. Before the peer became a netaddr this
@@ -153,7 +168,7 @@ def main():
             # lookup rather than sit there until the shell's patience runs out.
             gone = srv6.rsplit(":", 1)[0] + ":dead"
             t0 = time.time()
-            o = run(cli, "download http://[%s]:%d/hello.txt /tmp/no.txt" % (gone, PORT),
+            o = run(cli, "download http://[%s]:%d/hello.txt /no.txt" % (gone, PORT),
                     "connection failed", timeout=90)
             took = time.time() - t0
             assert "downloaded" not in o[-400:], (
