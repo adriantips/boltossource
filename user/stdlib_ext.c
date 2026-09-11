@@ -1,7 +1,5 @@
-/* ===========================================================================
- *  BoltOS userland: <stdlib.h> extras + a thin buffered <stdio.h> FILE layer
- *  over the raw fd syscalls in ulibc.c.
- * ========================================================================= */
+/* user/stdlib_ext.c -- BoltOS userland <stdlib.h> extras + a thin buffered
+ * <stdio.h> FILE layer over the raw fd syscalls in ulibc.c. */
 #include "ulibc.h"
 #include "stdio.h"
 #include "string.h"
@@ -59,7 +57,8 @@ void srand(unsigned s) { rng = s ? s : 1; }
 int  rand(void) { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return (int)(rng & 0x7fffffff); }
 
 void qsort(void *base, unsigned long n, unsigned long sz, int (*cmp)(const void *, const void *)) {
-    /* insertion sort: simple, stable enough for the small arrays apps pass. */
+    /* insertion sort despite the name -- O(n^2), but every caller so far
+     * sorts small arrays and this was one function instead of two. */
     char *a = base, tmp[256];
     if (sz > sizeof tmp) return;
     for (unsigned long i = 1; i < n; i++) {

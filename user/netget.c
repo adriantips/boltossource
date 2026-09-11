@@ -1,21 +1,20 @@
 #include "ulibc.h"
 #include "string.h"
 
-/* ===========================================================================
- *  /bin/netget  -  fetch a URL over a socket, from ring 3.
+/* /bin/netget -- fetch a URL over a socket, from ring 3.
  *
- *  The point is not the HTTP: it is that every byte of this runs in ring 3 and
- *  reaches the network through the ordinary socket calls, not through a kernel
- *  syscall that already knows what HTTP is. Until sockets existed, SYS_HTTPGET
- *  was the only way out of a user program, which meant a ring-3 program could
- *  speak exactly one protocol and nothing else could be written for BoltOS.
+ * The point is not the HTTP: it is that every byte of this runs in ring 3 and
+ * reaches the network through the ordinary socket calls, not through a kernel
+ * syscall that already knows what HTTP is. Until sockets existed, SYS_HTTPGET
+ * was the only way out of a user program, which meant a ring-3 program could
+ * speak exactly one protocol and nothing else could be written for BoltOS.
  *
- *  It also demonstrates that a socket is a plain file descriptor: the request
- *  goes out with write() and the response comes back with read(), the same
- *  calls that work on a file.
+ * It also demonstrates that a socket is a plain file descriptor: the request
+ * goes out with write() and the response comes back with read(), the same
+ * calls that work on a file.
  *
- *      netget HOST [PATH] [PORT]
- * ===========================================================================*/
+ *     netget HOST [PATH] [PORT]
+ */
 
 #define BUFCAP 8192
 

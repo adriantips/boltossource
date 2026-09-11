@@ -44,6 +44,9 @@ static void ifconfig_usage(void) {
             "       ifconfig dns SERVER               resolver only (works under DHCP too)\n"
             "       ifconfig hostname NAME            set this machine's name\n"
             "       ifconfig renew                    re-run DHCP now\n");
+    /* Nothing here sets an IPv6 address by hand -- it's autoconfig or nothing.
+     * g_netcfg has no v6 fields to save one into even if this command grew
+     * the option, so it would need its own bit of persisted state first. */
 }
 
 int cmd_ifconfig(int argc, char **argv) {

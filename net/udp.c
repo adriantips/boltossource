@@ -3,9 +3,11 @@
 #include "netif.h"
 #include "string.h"
 
-/* Minimal UDP: send + receive dispatch. No socket layer yet -- received
- * datagrams are counted and dropped until a listener API lands. The IPv4 UDP
- * checksum is optional, so we send 0 (skip) for simplicity. */
+/* Minimal UDP: send + a port -> callback demux for receive (DHCP, DNS, NTP
+ * all register one). No real socket object -- a "listener" is just a port
+ * number and a function pointer in a small table. The IPv4 UDP checksum is
+ * optional, so this sends 0 (skip it) rather than compute one nothing here
+ * needs. */
 static uint8_t udppkt[1500];
 
 int udp_send(struct netif *nif, uint32_t dst_ip, uint16_t sport, uint16_t dport,

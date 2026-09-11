@@ -1,10 +1,8 @@
-/* ===========================================================================
- *  libc/scanf.c -- formatted input for BoltOS's freestanding libc.
- *  Supports %d %i %u %o %x %c %s %f/%e/%g %[..] %n %% with optional field width
- *  and assignment suppression (%*). Length modifiers h/l/ll/z map width onto the
- *  destination. Drives off a tiny pull-character reader so sscanf and fscanf
- *  share one engine.
- * ===========================================================================*/
+/* libc/scanf.c -- formatted input for BoltOS's freestanding libc.
+ * Supports %d %i %u %o %x %c %s %f/%e/%g %[..] %n %% with optional field width
+ * and assignment suppression (%*). Length modifiers h/l/ll/z map width onto the
+ * destination. Drives off a tiny pull-character reader so sscanf and fscanf
+ * share one engine. */
 #include <stdint.h>
 #include <stddef.h>
 #include <stdarg.h>

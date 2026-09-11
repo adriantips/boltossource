@@ -90,7 +90,13 @@ static void on_irq(struct registers *r) {
 
     switch (phase) {
     case 0:
-        if (!(data & 0x08)) return;            /* resync: bit3 of byte0 is always 1 */
+        /* hack: bit3 of a real byte0 is always 1, and it's not just a resync
+         * for lost sync mid-stream -- the controller likes to hand back one
+         * stray byte right after 0xF4 enables streaming (and sometimes after
+         * the knock sequence below), which would otherwise get read as
+         * byte0 of the first packet and misalign every packet after it.
+         * Same check catches both cases for free; no separate post-init flush. */
+        if (!(data & 0x08)) return;
         pkt[0] = data; phase = 1; break;
     case 1:
         pkt[1] = data; phase = 2; break;

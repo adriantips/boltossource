@@ -28,7 +28,10 @@ static int py_readline(char *buf, int cap) {
     }
 }
 
-/* Net bracket depth of a buffer, ignoring brackets inside strings/comments. */
+/* Net bracket depth of a buffer, ignoring brackets inside strings/comments.
+ * No triple-quoted strings here -- a `"""` with a `(` inside it will confuse
+ * this into asking for another line forever. Not worth a real lexer for a
+ * REPL continuation check. */
 static int scan_depth(const char *s) {
     int depth = 0; char q = 0; int comment = 0;
     for (; *s; s++) {

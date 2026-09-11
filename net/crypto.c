@@ -1,16 +1,17 @@
 #include "crypto.h"
 #include "string.h"
 
-/* ===========================================================================
- *  Crypto primitives for the TLS 1.2 client. Compact, standalone reference
- *  implementations:
- *    - SHA-256          (FIPS 180-4)
- *    - HMAC-SHA256      (RFC 2104)
- *    - AES-128          (FIPS 197, forward cipher)
- *    - AES-128-GCM      (NIST SP 800-38D)
- *    - X25519           (RFC 7748; the field arithmetic follows TweetNaCl,
- *                        which is in the public domain)
- * ===========================================================================*/
+/* Crypto primitives, originally just for the TLS 1.2 client, now shared with
+ * ssh.c and vault.c too. Compact reference implementations, not tuned for
+ * speed:
+ *   SHA-256, HMAC-SHA256   FIPS 180-4 / RFC 2104
+ *   AES-128 / AES-256      FIPS 197 (forward cipher only, GCM never decrypts
+ *                          block-by-block so there's no inverse cipher here)
+ *   AES-*-GCM              NIST SP 800-38D
+ *   X25519                 RFC 7748 -- field arithmetic lifted from TweetNaCl
+ *                          (public domain), which is why the variable names
+ *                          are one letter and mean nothing out of context
+ */
 
 /* =========================== SHA-256 ===================================== */
 static uint32_t ror(uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
@@ -241,6 +242,10 @@ void aes256_encrypt(const aes256_ctx *c, const uint8_t in[16], uint8_t out[16]) 
 
 /* =========================== AES-128-GCM ================================ */
 /* GF(2^128) multiply, blocks big-endian, reduction poly per SP 800-38D. */
+/* Naive bit-by-bit multiply -- not constant-time-hardened beyond "no branch on
+ * secret data in the obvious place", and definitely not the table-driven kind
+ * a real TLS stack would use. Nobody has fed this enough traffic on real
+ * hardware for it to matter yet. */
 static void gf_mul(uint8_t *x, const uint8_t *y) {
     uint8_t z[16] = {0}, v[16];
     memcpy(v, y, 16);

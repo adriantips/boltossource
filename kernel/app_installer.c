@@ -302,7 +302,9 @@ static void inst_tick(window_t *w) {
     if (!run_started) { run_started = 1; gui_request_redraw(); return; }
     if (run_started == 1) {
         run_started = 2;
-        install_run(&req);
+        install_run(&req);          /* still one long blocking call under the hood --
+                                      * the two-tick dance above only buys the redraw
+                                      * before it, not a responsive progress bar during */
         page = PG_DONE;
         if (req.failed) gui_toast("Install failed");
         else            gui_toast("BoltOS installed");

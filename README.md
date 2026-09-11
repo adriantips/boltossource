@@ -50,7 +50,7 @@ which is flipped to the framebuffer. Windows support move/resize, focus/z-order,
 minimize/maximize, a taskbar with pinning, right-click context menus, and a
 desktop of double-clickable launcher icons. Font rendering uses **TrueType**
 outlines (`kernel/ttf.c`) in addition to the built-in bitmap fonts. A
-**system-wide clipboard** (`kernel/clipboard.c`) carries text, an image or a
+system-wide clipboard (`kernel/clipboard.c`) carries text, an image or a
 list of files -- one item, typed, so every reader asks what kind it is before
 taking it.
 Each app is a `kernel/app_*.c` file exposing `draw/key/click/drag/tick` callbacks.
@@ -59,12 +59,12 @@ Each app is a `kernel/app_*.c` file exposing `draw/key/click/drag/tick` callback
 
 One item, of one of three kinds. Text is a static buffer, because copying a
 selection must not be able to fail. An image is on the heap, because a full
-screen is three megabytes. Files are carried as their **paths**, which means a
+screen is three megabytes. Files are carried as their paths, which means a
 file selection is also text -- paste it into Notes and you get the paths, paste
 it into File Explorer and you get the files, and neither app has to know about
 the other representation.
 
-Ctrl+C in **Photos** or **Paint** copies the picture; Ctrl+V in Paint pastes one,
+Ctrl+C in Photos or Paint copies the picture; Ctrl+V in Paint pastes one,
 scaled to fit rather than cropped. Pasting an image into a folder in **File
 Explorer** writes it out as a PNG, through the same encoder screenshots use.
 Copying a file in File Explorer publishes its path, so it can be pasted into a
@@ -98,7 +98,7 @@ and out of every hit test, so nothing you click or type can reach a window you
 cannot see. Closed-but-pinned taskbar launchers are shortcuts rather than
 windows, so they appear on all four.
 
-**Win+1..4** switches, **Ctrl+Alt+Left/Right** walks, **Win+Shift+Left/Right**
+Win+1..4 switches, Ctrl+Alt+Left/Right walks, Win+Shift+Left/Right
 takes the focused window with you (following it, because throwing a window
 somewhere you cannot see is not a feature), and the pips at the left of the
 taskbar do the same with the mouse -- lit where there are windows, wide where
@@ -107,8 +107,8 @@ Terminal and for a session over SSH.
 
 ### Screenshots
 
-Print Screen (F12) or `screenshot [PATH]` captures the screen to a **PNG** in
-the signed-in user's `Pictures`, and opens it in Photos. It reads the **panel**
+Print Screen (F12) or `screenshot [PATH]` captures the screen to a PNG in
+the signed-in user's `Pictures`, and opens it in Photos. It reads the panel
 back rather than the compositor's backbuffer, so DOOM, the ring-3 browser and
 the plain text console capture correctly too -- and it works in safe mode and
 over SSH, where there is no desktop to press a key in.
@@ -132,10 +132,10 @@ caller was `dmesg save`, so the log survived a reboot exactly when somebody had
 thought to ask for it in advance -- which is not when anybody needs it. A clean
 shutdown now writes it before the final commit, trimmed to stay under a size
 cap, and `logs` can read it. `logs -n N` and `logs -a` control how much, and
-**`logs save`** writes the current ring immediately: the boot that ends badly is
+`logs save` writes the current ring immediately: the boot that ends badly is
 otherwise exactly the boot whose log is lost.
 
-The **Logs** app shows all three side by side -- this boot's ring (live, and
+The Logs app shows all three side by side -- this boot's ring (live, and
 saveable with a button), earlier boots, and the crash log -- coloured by the
 kernel's own `[ok]`/`[--]` tags so a page of it can be skimmed.
 
@@ -143,7 +143,7 @@ kernel's own `[ok]`/`[--]` tags so a page of it can be skimmed.
 
 `kernel/notify.c` is a kernel-wide store of what the machine has to say, and the
 desktop is one reader of it. A notification is a stacked toast bottom-right for
-about three seconds *and* a row in the tray's **notification centre** afterwards,
+about three seconds *and* a row in the tray's notification centre afterwards,
 so something that finishes while you are looking at another window is still there
 when you look back. The bell carries an unread badge; rows show level, source and
 time, scroll, and can be read, dismissed one at a time, or cleared.
@@ -165,39 +165,39 @@ protected read-only and changes are RAM-only.
 
 Bundled apps (34):
 
-- **Terminal** — the full interactive shell in a window
-- **File Explorer** — browse/open the persistent filesystem
-- **Browser** — a layout-engine web browser (DOM + CSS cascade + box/flex/grid +
+- Terminal — the full interactive shell in a window
+- File Explorer — browse/open the persistent filesystem
+- Browser — a layout-engine web browser (DOM + CSS cascade + box/flex/grid +
   JavaScript) over the kernel's own HTTP/HTTPS stack
-- **OldBrowser** — a **NetSurf** port: the NetSurf core architecture (nsurl,
+- OldBrowser — a NetSurf port: the NetSurf core architecture (nsurl,
   content cache, handler pipeline, `browser_window` + back/forward history) with
   its classic framebuffer-frontend toolbar (Back / Forward / Reload / Stop /
   Home, address bar, throbber, bookmarks), rendering through the BoltOS layout
   engine over the kernel TCP/TLS stack
-- **Code** — a multi-language IDE (C / C++ / C# / Python) with a **project
-  tree**, **open-file tabs**, syntax highlighting, line numbers, a Run button
-  that builds the project's **target** (`build.txt`) and an output console
-- **Task Manager** — live process / CPU / memory view
-- **Settings** — themes and system options (persisted), font switching
-- **Install BoltOS** — the graphical installer: pick a disk, create the account,
+- Code — a multi-language IDE (C / C++ / C# / Python) with a project
+  tree, open-file tabs, syntax highlighting, line numbers, a Run button
+  that builds the project's target (`build.txt`) and an output console
+- Task Manager — live process / CPU / memory view
+- Settings — themes and system options (persisted), font switching
+- Install BoltOS — the graphical installer: pick a disk, create the account,
   watch the progress bar; writes both the legacy and UEFI boot paths
-- **Software** — the package manager with a window on it: what the repository
+- Software — the package manager with a window on it: what the repository
   offers and what is installed, one click to install or remove, over the same
   index parser and install path `pkg` uses
-- **Security** — session and lock settings, the firewall (rules, presets, live
+- Security — session and lock settings, the firewall (rules, presets, live
   pass/block counters) and the account list
-- **Logs** — this boot's kernel ring, what survived earlier boots, and the
+- Logs — this boot's kernel ring, what survived earlier boots, and the
   crash log, in one scrollable window
-- **Media** — a WAV player: the folder a track came from is the playlist, the
+- Media — a WAV player: the folder a track came from is the playlist, the
   level meter is drawn from the samples on their way to the codec, and playback
   is fed from the compositor's main loop rather than the window's tick, so it
   keeps playing while the window is minimised, on another desktop, or while the
   session is locked
-- **Calculator**, **Clock**, **Stopwatch**, **Calendar**, **Notes** (saved to FS)
-- **Paint**, **Color Picker**, **Piano** (PC-speaker, zoomable multi-octave)
-- **System Info**, **Matrix** rain
-- Games: **DOOM** (real doomgeneric port, playable E1M1), **Minesweeper**,
-  **Snake**, **2048**, **Tic-Tac-Toe**, **Memory match**, **Conway's Game of Life**
+- Calculator, Clock, Stopwatch, Calendar, Notes (saved to FS)
+- Paint, Color Picker, Piano (PC-speaker, zoomable multi-octave)
+- System Info, Matrix rain
+- Games: DOOM (real doomgeneric port, playable E1M1), Minesweeper,
+  Snake, 2048, Tic-Tac-Toe, Memory match, Conway's Game of Life
 
 > The kernel logic is fixed-point / integer math, but **SSE is enabled and the
 > FPU/SSE register file is saved and restored across context switches**: the
@@ -209,30 +209,30 @@ Bundled apps (34):
 ## Userland (ring 3, ELF64)
 
 BoltOS runs real user programs in **ring 3**. `user/` is a tiny freestanding C
-program (`crt0.asm` + `ulibc.c`) linked to a **static ELF64** (`user/user.ld`)
+program (`crt0.asm` + `ulibc.c`) linked to a static ELF64 (`user/user.ld`)
 and embedded into the kernel image at build time. The kernel's ELF loader
 (`kernel/elf.c`) maps the segments into a fresh address space; the program
 traps into the kernel via `syscall` (`kernel/syscall.asm` + `syscall.c`) for I/O.
-A preemptive **round-robin scheduler** (`kernel/sched.c`) with per-process
+A preemptive round-robin scheduler (`kernel/sched.c`) with per-process
 state (`kernel/proc.c`) time-slices processes off the PIT. Userland benefits
-from **ASLR** (randomised load base), **SMAP/SMEP** (kernel/user page isolation),
+from ASLR (randomised load base), SMAP/SMEP (kernel/user page isolation),
 and per-process address spaces.
 
 ### Ring-3 browser & JS
 
-The **web browser, DOM/layout engine and JavaScript interpreter run in ring 3**,
+The web browser, DOM/layout engine and JavaScript interpreter run in ring 3,
 not in the kernel. `kernel/{dom,layout,js}.c` — the HTML tokeniser + DOM tree
 builder, the CSS cascade + box/flex/grid layout engine, and the BoltJS
 interpreter — are the *same sources* the kernel uses, but they are also compiled
 into two userland ELF programs and executed in ring 3:
 
-- **`/bin/js`** (`user/js_main.c`) — the JavaScript interpreter as a ring-3
+- `/bin/js` (`user/js_main.c`) — the JavaScript interpreter as a ring-3
   program. `js FILE.js` execs it; the language runtime never touches kernel mode.
-- **`/bin/browser`** (`user/browser_main.c`) — the web browser as a ring-3
+- `/bin/browser` (`user/browser_main.c`) — the web browser as a ring-3
   program. It loads a page (local file, or a URL through the kernel network
-  stack), builds the **DOM**, runs the **CSS cascade + layout**, executes the
-  page's **JavaScript** (with a real DOM-bound `js_host`, including `fetch()`),
-  and **paints the box tree to the framebuffer** — all in ring 3. Launch it with
+  stack), builds the DOM, runs the CSS cascade + layout, executes the
+  page's JavaScript (with a real DOM-bound `js_host`, including `fetch()`),
+  and paints the box tree to the framebuffer — all in ring 3. Launch it with
   the `webx [url]` shell command; keys scroll / follow links (Tab+Enter) / edit
   the address bar (`g`) / quit (`q`).
 
@@ -241,12 +241,12 @@ The kernel exposes only the privileged primitives behind four syscalls
 pauses the compositor (a `g_fb_exclusive` flag the GUI loop checks), `SYS_GETKEY`
 reads the keyboard, `SYS_HTTPGET` fetches a URL over the in-kernel TCP/TLS stack,
 and `SYS_FBEND` hands the screen back. No HTML parsing, layout, or script
-execution happens in ring 0. (The in-window desktop **Browser** app still uses
+execution happens in ring 0. (The in-window desktop Browser app still uses
 the in-kernel copy of the engine for its embedded window.)
 
 ### Preemptible syscalls
 
-Syscalls run with **interrupts enabled**. `SYSCALL` enters with IF cleared by
+Syscalls run with interrupts enabled. `SYSCALL` enters with IF cleared by
 FMASK, and every wait in the network stack has the same shape — spin
 `netif_poll_all()`, then `hlt` until the next timer tick, until the deadline
 passes. With interrupts off that tick never arrives: the `hlt` never wakes, the
@@ -255,7 +255,7 @@ That is why no ring-3 program could use the network at all; `SYS_HTTPGET` had
 the same defect from the start, so the ring-3 browser froze the machine the
 moment it fetched anything.
 
-Enabling interrupts means a syscall can be **preempted**, which the user RSP was
+Enabling interrupts means a syscall can be preempted, which the user RSP was
 not ready for: it was stashed in a global, so two threads in syscalls at once
 would overwrite each other's and return to ring 3 on the wrong stack. It is
 pushed on the process's kernel stack instead, one copy per invocation (with a
@@ -265,7 +265,7 @@ is still clear.
 
 ### Program arguments
 
-`proc_exec_vec()` passes a **full argv vector** (`PROC_MAX_ARGV` entries). The
+`proc_exec_vec()` passes a full argv vector (`PROC_MAX_ARGV` entries). The
 loader could previously hand a program argv[0] plus at most one operand, so no
 ring-3 program could take an option and an argument at the same time —
 `netget HOST PATH PORT` silently ran as `netget HOST` and used defaults for the
@@ -288,10 +288,10 @@ Native BoltCC code generation and self-hosting remain unfinished.
 **ACPI** (`kernel/acpi.c`) discovers the RSDP, RSDT/XSDT, and MADT, and provides
 table-checksum validation — the foundation for APIC, HPET, and SMP boot.
 
-**APIC** (`kernel/apic.c`) reprograms the local APIC and I/O APIC, replacing the
+APIC (`kernel/apic.c`) reprograms the local APIC and I/O APIC, replacing the
 legacy PIC for interrupt routing. Each CPU core gets its own local APIC timer.
 
-**SMP** (`kernel/smp.c` + `kernel/ap_boot.asm` + `kernel/hpet.c`) brings up
+SMP (`kernel/smp.c` + `kernel/ap_boot.asm` + `kernel/hpet.c`) brings up
 application processors: the BSP writes the trampoline to low memory, sends an
 IPI, and each AP runs its own idle loop. The HPET provides a cross-core
 synchronised time base. The CPU count is reported in `sysinfo`.
@@ -355,14 +355,14 @@ Storage sits behind a **generic block layer** (`kernel/blk.c` + `include/blk.h`)
 a small registry of `blkdev_t` transports plus shared MBR-partition helpers, so
 the filesystem doesn't care whether a disk is ATA, AHCI, or NVMe.
 
-An **ATA/IDE PIO block driver** (`drivers/ata.c`) probes the legacy ATA register
+An ATA/IDE PIO block driver (`drivers/ata.c`) probes the legacy ATA register
 file on both channels (ports `0x1F0/0x3F6` and `0x170/0x376`), runs `IDENTIFY` on
 each slot, and supports LBA28/LBA48 sector read/write. The same command set drives
-both spinning **HDDs** and **SSDs**; the two are told apart from IDENTIFY word 217
+both spinning HDDs and SSDs; the two are told apart from IDENTIFY word 217
 (nominal media rotation rate: `1` = non-rotating = SSD). ATAPI/CD-ROM slots are
 detected and skipped.
 
-An **NVMe driver** (`drivers/nvme.c`) brings up a controller over PCI/MMIO: it
+An NVMe driver (`drivers/nvme.c`) brings up a controller over PCI/MMIO: it
 sets up the admin queue pair, runs `IDENTIFY`, creates one I/O queue pair, and
 registers namespace 1 with the block layer. Completions arrive on a **hardware
 MSI/MSI-X interrupt** (`pci_msi_enable` routes a vector to the local APIC, the
@@ -371,12 +371,12 @@ interrupt wakes it instead of busy-polling the CQ phase bit. If the controller
 exposes no MSI capability the driver falls back to polling so it still works
 everywhere.
 
-An **AHCI (SATA) driver** (`drivers/ahci.c`) drives Serial ATA host bus adapters
+An AHCI (SATA) driver (`drivers/ahci.c`) drives Serial ATA host bus adapters
 over DMA. Each port gets a command list, received FIS area, and command table;
 one command runs at a time out of slot 0. Polled completions keep the code
 synchronous.
 
-The native filesystem (**BoltFS**, `fs/ramfs.c`) is reached through a **VFS layer**
+The native filesystem (BoltFS, `fs/ramfs.c`) is reached through a VFS layer
 (`kernel/vfs.c`). `fs_persist_init()` prefers the installed boot disk's BoltFS
 partition, then existing BoltFS on data disks (NVMe, SSD, HDD), and **loads a
 saved image on boot**. Existing data takes priority over a faster empty disk.
@@ -388,7 +388,7 @@ Autosave commits the whole tree on every mutation. `diskinfo` lists disks and
 whether writes are persistent or confined to RAM;
 `sync` forces a commit. QEMU exposes data disks (`run.sh`) across both transports.
 
-A failed image load **never triggers formatting**. The loader builds a detached
+A failed image load never triggers formatting. The loader builds a detached
 tree and replaces the live tree only after every record and allocation succeeds.
 If no copy can load, the original disk is protected read-only and the seed tree
 remains available in RAM. `fsck` diagnoses it; `sync` and `fsck -r` cannot replace
@@ -400,10 +400,10 @@ for the recovery behavior, tests and remaining storage limitations.
 
 ### Crash safety: atomic commits, flush barriers, fsck
 
-BoltFS uses **atomic commits** with device cache-flush barriers.
-The partition holds **two blob slots and a mirrored superblock**, and a commit is
+BoltFS uses atomic commits with device cache-flush barriers.
+The partition holds two blob slots and a mirrored superblock, and a commit is
 a shadow-page swap: serialise the tree into the slot that is *not* live, write
-it, **flush the device's write cache**, then swap the superblock generation (and
+it, flush the device's write cache, then swap the superblock generation (and
 mirror it). Whatever instant the power fails, the next mount finds a complete
 image — the previous one or the new one, never a torn mix — and a torn primary
 superblock simply fails its FNV-1a checksum and falls back to the mirror. This is
@@ -411,13 +411,13 @@ the guarantee a write-ahead log provides; the whole-image rewrite already *is*
 the redo record, so no separate log is needed.
 
 The flush barrier is real hardware, not a no-op: `blkdev_t` gained a `flush` op
-implemented as ATA/AHCI **FLUSH CACHE EXT** and the **NVMe Flush** command, so a
+implemented as ATA/AHCI FLUSH CACHE EXT and the NVMe Flush command, so a
 disk that acknowledges writes out of its DRAM cannot reorder the blob past the
 superblock that names it.
 
-The superblock carries a **clean flag**, cleared on mount and set only by
+The superblock carries a clean flag, cleared on mount and set only by
 `fs_shutdown()`. Finding it clear means the last run ended badly, and the mount
-runs a **consistency check** automatically (the boot menu's entry 4 forces one on
+runs a consistency check automatically (the boot menu's entry 4 forces one on
 demand). `fsck` runs the same check from the shell — both superblocks, the blob
 checksum, and the record chain (parents precede children, sizes stay inside the
 blob, names terminate) — and `fsck -r` rewrites the image from the live tree.
@@ -434,7 +434,7 @@ names. `diskinfo` reports this protected state and `sync` refuses to claim
 success. Allocation failures before disk I/O leave the previous image intact
 and can be retried after memory is freed.
 
-**FAT32** overwrites use safer ordering: `fat32_write` used to free the old
+FAT32 overwrites use safer ordering: `fat32_write` used to free the old
 cluster chain and delete the directory entry *first*, so a crash mid-write
 destroyed the file outright. It now writes the new data to freshly allocated
 clusters while the old copy is still intact, switches the directory entry over in
@@ -460,7 +460,7 @@ blocks FAT32 formatting, writes and directory creation.
 
 ### Standard filesystems (EXT2 / FAT32)
 
-Beyond BoltFS, the kernel can mount **EXT2** (`fs/ext2.c`) and **FAT32**
+Beyond BoltFS, the kernel can mount EXT2 (`fs/ext2.c`) and FAT32
 (`fs/fat32.c`) volumes — read/write for FAT32, read-only for EXT2. Both go
 through the generic block layer and VFS, so standard disk images from Linux or
 Windows are accessible from the shell and File Explorer.
@@ -469,14 +469,14 @@ Windows are accessible from the shell and File Explorer.
 
 Two codec drivers sit behind one interface (`include/audio.h`), and
 `drivers/audio.c` picks between them at boot: **Intel HD Audio** first, then
-**AC'97**, then the legacy **PC speaker** (`drivers/pcspk.c`) so a tone always
+AC'97, then the legacy PC speaker (`drivers/pcspk.c`) so a tone always
 makes a sound. Everything above the line — Media, Music, Piano, DOOM, `play` — speaks
 only 48 kHz / 16-bit / stereo PCM and never learns which codec it reached.
 
-**Intel HD Audio** (`drivers/hda.c`) is what a machine built since about 2005
+Intel HD Audio (`drivers/hda.c`) is what a machine built since about 2005
 actually has. Bringing it up means two separate jobs. The controller side is a
 PCI device with MMIO registers, DMA stream engines and a command/response ring
-pair (**CORB/RIRB**, with the immediate-command registers as a fallback for
+pair (CORB/RIRB, with the immediate-command registers as a fallback for
 controllers that implement only one of the two well). The codec side is a graph
 of widgets that arrives with *nothing connected*: the driver walks it, scores the
 output pins from their configuration defaults, traces a route from the best pin
@@ -487,11 +487,11 @@ scale. Playback is polled; because an HDA stream buffer is cyclic, each buffer i
 submitted as the caller's PCM followed by a block of silence, so a buffer that
 drains before the caller notices plays quiet rather than repeating itself.
 
-**AC'97** (`drivers/ac97.c`) drives the Intel ICH controller over PCI for older
+AC'97 (`drivers/ac97.c`) drives the Intel ICH controller over PCI for older
 boards and QEMU's `-device AC97`: PCM-out programmed through a buffer descriptor
 list on the bus-mastering engine, same 48 kHz stereo contract.
 
-**WAV playback** (`kernel/wav.c`) is the decoder *and* the converter, because
+WAV playback (`kernel/wav.c`) is the decoder *and* the converter, because
 the two cannot be separated: the codecs are fixed at 48 kHz stereo and almost no
 file on a disk is. It parses RIFF/WAVE (PCM and `WAVE_FORMAT_EXTENSIBLE`, 8- or
 16-bit, any rate, any channel count), then resamples with a 16.16 fixed-point
@@ -503,7 +503,7 @@ system sounds are generated at build time by `mkwav.py` and seeded to
 `/usr/share/sounds` in two deliberately different shapes (22 kHz mono 8-bit,
 44.1 kHz stereo 16-bit), so between them they exercise every conversion.
 
-The **Media** player (`kernel/app_media.c`) is what makes that usable. `play`
+The Media player (`kernel/app_media.c`) is what makes that usable. `play`
 holds the calling thread until the last sample is gone, which is fine for a test
 and no good for music; the player decodes half a second at a time and is fed
 from `media_pump()` at the top of the compositor's main loop. That placement is
@@ -535,73 +535,73 @@ other than the shell, across the end of a track.
 ## Web browser & network stack
 
 The windowed **Browser** is no longer an HTML flattener — it is a small but real
-rendering engine. A page is parsed into a **DOM tree** (`kernel/dom.c`): a proper
+rendering engine. A page is parsed into a DOM tree (`kernel/dom.c`): a proper
 tokenizer + tree builder with implicit-close rules, void/self-close/raw-text
-handling, and a **selector engine** (type/`.class`/`#id`/universal, compound
+handling, and a selector engine (type/`.class`/`#id`/universal, compound
 selectors, descendant and child combinators, selector lists) backing
 `querySelector` / `querySelectorAll` plus DOM mutations.
 
-On top of the tree sits a **CSS cascade + layout engine** (`kernel/layout.c`):
+On top of the tree sits a CSS cascade + layout engine (`kernel/layout.c`):
 
-- **Cascade** — `#hex` / `rgb()` / `rgba()` / `hsl()` / `hsla()` / named /
-  `transparent` colors, selector **specificity** (a,b,c) + source order,
-  property **inheritance**, intrinsic tag defaults, and inline `style=""`.
-- **Layout** — the box model (margin / padding / border / width → border-box),
-  **block** + **inline** flow with text word-wrap on the bitmap-font grid,
-  **flexbox** (row/column, `flex-grow`, `gap`, `justify-content`, `align-items`)
-  and **CSS grid** (px + `fr` tracks, `repeat()`, gaps, row wrapping).
+- Cascade — `#hex` / `rgb()` / `rgba()` / `hsl()` / `hsla()` / named /
+  `transparent` colors, selector specificity (a,b,c) + source order,
+  property inheritance, intrinsic tag defaults, and inline `style=""`.
+- Layout — the box model (margin / padding / border / width → border-box),
+  block + inline flow with text word-wrap on the bitmap-font grid,
+  flexbox (row/column, `flex-grow`, `gap`, `justify-content`, `align-items`)
+  and CSS grid (px + `fr` tracks, `repeat()`, gaps, row wrapping).
 
 This box tree is what the Browser actually paints — backgrounds, borders, wrapped
 text, images, inputs and hit-tested links — relaid out on width change
-(responsive). The NetSurf **libcss** library (`vendor/libcss-0.9.2/`) and
-**libhubbub** HTML parser (`netsurf/libhubbub/`) are also compiled in,
+(responsive). The NetSurf libcss library (`vendor/libcss-0.9.2/`) and
+libhubbub HTML parser (`netsurf/libhubbub/`) are also compiled in,
 supporting the OldBrowser port and the `nstest` validation command.
 
-A from-scratch **JavaScript interpreter** (`kernel/js.c`, "BoltJS") runs page
+A from-scratch JavaScript interpreter (`kernel/js.c`, "BoltJS") runs page
 scripts: lexer → recursive-descent (precedence-climbing) parser → AST walker.
-Numbers are int64 (no FPU). It is wired to the **real DOM**:
+Numbers are int64 (no FPU). It is wired to the real DOM:
 `document.querySelector`, `createElement`, `appendChild`, `setAttribute` /
 `getAttribute`, element `id` / `className` / `href` / `value`, `document.cookie`,
-and `localStorage` / `sessionStorage`; mutations trigger reflow. A **persistent VM**
-lives for the page's lifetime, so it also has an **event loop**:
+and `localStorage` / `sessionStorage`; mutations trigger reflow. A persistent VM
+lives for the page's lifetime, so it also has an event loop:
 `addEventListener` with click dispatch, `setTimeout` / `setInterval` /
 `requestAnimationFrame` (driven off the PIT tick), and **`fetch()` returning real
 Promises** (`.then` / `.catch` / `.finally`, `Promise.resolve` / `reject` / `all`,
 `new Promise`) drained through a microtask queue, plus `JSON.parse` / `stringify`.
 The `js` shell command runs code inline (`js -c "…"`, in-kernel for quick eval)
-or a script file (`js FILE.js`), which **executes in ring 3** via the userland
+or a script file (`js FILE.js`), which executes in ring 3 via the userland
 interpreter `/bin/js` (see *Ring-3 browser & JS* below).
 
 Pages load over the kernel's own stack (DNS → TCP → TLS → HTTP/1.1):
 
-- **`http://` and `https://`** with cookies, redirects, keep-alive, and **gzip /
-  deflate** content-encoding (`net/inflate.c`). **DHCP** (`net/dhcp.c`) auto-
+- `http://` and `https://` with cookies, redirects, keep-alive, and gzip /
+  deflate content-encoding (`net/inflate.c`). DHCP (`net/dhcp.c`) auto-
   configures the network interface on boot (IP, gateway, DNS). HTTPS uses an
-  in-kernel **TLS 1.2 *and* 1.3 client** (`net/tls.c` + `net/crypto.c`): ECDHE
-  over **X25519 / secp256r1 (P-256)**, **AES-128-GCM-SHA256** and
-  **AES-256-GCM-SHA384**. The server **certificate chain is now verified**
+  in-kernel TLS 1.2 *and* 1.3 client (`net/tls.c` + `net/crypto.c`): ECDHE
+  over X25519 / secp256r1 (P-256), AES-128-GCM-SHA256 and
+  AES-256-GCM-SHA384. The server certificate chain is now verified
   (`net/x509.c` + `net/rsa.c` + `net/p256.c` / `net/p384.c`): RSA PKCS#1 v1.5 /
   PSS and ECDSA P-256 signatures, hostname and validity dates, against a small
   runtime trust-anchor store — so it resists an active MITM, not just passive
   eavesdropping.
-- **local HTML files** from the filesystem (e.g. the bundled `/web/index.html`).
+- local HTML files from the filesystem (e.g. the bundled `/web/index.html`).
 
 Click links to navigate, type a URL in the address bar, `<` goes back, and the
-scrollbar / Space / `b` / `j` / `k` scroll. The data path rides an **e1000** or
-**virtio-net** NIC over QEMU/VirtualBox NAT, with a from-scratch stack:
-ARP, IPv4, ICMP, UDP, TCP, DNS, HTTP, a **firewall** (`net/firewall.c`), and TLS
+scrollbar / Space / `b` / `j` / `k` scroll. The data path rides an e1000 or
+virtio-net NIC over QEMU/VirtualBox NAT, with a from-scratch stack:
+ARP, IPv4, ICMP, UDP, TCP, DNS, HTTP, a firewall (`net/firewall.c`), and TLS
 (`net/*.c`). Wi-Fi association is scaffolded in the kernel but still needs a radio
 driver — see the `wifi` command. The shell also has `browse URL` (render a page as
 text), `download URL` (save to the FS), and `nstest` (exercise NetSurf libraries).
 
 ### Adapters: e1000 and virtio-net
 
-The e1000 is what QEMU offers by default, but **virtio-net** (`drivers/virtio_net.c`)
+The e1000 is what QEMU offers by default, but virtio-net (`drivers/virtio_net.c`)
 is what almost everything else offers — it is the default on KVM/libvirt, Proxmox,
 VirtualBox's virtio adapter and every mainstream cloud hypervisor. Without it
 BoltOS has no network at all on most machines anyone would actually run it on.
 
-The driver speaks the **legacy VIRTIO 0.9.5 PCI transport** deliberately: a
+The driver speaks the legacy VIRTIO 0.9.5 PCI transport deliberately: a
 handful of I/O ports rather than the modern capability-walking BAR layout, which
 QEMU still presents by default and which is the same virtqueue model underneath
 — the smallest amount of code that reaches the most hypervisors. It sets up the
@@ -612,17 +612,17 @@ on each.
 
 ### IPv6: an address nobody handed out
 
-`net/ip6.c`, `net/nd6.c` and `net/icmp6.c` add **IPv6 addressing, Neighbour
-Discovery and SLAAC**. At boot the interface forms a **link-local** address from
-its own MAC as a modified EUI-64, checks with **Duplicate Address Detection**
-that nobody else has it, solicits a router, and builds a **global address** out
-of whatever prefix comes back — with no server involved anywhere, which is the
-point of stateless autoconfiguration. `ifconfig` shows both addresses, the
+`net/ip6.c`, `net/nd6.c` and `net/icmp6.c` add IPv6 addressing, Neighbour
+Discovery and SLAAC. At boot the interface forms a link-local address from
+its own MAC as a modified EUI-64, checks with Duplicate Address Detection
+that nobody else has it, solicits a router, and builds a global address out
+of whatever prefix comes back, with no server involved anywhere — that's the
+whole idea behind stateless autoconfiguration. `ifconfig` shows both addresses, the
 router and the neighbour cache; `ping6` reaches a neighbour or the router it
 discovered.
 
 Neighbour Discovery is ARP's job reached differently: a solicitation goes to the
-target's **solicited-node multicast group** rather than to the whole broadcast
+target's solicited-node multicast group rather than to the whole broadcast
 domain, and the reply carries the link-layer address in an option. Every ICMPv6
 message is checksummed over a pseudo-header of both addresses — unlike IPv4's,
 that checksum is mandatory, and it is verified before an advertisement is
@@ -637,7 +637,7 @@ detection, which polled, which delivered the next advertisement, until the
 kernel stack ran out. It now refuses to re-enter, and the work that needs to
 poll happens outside the handler.
 
-**TCP and UDP are still IPv4-only.** The sockets, the resolver and everything
+TCP and UDP are still IPv4-only. The sockets, the resolver and everything
 above them take a `uint32_t` address, and widening that is its own change rather
 than something to do halfway — so this reaches a neighbour and a router, not a
 web page. `test/host/ip6.c` checks the address text forms with no machine at
@@ -692,7 +692,7 @@ undoing it is not what anyone means by "saved".
 ### Names: `/etc/hosts` and a DNS cache
 
 A lookup is answered by the cheapest source that can answer it: a literal dotted
-quad, then **`/etc/hosts`**, then a **TTL-honouring cache**, and only then the
+quad, then `/etc/hosts`, then a TTL-honouring cache, and only then the
 wire. Before the cache existed, every image on a page re-resolved the same host,
 putting a full DNS round trip in front of each one. `hosts add NAME IP` names a
 peer locally (and that lookup never leaves the machine); `dns NAME` resolves one,
@@ -714,7 +714,7 @@ until Ctrl+D.
 
 The part a server does not have is deciding whether to trust the other end. The
 host key is checked against `/etc/ssh/known_hosts`: a host that is not there is
-added and its fingerprint printed, and a host whose key has **changed** is
+added and its fingerprint printed, and a host whose key has changed is
 refused outright rather than asked about — that question has exactly one safe
 answer, and asking it teaches people to press y. `sshkey known` lists what is
 remembered and `sshkey forget HOST` drops one, which is what a legitimately
@@ -737,7 +737,7 @@ on the client's ACK), and `tcp_accept()` hands over the next connection nobody
 has claimed. There is no separate listening-socket object — what comes back is
 an ordinary `tcp_conn`, so send, recv and close need no server-side variants.
 
-Above that, **a socket is a file descriptor** (`kernel/socket.c`): a `file` whose
+Above that, a socket is a file descriptor (`kernel/socket.c`): a `file` whose
 ops are socket ops and whose `priv` is the connection. Because it is a file,
 `read()`, `write()` and `close()` already work on it, the process fd table
 already owns it, and `proc_release()` already closes it when the process dies —
@@ -750,14 +750,14 @@ passwords of everyone who connected.
 
 Two commands exercise both directions:
 
-- **`serve [PORT] [DIR]`** — an HTTP file server. GET only, one connection at a
+- `serve [PORT] [DIR]` — an HTTP file server. GET only, one connection at a
   time, no keep-alive: the job is handing files to a browser on the same
   network, and every extra feature is another parser exposed to whatever else is
   on it. Paths are percent-decoded and any `..` segment is refused *before* the
   lookup, and every file goes through the same `fs_may()` check as the shell —
   serving a tree must not become a way around the ownership rules on it.
   Directories render a browsable index. Any key stops it.
-- **`netget HOST [PATH] [PORT]`** — execs `/bin/netget`, which runs in **ring 3**
+- `netget HOST [PATH] [PORT]` — execs `/bin/netget`, which runs in ring 3
   and speaks HTTP over a socket using nothing but `resolve_host()`, `socket()`,
   `connect_ip()`, `write()` and `read()`.
 
@@ -767,7 +767,7 @@ is refused, and then runs the ring-3 client against a server on the host.
 
 ### SSH
 
-`net/ssh.c` is an **SSH-2 server** (RFC 4251-4254). It is what makes the machine
+`net/ssh.c` is an SSH-2 server (RFC 4251-4254). It is what makes the machine
 administrable without sitting in front of it, and for a machine meant to be
 developed on, that is most of the difference between a demo and a box you can
 work on.
@@ -786,14 +786,14 @@ surface facing a peer who has not authenticated yet, and this set is still in a
 current OpenSSH's default proposal, so real clients connect without being told
 to relax anything.
 
-The **host key** is generated on first use and kept in `/etc/ssh/host_ecdsa_key`
+The host key is generated on first use and kept in `/etc/ssh/host_ecdsa_key`
 with mode 0600. A key that changed every boot would warn the user on every
 connection, which teaches them to click through the one warning that means
 somebody is intercepting them. `sshkey` prints the fingerprint in the same
 `SHA256:` form the client shows, so the two can be compared by eye;
 `sshkey selftest` signs and verifies with a throwaway key.
 
-**Authentication** is password auth against the real account table
+Authentication is password auth against the real account table
 (`users_auth`), so the same PBKDF2 hashing, the same admin group and the same
 exponential backoff apply as at the console. **The shell it hands out is the
 real one**: a session runs commands through `shell_exec_line()` with `kputc`
@@ -809,7 +809,7 @@ sshd 2222            listen on an unprivileged port
 sshkey               show the host key fingerprint
 ```
 
-`test/t_ssh.py` drives the **actual OpenSSH client** rather than a second
+`test/t_ssh.py` drives the actual OpenSSH client rather than a second
 BoltOS. That distinction is the point: an implementation can be perfectly
 self-consistent and still wrong in every way that matters — a mis-encoded
 exchange hash verifies flawlessly against its own verifier — and only a peer
@@ -820,7 +820,7 @@ with and OpenSSH rejected as "incorrect signature".
 
 ### The clock: SNTP
 
-`net/ntp.c` is a minimal **SNTP client** (RFC 4330). The RTC is the only time
+`net/ntp.c` is a minimal SNTP client (RFC 4330). The RTC is the only time
 source this machine has and on a VM it is often wrong from the moment it boots,
 which quietly breaks the things that matter most — TLS certificate validity
 windows, file timestamps, and any reasoning about when something happened in the
@@ -835,7 +835,7 @@ state, `ntp sync` forces one, `ntp server IP` / `ntp on|off` are saved.
 
 ## OldBrowser — a NetSurf port
 
-**OldBrowser** is a port of **NetSurf** — the small, fast, portable C web browser
+**OldBrowser** is a port of NetSurf — the small, fast, portable C web browser
 — onto BoltOS. NetSurf is built around a clean split between a portable *core*
 (content cache + handler pipeline + `browser_window` state machine) and
 per-platform *frontends*; OldBrowser reproduces that architecture faithfully.
@@ -851,32 +851,32 @@ subsystem named in its banner:
 | `ob_hotlist.c`         | `desktop/hotlist.c` — bookmarks, persisted to the filesystem |
 | `ob_fbtk.c`            | `frontends/framebuffer/fbtk` — the widget toolkit |
 | `ob_gui.c`             | `frontends/framebuffer/gui.c` — toolbar, throbber, viewport, status bar |
-| `ns_html.c`            | HTML parsing via **libhubbub** (vendored at `netsurf/libhubbub/`) |
-| `ns_select.c`          | CSS selector matching via **libcss** (vendored at `vendor/libcss-0.9.2/`) |
+| `ns_html.c`            | HTML parsing via libhubbub (vendored at `netsurf/libhubbub/`) |
+| `ns_select.c`          | CSS selector matching via libcss (vendored at `vendor/libcss-0.9.2/`) |
 
-Where NetSurf leans on **libdom** and **libcss**, this port drives BoltOS's own
+Where NetSurf leans on libdom and libcss, this port drives BoltOS's own
 DOM tree (`kernel/dom.c`) and CSS-cascade + box/flex/grid layout engine
 (`kernel/layout.c`) or the upstream libraries; where it uses **libnsgif /
 libnspng**, it calls the BoltOS image decoder (`kernel/image.c`); fetches ride
-the kernel **HTTP/HTTPS** stack (`net/http.c`). The result is the recognisable
-NetSurf chrome — a toolbar of **Back / Forward / Reload / Stop / Home**, an
-address bar, an animated **throbber** and a bookmark toggle — over a scrolling
+the kernel HTTP/HTTPS stack (`net/http.c`). The result is the recognisable
+NetSurf chrome — a toolbar of Back / Forward / Reload / Stop / Home, an
+address bar, an animated throbber and a bookmark toggle — over a scrolling
 content viewport. Typed addresses that don't look like URLs become a web search;
 the `about:welcome` home page and `about:credits` render offline. The BoltOS
 window glue is `kernel/app_oldbrowser.c`.
 
 ## IDE & compilers (BoltCC + BoltPy)
 
-The **Code** app (`kernel/app_ide.c`) is a real in-kernel IDE: a **project tree**
-down the left, **open-file tabs** across the top, and a text editor with a
+The **Code** app (`kernel/app_ide.c`) is a real in-kernel IDE: a project tree
+down the left, open-file tabs across the top, and a text editor with a
 movable caret, line numbers, mouse click-to-place, scrolling, auto-indent,
-bracket pairing and live syntax highlighting. **Run** builds the project's
+bracket pairing and live syntax highlighting. Run builds the project's
 current target through BoltCC and streams the program's output into a console
 pane below. See *Projects and the `build` command* below for what a target is.
 
-- **BoltCC** (`kernel/boltcc.c`) is a from-scratch **C / C++ / C# compiler**: one
-  pipeline — lexer → recursive-descent parser → AST → **stack bytecode** → a
-  bytecode **VM**. It genuinely compiles the source and runs the emitted
+- BoltCC (`kernel/boltcc.c`) is a from-scratch C / C++ / C# compiler: one
+  pipeline — lexer → recursive-descent parser → AST → stack bytecode → a
+  bytecode VM. It genuinely compiles the source and runs the emitted
   bytecode (it is not a text interpreter). Shared across the three dialects:
   functions with recursion and forward references, `int`/`char`/`long`/`bool`/
   `string`/`var` declarations, the full arithmetic / bitwise / comparison
@@ -884,14 +884,14 @@ pane below. See *Projects and the `build` command* below for what a target is.
   `++`/`--`, compound assignment, `if`/`else`/`while`/`for`/`return`/`break`/
   `continue`, string concatenation and indexing, and builtins (`len`, `str`,
   `int`, `abs`, `min`, `max`, `chr`, `ord`). Per dialect:
-  - **C** — `printf` (real `%d/%i/%u/%x/%c/%s/%%` formatting), `puts`, `putchar`
-  - **C++** — `std::cout << … << std::endl` chains, `using namespace`, classes skipped
-  - **C#** — `Console.WriteLine`/`Write` (incl. `{0} {1}` formatting), `using` /
+  - C — `printf` (real `%d/%i/%u/%x/%c/%s/%%` formatting), `puts`, `putchar`
+  - C++ — `std::cout << … << std::endl` chains, `using namespace`, classes skipped
+  - C# — `Console.WriteLine`/`Write` (incl. `{0} {1}` formatting), `using` /
     `namespace` / `class` unwrapped, entry point `Main()`
-- **BoltPy** (`kernel/boltpy.c`) is a small Python-3 subset interpreter — the
+- BoltPy (`kernel/boltpy.c`) is a small Python-3 subset interpreter — the
   IDE's Python tab and the `python` shell command run on it. Integer arithmetic,
   variables, strings/lists, `print`, conditionals, `while`/`for`, `def`/recursion.
-- **BoltRT** (`user/boltrt.c`) is a PE32+ runtime stub that bakes BoltCC or
+- BoltRT (`user/boltrt.c`) is a PE32+ runtime stub that bakes BoltCC or
   BoltPython into a genuine Windows console executable — the `compile` shell
   command packs user source into this stub to produce a real `.exe` that runs
   on Windows 11 AND under BoltOS's PE loader.
@@ -918,15 +918,15 @@ that keeps an ordinary `#define getc getc` from hanging the machine. Token
 pasting and variadic macros are deliberately absent: nothing in the tree needs
 them and each is a sharp edge.
 
-**Arrays in BoltCC.** `int a[10];`, `int a[] = {1,2,3};`, indexing, assignment
+Arrays in BoltCC. `int a[10];`, `int a[] = {1,2,3};`, indexing, assignment
 through an index, `a[i] += x`, and `len(a)`. Elements are `Val`s in the runtime
 arena and arrays are references, so passing one to a function passes the array
 rather than a copy, exactly as a C array decays to a pointer. Bounds are checked
 at runtime -- a language with no pointers has no excuse for reading past an
-array. **Function prototypes** are now accepted and skipped, which is what a
+array. Function prototypes are now accepted and skipped, which is what a
 header is made of.
 
-**`cc`** (`kernel/cmd_cc.c`) is the driver: it preprocesses each file and
+`cc` (`kernel/cmd_cc.c`) is the driver: it preprocesses each file and
 concatenates the results into one translation unit before compiling. That is a
 unity build, and it is worth naming plainly rather than dressing up -- BoltCC
 has no separate compilation or linking step. What it does give you is a program
@@ -973,7 +973,7 @@ files and a project: the build is the same one every time, and it is the same
 one the Code app runs.
 
 A project is a directory with a **`build.txt`** in it naming one or more
-**targets**:
+targets:
 
 ```
 # two programs sharing one utility file
@@ -987,7 +987,7 @@ target tool
 ```
 
 Lines before the first `target` form a target named after the directory, so a
-one-target project is just `src main.c greet.c`. A directory with **no**
+one-target project is just `src main.c greet.c`. A directory with no
 `build.txt` is still a project: its target is every source file in it, in the
 dialect of the first one -- the common case should not need a file to describe
 it.
@@ -1016,17 +1016,17 @@ would be a bug nobody could find.
 
 The IDE is now built around that project.
 
-- a **project tree** down the left side: directories expand in place, a click
+- a project tree down the left side: directories expand in place, a click
   opens a file
-- **open-file tabs** across the top, each with its own caret, scroll position
+- open-file tabs across the top, each with its own caret, scroll position
   and dirty marker; `x` closes one, and a tab with unsaved changes refuses
-- **Run** saves every dirty file first and then builds the *target* the current
+- Run saves every dirty file first and then builds the *target* the current
   file belongs to -- a file's project is the directory it sits in, which is
   where its `build.txt` is. The toolbar's `target:` button cycles through the
   targets when there is more than one.
-- **Build .exe** bakes that same unit into a genuine Windows PE32+ executable
+- Build .exe bakes that same unit into a genuine Windows PE32+ executable
   (`winrun NAME.exe` here, double-click on Windows)
-- **New** creates a file in the project, **Save** (or `Ctrl+S`) writes it, and
+- New creates a file in the project, Save (or `Ctrl+S`) writes it, and
   the leftmost button re-points the tree at another directory
 
 The four language samples are still there, as four unsaved scratch tabs
@@ -1094,7 +1094,7 @@ survives a power cut with it.
 
 `vcs diff` is a real diff, not the line-by-line compare the `diff` command
 does: common head and tail are trimmed (which is most of a real edit) and the
-changed middle goes through an **LCS**, so inserting a line at the top does not
+changed middle goes through an LCS, so inserting a line at the top does not
 make every line below it look changed. Past 800 lines a side the table stops
 being worth its memory and the file is reported as changed without a body.
 
@@ -1132,7 +1132,7 @@ BoltCC: line 1: runtime: array index out of range
 That costs four bytes per instruction and one store per dispatch, which is the
 right trade for the difference between a located error and a shrug.
 
-**`cc -g` runs the program under a source-level debugger.** The VM stops before
+`cc -g` runs the program under a source-level debugger. The VM stops before
 the first line and takes commands; the hook is a single null test when no
 session is armed, so an ordinary run pays essentially nothing for it.
 
@@ -1257,7 +1257,7 @@ a single static buffer; the cap is `CLIP_CAP` bytes.
 `kernel/users.c` implements a real **multi-user system**, not just a table of
 names. Accounts live in `/etc/passwd` as `name:salt:hash:uid:gid:home`.
 
-**Passwords** are stretched with **PBKDF2-HMAC-SHA256** (4096 rounds) over a
+Passwords are stretched with PBKDF2-HMAC-SHA256 (4096 rounds) over a
 per-account random salt, and compared in constant time. The previous scheme was
 a single unsalted FNV-1a pass — a checksum, not a password hash: two users with
 the same password produced the same value on disk, and the whole table fell to a
@@ -1265,29 +1265,29 @@ wordlist instantly. A missing account is hashed anyway before being rejected, so
 the table cannot be enumerated by timing. Repeated failures back off
 exponentially, at the shell *and* at the sign-in screen.
 
-**Files have owners.** Every `fs_node` carries `uid`, `gid` and POSIX-style mode
+Files have owners. Every `fs_node` carries `uid`, `gid` and POSIX-style mode
 bits, persisted in the BoltFS image (record version 3; v2 images still load, with
 their files treated as unowned until first `chmod`). One function, `fs_may()`,
-answers every permission question, and the shell, the **VFS** and the GUI all go
+answers every permission question, and the shell, the VFS and the GUI all go
 through it — so a ring-3 program cannot open what `cat` would refuse. Creating or
 removing an entry checks the *directory*, since that is what changes.
 `ls -l` shows the mode string and owner; `chmod` and `chown` change them.
 
-**Privilege is scoped.** `sudo COMMAND` runs exactly one command as root and
+Privilege is scoped. `sudo COMMAND` runs exactly one command as root and
 drops the elevation afterwards, so nothing stays elevated by accident.
 Authentication is cached for a five-minute grace period. Only members of the
 admin group may elevate; account management (`useradd`, `userdel`, another
 user's `passwd`) requires it.
 
-**Sessions lock.** `Ctrl+Alt+L`, the `lock` command, or the idle timer (default
+Sessions lock. `Ctrl+Alt+L`, the `lock` command, or the idle timer (default
 10 minutes, configurable in Security) puts the desktop behind a password prompt
 with the session left exactly as it was. The lock is intercepted in the
 compositor before any window sees the key, so no app can swallow it.
 
-**Files can be put out of reach.** `vault` (`kernel/vault.c`) is an encrypted
+Files can be put out of reach. `vault` (`kernel/vault.c`) is an encrypted
 directory, by default `~/vault`. Unlocked, it holds ordinary files. Locked, they
-are one **AES-256-GCM** sealed archive beside it and the directory is empty. The
-key comes from the vault's own password through **PBKDF2-HMAC-SHA256** (16384
+are one AES-256-GCM sealed archive beside it and the directory is empty. The
+key comes from the vault's own password through PBKDF2-HMAC-SHA256 (16384
 rounds over a per-vault random salt in `/etc/vault.conf`) and is held in kernel
 memory only while the vault is open — which is what lets the screen lock, a
 logout, switching accounts and shutting down all seal it without asking for the
@@ -1312,7 +1312,7 @@ password and described itself as not a security boundary, which does not help
 much when it is still called vault and still says "locked".
 
 Commands: `whoami`, `id`, `groups`, `users`, `useradd`, `userdel`, `passwd`,
-`sudo`, `chmod`, `chown`, `lock`, `logout`, `vault`. The **Security** desktop app
+`sudo`, `chmod`, `chown`, `lock`, `logout`, `vault`. The Security desktop app
 shows the same state — session, firewall rules with one-click presets and live
 pass/block counters, and the account list.
 
@@ -1323,7 +1323,7 @@ one copied a string into `/apps`. Nothing could be added to it without
 rebuilding the kernel on another machine, which is the one thing a package
 manager exists to avoid.
 
-There is now a **package format** and a **repository format**
+There is now a **package format** and a repository format
 (`include/pkg.h`), and everything else is built on them. A package is a text
 header, a blank line, and then its files:
 
@@ -1360,19 +1360,19 @@ pkg build DIR [OUT]     pack a directory (and its pkg.txt) into a .pkg
 pkg publish FILE [REPO] add a package to a repository, and index it
 ```
 
-**The repository can be somewhere else.** It is a path or an `http://` URL, and
+The repository can be somewhere else. It is a path or an `http://` URL, and
 nothing downstream of `fetch()` knows which -- so a package installed off the
 disk and the same package installed over the network take the same path through
 the code. Fetched bytes are checked against the index's hash before anything is
 written, so a truncated download or a repository that changed underneath is
 refused rather than installed.
 
-**Dependencies** are resolved before the package that needs them is written, so
+Dependencies are resolved before the package that needs them is written, so
 a half-installed program never exists; `remove` refuses while something else
 still requires what you are removing, and otherwise deletes exactly the files
 the install recorded.
 
-**Packages can be made here.** `pkg build DIR` packs a directory described by a
+Packages can be made here. `pkg build DIR` packs a directory described by a
 `pkg.txt`, and `pkg publish` puts the result into a repository and rewrites its
 index -- so a program written on BoltOS can be packaged on BoltOS and installed
 on the next machine, with no host toolchain anywhere in that sentence.
@@ -1395,7 +1395,7 @@ another thing being typed.
 
 `test/t_pkg.py` does that round trip, then builds and publishes a package
 inside BoltOS and installs it from the repository it just made, and finally
-serves a repository **generated on the host in Python** over HTTP and installs
+serves a repository generated on the host in Python over HTTP and installs
 from that -- which is also the proof that the format is one an outside tool can
 write.
 
@@ -1410,17 +1410,17 @@ write.
 identifies the adapter from its `vendor:device` id (QEMU std-VGA, VirtualBox,
 VMware SVGA II, VirtIO-GPU, Cirrus, Intel, NVIDIA, AMD), decodes BAR0 to size the
 VRAM aperture, and detects the **Bochs DISPI (VBE)** interface for runtime mode
-setting. It backs the **Graphics** line in System Info and exposes a mode list +
+setting. It backs the Graphics line in System Info and exposes a mode list +
 `gpu_set_mode()` (the linear framebuffer itself lives in `drivers/framebuffer.c`).
 
 ## Windows executables (PE32+)
 
 BoltOS can load and run real **Windows x86-64 console `.exe`** files. The loader
 (`kernel/pe.c`) parses the PE32+ headers, copies sections by RVA into a heap
-image, binds the import table against an in-kernel **kernel32 shim**
+image, binds the import table against an in-kernel kernel32 shim
 (`GetStdHandle`, `WriteConsoleA`, `WriteFile`, `ExitProcess`, `Heap*`, … exposed
 with the Microsoft x64 ABI), and calls the entry point. The build compiles
-`user/winhello.c` into a **genuine PE32+** with the mingw toolchain and also
+`user/winhello.c` into a genuine PE32+ with the mingw toolchain and also
 builds `user/boltrt.c` (BoltRT) — a full compiler/runtime stub — as a PE32+.
 Run from the shell with `winrun` (no args = the embedded demo, or
 `winrun /path/to/app.exe`). The image is position-independent (RIP-relative), so
@@ -1428,10 +1428,10 @@ no base relocations are needed once imports are bound.
 
 ## DOOM
 
-BoltOS runs **real DOOM**. The **doomgeneric** port lives under `doom/`, built
+BoltOS runs **real DOOM**. The doomgeneric port lives under `doom/`, built
 against a tiny in-house freestanding libc shim (`doom/dg_libc.c`) and a BoltOS
 platform layer (`doom/doomgeneric_boltos.c`); the shareware WAD is embedded in the
-kernel image as a blob. The **DOOM** desktop app (`kernel/app_doom.c`) pumps the
+kernel image as a blob. The DOOM desktop app (`kernel/app_doom.c`) pumps the
 engine, routes keyboard input, and blits the engine's 640×400 framebuffer into its
 window — E1M1 is playable. As everywhere else there is no FPU, so the port is
 driven with integer math only.
@@ -1440,11 +1440,11 @@ driven with integer math only.
 
 An **xHCI USB host-controller driver** (`drivers/xhci.c`) brings up the controller
 (DCBAA, command ring, single-segment event ring, scratchpad buffers) and, for each
-connected root-hub port, resets it, issues **Enable Slot** / **Address Device**,
+connected root-hub port, resets it, issues Enable Slot / Address Device,
 and walks EP0 control transfers to read the device and configuration descriptors.
-Enumerated devices (including **HID** keyboards and mice) are reported at boot.
+Enumerated devices (including HID keyboards and mice) are reported at boot.
 Enumeration runs polled (a bounded one-time sequence), then HID input switches to
-**hardware interrupts**: interrupter 0 + `USBCMD.INTE` are enabled and an
+hardware interrupts: interrupter 0 + `USBCMD.INTE` are enabled and an
 MSI/MSI-X vector is routed to the IDT, so keyboard/mouse boot reports arrive as
 IRQs (the handler drains the event ring) instead of being polled from the idle
 loop. Controllers without MSI stay on the polled path.
@@ -1486,15 +1486,15 @@ faults on purpose, so the behaviour can be demonstrated and regression tested
 (`test/t_fault.py` runs all four and checks the shell still answers afterwards).
 
 Every crash — ring-3 fault or kernel panic — is formatted into a report
-(registers, page-fault decode, backtrace) and appended to **`/var/log/crash.log`**,
-which survives the reboot; that is the point, since the report you need is from
-the boot that failed. `crashlog` reads it back, `crashlog clear` empties it.
+(registers, page-fault decode, backtrace) and appended to `/var/log/crash.log`,
+which survives the reboot, because the report you actually need is always from
+the boot that just failed. `crashlog` reads it back, `crashlog clear` empties it.
 The crash formatter is allocation-free and writes into a static buffer, so it is
 safe to run from a fault handler, and a fault raised *inside* it halts rather
 than recursing.
 
 Alongside it, every character passing through `kputc` is copied into a 64 KiB
-kernel log ring (`kernel/klog.c`), so **`dmesg`** can replay the whole boot log
+kernel log ring (`kernel/klog.c`), so `dmesg` can replay the whole boot log
 long after the console has scrolled and the GUI has taken the screen.
 `dmesg -N` shows the last N lines; `dmesg save` appends the ring to
 `/var/log/kernel.log`.
@@ -1520,7 +1520,7 @@ scheduler thread, closes its files, releases the framebuffer if it had grabbed
 the screen, and queues it for reaping. Kernel threads are only flagged —
 unwinding arbitrary kernel state from the outside is not safe.
 
-A **watchdog** thread wakes once a second and looks for a runnable thread that
+A watchdog thread wakes once a second and looks for a runnable thread that
 has not been given the CPU for five seconds. Round-robin should never starve
 anyone, so a hit means a thread is wedged with interrupts off — a driver
 spinning on a register that will never change, say. The kernel cannot preempt
@@ -1579,8 +1579,8 @@ drops to the text shell; recovery additionally mounts the filesystem read-only.
 That is the way back in when a bad setting, a wedged NIC or a crashing app is
 what is stopping the boot.
 
-stage2 does **not** have the kernel's size assembled into it. It reads a
-one-sector **boot header** at LBA 33 (`include/boot.h`, written by
+stage2 does not have the kernel's size assembled into it. It reads a
+one-sector boot header at LBA 33 (`include/boot.h`, written by
 `mkboothdr.py`) to learn where the kernel starts and how many sectors to load,
 so the same stage2 binary works with any kernel — which is what lets the kernel
 carry a prebuilt copy of it for the installer.
@@ -1621,7 +1621,7 @@ UEFI firmware ── loads ──▶ boot/uefi_boot.c (BOOTX64.EFI)
                           kmain(bootinfo)   ← kernel/main.c
 ```
 
-The kernel is a **higher-half** kernel: it is linked at virtual
+The kernel is a higher-half kernel: it is linked at virtual
 `0xFFFFFFFF80100000` (`linker.ld`, `KERNEL_VBASE = 0xFFFFFFFF80000000`) but its
 load address (LMA) is physical `0x100000`, so `ld.lld --oformat binary` still
 emits a flat image that loads at phys 1 MiB. The bootloader (stage2 / UEFI loader)
@@ -1696,38 +1696,38 @@ First-party code (excludes the vendored `doom/` doomgeneric port, `vendor/`
 libcss, and `netsurf/` libraries):
 
 - **Total Lines of Code:** ~41,000
-  - **C:** ~36,340 lines
-  - **Headers:** ~3,870 lines
-  - **Assembly:** ~870 lines
-  - **Shell Scripts:** ~460 lines
-  - **Linker Scripts:** 62 lines
-  - **Python (build/test tools):** ~220 lines
+  - C: ~36,340 lines
+  - Headers: ~3,870 lines
+  - Assembly: ~870 lines
+  - Shell Scripts: ~460 lines
+  - Linker Scripts: 62 lines
+  - Python (build/test tools): ~220 lines
 
 ## Available Shell Commands
 
 The interactive OS shell supports a wide range of commands:
 
 - **File & Directory:** `ls` (`-l` for mode + owner), `tree`, `cd`, `mkdir`, `rm`, `cp`, `mv`, `find`, `trash`, `recover`, `pwd`, `touch`, `write` (`-a` appends), `edit` (full-screen editor), `chmod`, `chown`
-- **File Inspection:** `cat`, `head`, `tail`, `hex`, `meta`, `diff`, `grep`, `checksum`, `preview`, `count`
-- **System Information:** `sysinfo`, `cpuinfo`, `meminfo`, `diskinfo`, `sync`, `fsck`, `uptime`, `battery`, `sensors`, `devices`, `version`, `health`
-- **Power:** `poweroff`, `reboot` (both commit the filesystem and mark it clean before ACPI S5 / reset), `power off|reboot` (alias)
-- **Install:** `install` (write a bootable BoltOS onto another disk; also a desktop app)
-- **Diagnostics:** `dmesg` (kernel log ring), `crashlog` (persisted crash reports), `core` (post-mortem inspector: registers, a named backtrace and the stack of a ring-3 crash), `crash ring3 [mode]` (fault a ring-3 process on purpose)
-- **Process Management:** `ps`, `kill`, `top`, `freeze`, `resume`, `services`, `service`, `jobs`, `priority`, `monitor`
-- **System (cont.):** `winrun` (Windows PE32+ loader), `compile` (BoltRT: compile a source file into a real PE32+ `.exe`), `pkg` (packages: avail/install/remove/run/build/publish, from a directory or an http:// repository), `libctest` (libc validation)
-- **Identity & privilege:** `whoami`, `id`, `groups`, `users`, `useradd`, `userdel`, `passwd`, `sudo`, `lock`, `logout`
-- **Networking:** `netinfo`, `ifconfig` (interface config, saved to `/etc`), `ping`, `trace`, `ports`, `download`, `browse`, `webx` (ring-3 web browser), `upload`, `wifi`, `firewall`, `share`, `scan`, `nstest` (NetSurf library test)
-- **Names & time:** `hosts` (local name table), `dns` (resolve / show / flush the cache), `ntp` (clock sync)
-- **Serving:** `serve` (HTTP file server over real accepted connections), `netget` (fetch a URL from a ring-3 socket program)
-- **Remote access:** `sshd` (SSH-2 server: real shell, password auth, encrypted), `sshkey` (host key fingerprint)
-- **Development:** `build` (build a project's target from its `build.txt`), `vcs` (local version control: init / add / commit / log / diff / checkout / branch)
-- **Language:** `cc` (multi-file C/C++/C# via the preprocessor + BoltCC; `-g` runs it under the source-level debugger), `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the **Code** app compiles C / C++ / C#
-- **Bonus / Unique:** `focus`, `snapshot`, `timeline`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
-- **Shell:** `sh`, `source`, `.`, `test`, `[`, `true`, `false`, `set`, `unset`; variables, conditions, loops and functions (see [SHELL.md](SHELL.md))
-- **SDK & help:** `run` (ELF64 programs with arguments and exit status), `man` (pages/search/coverage), `help [COMMAND]`
-- **Audio:** `play` (a tone, or a WAV file streamed and converted as it goes), `media` (the player's transport: `open`, `play`/`pause`, `next`/`prev`, `track`, `seek`, `vol`, `repeat`, `list`)
-- **Desktop:** `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window), `keys` (list/rebind/reset global shortcuts), `logs` (the kernel log kept across reboots)
-- **Core:** `echo`, `clear`, `mem`
+- File Inspection: `cat`, `head`, `tail`, `hex`, `meta`, `diff`, `grep`, `checksum`, `preview`, `count`
+- System Information: `sysinfo`, `cpuinfo`, `meminfo`, `diskinfo`, `sync`, `fsck`, `uptime`, `battery`, `sensors`, `devices`, `version`, `health`
+- Power: `poweroff`, `reboot` (both commit the filesystem and mark it clean before ACPI S5 / reset), `power off|reboot` (alias)
+- Install: `install` (write a bootable BoltOS onto another disk; also a desktop app)
+- Diagnostics: `dmesg` (kernel log ring), `crashlog` (persisted crash reports), `core` (post-mortem inspector: registers, a named backtrace and the stack of a ring-3 crash), `crash ring3 [mode]` (fault a ring-3 process on purpose)
+- Process Management: `ps`, `kill`, `top`, `freeze`, `resume`, `services`, `service`, `jobs`, `priority`, `monitor`
+- System (cont.): `winrun` (Windows PE32+ loader), `compile` (BoltRT: compile a source file into a real PE32+ `.exe`), `pkg` (packages: avail/install/remove/run/build/publish, from a directory or an http:// repository), `libctest` (libc validation)
+- Identity & privilege: `whoami`, `id`, `groups`, `users`, `useradd`, `userdel`, `passwd`, `sudo`, `lock`, `logout`
+- Networking: `netinfo`, `ifconfig` (interface config, saved to `/etc`), `ping`, `trace`, `ports`, `download`, `browse`, `webx` (ring-3 web browser), `upload`, `wifi`, `firewall`, `share`, `scan`, `nstest` (NetSurf library test)
+- Names & time: `hosts` (local name table), `dns` (resolve / show / flush the cache), `ntp` (clock sync)
+- Serving: `serve` (HTTP file server over real accepted connections), `netget` (fetch a URL from a ring-3 socket program)
+- Remote access: `sshd` (SSH-2 server: real shell, password auth, encrypted), `sshkey` (host key fingerprint)
+- Development: `build` (build a project's target from its `build.txt`), `vcs` (local version control: init / add / commit / log / diff / checkout / branch)
+- Language: `cc` (multi-file C/C++/C# via the preprocessor + BoltCC; `-g` runs it under the source-level debugger), `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the Code app compiles C / C++ / C#
+- Bonus / Unique: `focus`, `snapshot`, `timeline`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
+- Shell: `sh`, `source`, `.`, `test`, `[`, `true`, `false`, `set`, `unset`; variables, conditions, loops and functions (see [SHELL.md](SHELL.md))
+- SDK & help: `run` (ELF64 programs with arguments and exit status), `man` (pages/search/coverage), `help [COMMAND]`
+- Audio: `play` (a tone, or a WAV file streamed and converted as it goes), `media` (the player's transport: `open`, `play`/`pause`, `next`/`prev`, `track`, `seek`, `vol`, `repeat`, `list`)
+- Desktop: `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window), `keys` (list/rebind/reset global shortcuts), `logs` (the kernel log kept across reboots)
+- Core: `echo`, `clear`, `mem`
 
 ## Full File Tree
 

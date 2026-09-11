@@ -402,7 +402,8 @@ static void diff_text(const uint8_t *a, uint32_t alen, const uint8_t *b, uint32_
     int m = ta - lo, n = tb - lo;
     if (m == 0 && n == 0) { kfree(la); kfree(lb); return; }
 
-    /* LCS length table over the changed middle only. */
+    /* LCS length table over the changed middle only. Still O(m*n) uint16_t's --
+     * fine at MAXDIFF=800 (~1.2MB worst case), not something to raise casually. */
     uint16_t *L = (uint16_t *)kmalloc((uint64_t)(m + 1) * (n + 1) * sizeof(uint16_t));
     if (!L) { kprintf("  (out of memory)\n"); kfree(la); kfree(lb); return; }
     for (int i = m; i >= 0; i--)
@@ -441,6 +442,10 @@ static void usage(void) {
             "  diff [FILE]          working tree against the last commit\n"
             "  checkout N | BRANCH  restore a commit's files, or switch branch\n"
             "  branch [NAME]        list branches, or start one here and switch to it\n");
+    /* TODO: no `merge`. checkout just overwrites the working tree, so two
+     * branches that touched the same file have to be reconciled by hand
+     * (diff one against the other, edit, commit). Fine for the one-person
+     * case this was built for; would need real thought for anything else. */
 }
 
 static void now_string(char *out, uint32_t cap) {

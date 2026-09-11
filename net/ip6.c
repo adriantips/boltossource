@@ -100,6 +100,10 @@ int ip6_parse(const char *s, ip6_addr *out) {
     return 1;
 }
 
+/* Both of the bugs the host test caught were in here: "::" printing as ":::",
+ * and the parser taking "fe80:::1" for fe80::1. Two addresses ever come out of
+ * a QEMU boot and both of them are boring, so neither would have shown up on a
+ * machine. Change this and run test/host/ip6.c. */
 void ip6_format(const ip6_addr *a, char *out) {
     uint16_t w[8];
     for (int i = 0; i < 8; i++) w[i] = (uint16_t)((a->b[i * 2] << 8) | a->b[i * 2 + 1]);

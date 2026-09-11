@@ -203,7 +203,9 @@ static void sec_click(window_t *w, int lx, int ly) {
         case K_FW_DEF:fw_set_default(!fw_get_default()); break;
         case K_FW_DEL:
             /* No per-rule delete in the filter, so rebuild the list without
-             * the removed one -- the rule text round-trips through fw_add. */
+             * the removed one -- the rule text round-trips through fw_add.
+             * TODO: this re-tokenizes the same way K_FW_PRESET does below,
+             * should be one static helper instead of two copies. */
             {
                 char keep[16][64];
                 int n = fw_count(), k = 0;

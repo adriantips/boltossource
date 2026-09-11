@@ -60,12 +60,14 @@ static void imgview_draw(window_t *w, int cx, int cy, int cw, int ch) {
         wp_bx = bx - cx; wp_by = by - cy; wp_bw = bw; wp_bh = bh;   /* client-local */
     }
     if (iv_img) {
+        /* hand-rolled itoa x2 -- didn't feel like pulling sh_utoa in just to
+         * print "WxH" in one corner of the toolbar */
         char dim[40]; int p = 0;
         char tmp[12]; int t;
         unsigned v = (unsigned)iv_img->w;
         t = 0; char r1[12]; if (!v) r1[t++]='0'; while (v){ r1[t++]='0'+v%10; v/=10; }
         while (t) tmp[p++] = r1[--t];
-        dim[0]=0; /* assemble "WxH" */
+        dim[0]=0;
         for (int i=0;i<p;i++) dim[i]=tmp[i]; dim[p++]='x';
         v = (unsigned)iv_img->h; t=0; char r2[12]; if(!v) r2[t++]='0'; while(v){ r2[t++]='0'+v%10; v/=10; }
         while (t) dim[p++]=r2[--t]; dim[p]=0;

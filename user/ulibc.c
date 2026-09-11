@@ -108,6 +108,10 @@ void free(void *p) {
         b->size += BLK_HDR + b->next->size;
         b->next = b->next->next;
     }
+    /* TODO: only coalesces forward, never backward, and free_head is singly
+     * linked so there's no cheap way to find the previous block. Free/alloc
+     * churn can fragment worse than it should; hasn't been enough of a
+     * problem in practice for any userland program to force fixing it. */
 }
 void *calloc(unsigned long nm, unsigned long sz) {
     unsigned long n = nm * sz;

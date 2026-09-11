@@ -300,6 +300,12 @@ int sh_words(const char *text, char *buf, int cap, char **argv, int maxarg,
                     (operators && (c == '>' || c == '|')))) break;
                 if (!quote && (c == '"' || c == '\'')) { quote = c; p++; continue; }
                 if (quote && c == quote) { quote = 0; p++; continue; }
+                /* Backslash escapes everything outside quotes and inside "",
+                 * but only the four characters that mean something inside ""
+                 * -- an unescaped backslash before an ordinary letter in ""
+                 * is meant to survive literally. Got this backwards once and
+                 * every Windows-style path typed in double quotes lost its
+                 * backslashes. */
                 if (c == '\\' && p[1] && quote != '\'' &&
                     (quote != '"' || p[1] == '"' || p[1] == '\\' || p[1] == '$')) {
                     p++; c = *p;

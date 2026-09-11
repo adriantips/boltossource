@@ -14,22 +14,20 @@
 #include "kprintf.h"
 #include <stdio.h>
 
-/* ===========================================================================
- *  BoltOS  -  net/ssh.c
- *  An SSH-2 server and client. See include/ssh.h for the algorithm choices.
+/* SSH-2, server and client. See include/ssh.h for the algorithm choices.
  *
- *  The layering follows the RFCs: a binary packet protocol (RFC 4253) carries
- *  a key exchange, then user authentication (RFC 4252), then the connection
- *  protocol's channels (RFC 4254). Everything is blocking and poll-driven,
- *  matching the rest of the network stack -- a wait here spins netif_poll_all()
- *  exactly as tcp_recv does.
+ * Layering follows the RFCs: binary packet protocol (4253), then user auth
+ * (4252), then connection-protocol channels (4254). Everything here blocks
+ * and polls, same as the rest of the stack -- a wait spins netif_poll_all()
+ * exactly like tcp_recv does.
  *
- *  The shell it hands out is the real one. A session runs commands through
- *  shell_exec_line() with kputc redirected into the channel by
- *  console_set_sink(), the same mechanism the GUI terminal window uses -- so an
- *  SSH session sees what the console sees, and no command needs to know it is
- *  being run remotely.
- * ===========================================================================*/
+ * The shell a session gets is the real one: shell_exec_line() with kputc
+ * redirected into the channel via console_set_sink(), the same hook the GUI
+ * terminal uses. No command needs to know it's being run over the network.
+ *
+ * No publickey auth -- password only, same as the account table itself only
+ * knows passwords. Would want to fix that before this ever faced the internet
+ * for real. */
 
 #define SSH_VERSION_STR   "SSH-2.0-BoltOS_1.0"
 #define MAXPKT            35000

@@ -17,6 +17,9 @@ int cmd_screenshot(int argc, char **argv) {
     const char *path = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            /* Numbered, not timestamped: before NTP has run the clock is wrong,
+             * and every shot taken in one session would otherwise land on the
+             * same name. */
             kprintf("usage: screenshot [PATH]\n"
                     "  Capture the screen to a PNG. With no PATH, writes the next\n"
                     "  free ~/Pictures/screenshot-N.png. Print Screen does the same\n"

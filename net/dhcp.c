@@ -6,11 +6,15 @@
 #include "string.h"
 #include "kprintf.h"
 
-/* ===========================================================================
- *  DHCP client (RFC 2131). Blocking, poll-driven, same model as the ARP/DNS
- *  resolvers: send, then spin netif_poll_all() until the listener flags an
- *  answer or the timeout expires.
- * ===========================================================================*/
+/* DHCP client (RFC 2131). Blocking and poll-driven, same model as the ARP/DNS
+ * resolvers: send, then spin netif_poll_all() until the listener sets a flag
+ * or the timeout runs out.
+ *
+ * Runs once at boot, requests, gets an ACK, done -- there is no renewal timer.
+ * lease_secs is recorded and handed back to callers but nothing here ever
+ * checks it against the clock, so a lease that expires mid-session is just
+ * never noticed. Fine for a VM/QEMU lease (effectively infinite in practice),
+ * would not be fine on a network that actually reclaims addresses. */
 
 #define DHCP_CLIENT_PORT 68
 #define DHCP_SERVER_PORT 67

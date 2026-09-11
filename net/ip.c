@@ -4,6 +4,10 @@
 #include "firewall.h"
 #include "string.h"
 
+/* IPv4 send/receive. One packet buffer, one interface at a time -- nothing
+ * here queues or reassembles anything, it just frames a payload and hands it
+ * to eth_send, or unwraps one far enough to dispatch on proto. */
+
 /* remote port (host order) carried in a TCP/UDP payload: outbound wants the
  * destination port (bytes 2..3), inbound wants the source port (bytes 0..1). */
 static uint16_t peer_port(uint8_t proto, const uint8_t *l4, uint16_t l4len, int want_dst) {

@@ -1,22 +1,20 @@
-/* ===========================================================================
- *  BoltRT  -  the runtime stub baked into every executable that BoltOS's
- *  `compile` command emits.
+/* BoltRT -- the runtime stub baked into every executable that BoltOS's
+ * `compile` command emits.
  *
- *  It is a genuine, freestanding Windows x86-64 console program (no CRT, imports
- *  kernel32) that *contains the real BoltCC / BoltPython front-ends* compiled in.
- *  The program's source code is embedded as a patchable payload (g_payload). At
- *  `compile` time, BoltOS finds the magic marker in this .exe and writes the
- *  user's source after it. At run time the stub hands that source to boltcc_run()
- *  or bpy_run() and prints the output.
+ * It is a genuine, freestanding Windows x86-64 console program (no CRT, imports
+ * kernel32) that *contains the real BoltCC / BoltPython front-ends* compiled in.
+ * The program's source code is embedded as a patchable payload (g_payload). At
+ * `compile` time, BoltOS finds the magic marker in this .exe and writes the
+ * user's source after it. At run time the stub hands that source to boltcc_run()
+ * or bpy_run() and prints the output.
  *
- *  Because it imports only the standard kernel32 entry points, the resulting
- *  .exe runs natively on Windows 11 *and* under BoltOS's own PE loader (whose
- *  kernel32 shim binds the same imports).  -- see kernel/pe.c, kernel/cmd_proc.c
+ * Because it imports only the standard kernel32 entry points, the resulting
+ * .exe runs natively on Windows 11 *and* under BoltOS's own PE loader (whose
+ * kernel32 shim binds the same imports) -- see kernel/pe.c, kernel/cmd_proc.c.
  *
- *  This file provides freestanding implementations of the handful of kernel
- *  symbols that boltcc.c / boltpy.c reference (kmalloc/kfree, kputc/kprintf,
- *  panic, the kbd_* input stubs) on top of kernel32.
- * ===========================================================================*/
+ * This file provides freestanding implementations of the handful of kernel
+ * symbols that boltcc.c / boltpy.c reference (kmalloc/kfree, kputc/kprintf,
+ * panic, the kbd_* input stubs) on top of kernel32. */
 #include <stdint.h>
 #include <stddef.h>
 #include "boltcc.h"

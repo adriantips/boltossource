@@ -1,6 +1,7 @@
-/* A real, freestanding Windows x86-64 console program. It imports kernel32
- * functions (resolved against BoltOS's in-kernel kernel32 shim by the PE loader)
- * and is linked into a genuine PE32+ executable by the build. No CRT. */
+/* user/winhello.c -- a real, freestanding Windows x86-64 console program.
+ * It imports kernel32 functions (resolved against BoltOS's in-kernel kernel32
+ * shim by the PE loader) and is linked into a genuine PE32+ executable by the
+ * build. No CRT -- the same binary runs unmodified under real Windows. */
 #include <stdint.h>
 
 typedef uint64_t HANDLE;

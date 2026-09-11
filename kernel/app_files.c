@@ -354,6 +354,11 @@ static int paste_clip_files(files_t *st) {
         if (!src || src == fs_root() || is_ancestor(src, st->dir)) continue;
         char nm[FS_NAME_MAX];
         unique_name(st->dir, src->name, nm, sizeof nm);
+        /* TODO: copy_node_into recurses per fs_node with no size budget, so a
+         * clipboard full of paths pointing at something big (a whole Pictures
+         * folder) blocks the redraw loop for as long as the copy takes. Fine
+         * for the trees this OS ships with; would want a background copy if
+         * that ever stops being true. */
         fs_node *made = copy_node_into(st->dir, src, nm);
         if (made) { st->sel = made; done++; }
     }

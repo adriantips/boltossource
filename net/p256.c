@@ -1,14 +1,20 @@
-/* ===========================================================================
- *  NIST P-256 (secp256r1) ECDHE for the TLS stack.
+/* NIST P-256 (secp256r1). Started as ECDHE for the TLS client -- Google and
+ * YouTube edges frequently pick secp256r1 for the ephemeral key exchange, and
+ * the handshake just dies without it -- then grew ECDSA sign/verify when the
+ * SSH server needed a host key algorithm and this was already here.
  *
- *  Google/YouTube edges frequently pick secp256r1 for the ephemeral key
- *  exchange; without it the handshake dies. Pure integer arithmetic (the
- *  kernel has no FPU) on 256-bit values held as eight little-endian 32-bit
- *  limbs. Field reduction is plain binary long division by p -- not the
- *  fastest, but obviously correct, and a TLS handshake only needs two scalar
- *  multiplications. Scalar mult uses Jacobian coordinates (one inversion at
- *  the end). Curve: y^2 = x^3 - 3x + b over GF(p).
- * ===========================================================================*/
+ * Pure integer arithmetic (no FPU in the kernel) on 256-bit values as eight
+ * little-endian 32-bit limbs. Field reduction is plain binary long division
+ * by p -- not fast, but obviously correct, and neither TLS nor SSH does more
+ * than a couple of scalar multiplications per handshake, so it's never shown
+ * up as the slow part. Scalar mult is Jacobian coordinates, one inversion at
+ * the end. Curve: y^2 = x^3 - 3x + b over GF(p).
+ *
+ * scalar_mul always walks all 256 bits regardless of the scalar, so it's at
+ * least not obviously variable-time in the loop count -- but this has never
+ * been checked against a real side-channel, and it shares code between ECDHE
+ * (ephemeral, low value) and ECDSA signing (the host key, much higher value).
+ * If this ever needs to resist a local attacker, start here. */
 #include <stdint.h>
 #include "string.h"
 

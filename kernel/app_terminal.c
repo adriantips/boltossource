@@ -218,7 +218,10 @@ static void term_draw(window_t *w, int cx, int cy, int cw, int ch) {
         }
     }
 
-    /* blinking caret (only when focused) */
+    /* blinking caret (only when focused) -- t->cx/cy track the write cursor
+     * (end of the line), so mid-line editing has to walk the caret back by
+     * how far behind the end t->pos is. wrapped lines make this an
+     * approximation near the wrap point, but nobody types a 220-char command. */
     if (gui_window_focused(w) && (pit_ticks() / 500) % 2 == 0) {
         int cell = t->cy * t->cols + t->cx - (t->len - t->pos);
         if (cell < 0) cell = 0;

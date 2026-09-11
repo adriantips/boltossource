@@ -183,7 +183,12 @@ static int looks_numeric(const char *t) {
 }
 
 static int64_t eval_cell(int r, int c, int depth) {
-    if (depth > 40) { eval_err = 1; return 0; }       /* circular reference    */
+    /* depth also bounds recursion through parse_expr/parse_factor, so this is
+     * doing double duty as a circular-reference guard and a kernel-stack
+     * guard -- 40 is a guess with no real headroom measurement behind it,
+     * just "clearly enough for any spreadsheet a human would type by hand,
+     * clearly short of the stack running out first" */
+    if (depth > 40) { eval_err = 1; return 0; }
     const char *t = cells[r][c];
     if (t[0] == 0) return 0;
     if (t[0] == '=') { const char *p = t + 1; return parse_expr(&p, depth); }

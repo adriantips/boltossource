@@ -531,7 +531,9 @@ static int share_send_to(uint32_t ip, fs_node *f) {
     base = base ? base + 1 : f->name;
     uint32_t size = f->size;
 
-    /* handshake: OFFER -> ACCEPT, retransmit a few times */
+    /* handshake: OFFER -> ACCEPT, retransmit a few times. 12 tries * 300ms is
+     * about 3.6s before giving up -- picked by feel in QEMU, never measured
+     * against real Wi-Fi. */
     S.got_accept = 0;
     int ok = 0;
     for (int tries = 0; tries < 12 && !ok; tries++) {

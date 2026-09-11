@@ -321,7 +321,13 @@ static int seal_to_disk(void) {
     kfree(out);
 
     /* Only now that the archive exists is the plaintext removed. The other
-     * order turns any failure here into a vault that is simply gone. */
+     * order turns any failure here into a vault that is simply gone.
+     *
+     * TODO: this is where the plaintext stops existing, which is later than it
+     * should be -- BoltFS has been committing these files all along. Sealing
+     * them on the way into the image needs a filter in the persistence layer,
+     * and that is a change to the one file in this tree I least want to be
+     * clever in. */
     fs_node *c = dir->child;
     while (c) { fs_node *next = c->next; fs_remove_node(c); c = next; }
     return 0;

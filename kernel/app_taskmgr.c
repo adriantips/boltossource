@@ -93,8 +93,11 @@ static uint32_t state_color(const char *s) {
     return COL_TEXT_DIM;
 }
 
-/* approximate per-task CPU split for the table (cooperative kernel: the real
- * figure is the aggregate busy/idle meter shown in the CPU card) */
+/* Per-task CPU split for the table is a fabrication -- there's no real
+ * per-task accounting in a cooperative kernel, only the aggregate busy/idle
+ * meter the CPU card actually measures. This just divides that number up and
+ * wiggles it a little with the pid so the table doesn't look frozen. Nobody's
+ * shipped real per-task accounting because nothing has needed it yet. */
 static int task_cpu(task_t *t, int load) {
     if (strcmp(t->name, "kidle") == 0) return 100 - load;
     int others = task_count() - 1; if (others < 1) others = 1;

@@ -1,18 +1,14 @@
-/* ===========================================================================
- *  BoltOS  -  net/ntp.c
- *  A minimal SNTP client (RFC 4330), enough to set the clock correctly.
+/* Minimal SNTP client (RFC 4330) -- enough to set the clock correctly, no
+ * more. The RTC is the only time source this machine has, and on a VM it's
+ * often wrong from the moment it boots, which quietly breaks the things that
+ * matter most: TLS certificate validity windows, file timestamps, any
+ * reasoning about "when did this happen" in the logs. One UDP round trip
+ * fixes all of it.
  *
- *  The RTC is the only time source this machine has, and on a VM it is often
- *  wrong from the moment it boots -- which quietly breaks the things that
- *  matter most: TLS certificate validity windows, file timestamps, and any
- *  reasoning about "when did this happen" in the logs. One UDP round trip fixes
- *  all of it.
- *
- *  SNTP rather than full NTP on purpose: there is no discipline loop, no drift
- *  estimation and no peer selection here. The machine asks a server what the
- *  time is and believes it. That is the right trade for a client that just
- *  needs the year to be right.
- * ===========================================================================*/
+ * SNTP rather than full NTP on purpose. No discipline loop, no drift
+ * estimation, no peer selection -- the machine asks a server what time it is
+ * and believes the answer. That's the right trade when the only goal is
+ * getting the year right. */
 #include <stdint.h>
 #include "ntp.h"
 #include "net.h"

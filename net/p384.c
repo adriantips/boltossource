@@ -1,11 +1,13 @@
-/* ===========================================================================
- *  NIST P-384 (secp384r1) ECDSA signature verification.
+/* NIST P-384 (secp384r1), verify-only -- no ECDH here, x509.c never needs to
+ * generate a P-384 key, only check a signature made with one. Real-world TLS
+ * chains (DigiCert ECC roots/intermediates, mostly) use P-384 up the chain
+ * even when the leaf is P-256, so a client that only speaks the smaller curve
+ * fails verifying otherwise-fine certificates.
  *
- *  Real-world TLS certificate chains (DigiCert ECC, etc.) use P-384 keys in
- *  their intermediates/roots, so verifying a leaf up to the anchor needs this
- *  curve too. Verify-only: no ECDH. Same obviously-correct binary long-division
- *  field arithmetic as p256.c, widened to twelve 32-bit limbs. a = -3.
- * ===========================================================================*/
+ * Same binary-long-division field arithmetic as p256.c, just widened to
+ * twelve 32-bit limbs; a = -3 same as P-256. Twelve limbs instead of eight
+ * makes every multiply and reduce noticeably slower, but this only runs once
+ * or twice per chain, not per handshake. */
 #include <stdint.h>
 #include "string.h"
 
@@ -146,7 +148,13 @@ static void nmod(uint32_t r[NL], const uint32_t a[NL]) {
 }
 
 /* ECDSA verify over P-384. pub = 0x04||X||Y (97 bytes), r/s 48-byte big-endian.
- * hash is the message digest (leftmost 48 bytes used). 0 = valid. */
+ * hash is the message digest (leftmost 48 bytes used). 0 = valid.
+ *
+ * TODO: unlike p256_ecdh, this never checks pub is actually on the curve --
+ * a forged point would just make the arithmetic below produce garbage that
+ * (astronomically likely) fails the final comparison, so it's probably fine,
+ * but "probably fine" is not the same as "checked", and x509.c is the one
+ * place a hostile input reaches this. */
 int p384_ecdsa_verify(const uint8_t *hash, uint32_t hlen,
                       const uint8_t pub[97], const uint8_t *r, const uint8_t *s) {
     if (pub[0] != 0x04) return -1;
