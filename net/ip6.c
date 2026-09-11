@@ -241,6 +241,17 @@ int ip6_output_from(struct netif *nif, const ip6_addr *src, const ip6_addr *dst,
                     uint8_t hop_limit) {
     if (!nif || IP6_HDR_LEN + len > sizeof(pkt6)) return -1;
 
+    /* Outbound filtering, the same check ip_output does -- and the reason a
+     * BLOCK rule means something on this side too. Only the rules that name
+     * no address can apply; fw_check6 says why. Neighbour Discovery is
+     * ICMPv6, so it never reaches this and cannot be firewalled into a
+     * machine that cannot resolve its own router. */
+    if (next_hdr == IPPROTO_TCP || next_hdr == IPPROTO_UDP) {
+        const uint8_t *l4 = (const uint8_t *)payload;
+        uint16_t dport = len >= 4 ? (uint16_t)((l4[2] << 8) | l4[3]) : 0;
+        if (!fw_check6(FW_OUT, next_hdr, dport)) return -1;
+    }
+
     uint8_t mac[6];
     if (ip6_is_multicast(dst)) {
         ip6_multicast_mac(dst, mac);
