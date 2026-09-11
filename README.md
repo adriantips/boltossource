@@ -973,6 +973,22 @@ at runtime -- a language with no pointers has no excuse for reading past an
 array. Function prototypes are now accepted and skipped, which is what a
 header is made of.
 
+Structs in BoltCC. `struct Point { int x; int y; };`, `typedef struct { ... }
+Name;`, `p.x`, `p->x`, `&p`, arrays of structs, and a struct whose field refers
+to its own type -- which is what a linked list is made of. A struct type is a
+name and an ordered list of field names; there is no type checker, so a field
+access is a lookup of that name at runtime rather than an offset worked out at
+compile time.
+
+A struct is a reference, like an array. `f(p)` passes the struct and not a copy,
+so a function that changes its argument's fields changes the caller's struct. In
+C that is what passing a pointer does, and it is not what passing a struct by
+value does. With no types, the compiler cannot tell the two calls apart -- and
+quietly copying would break `->`, which is the one people actually write. So it
+does not copy, and this says so rather than hiding it. `&` and `*` are the
+identity on a struct or an array for the same reason, and an error on anything
+else rather than silently appearing to work.
+
 `cc` (`kernel/cmd_cc.c`) is the driver: it preprocesses each file and
 concatenates the results into one translation unit before compiling. That is a
 unity build, and it is worth naming plainly rather than dressing up -- BoltCC

@@ -13,6 +13,8 @@
  *  references), int/char/long/bool/string/var declarations, arithmetic, bitwise
  *  and comparison operators, &&/||/! with short-circuit, ?: , ++/-- (pre+post),
  *  compound assignment, if/else, while, for, return, break, continue, blocks,
+ *  structs (fields, `.` and `->`, arrays of them, self-referential ones) --
+ *  which are references rather than values, so passing one does not copy it --
  *  string concatenation with +, string indexing, and a small builtin library
  *  (len, str, int, abs, min, max, chr, ord, pow, sqrt, gcd, upper, lower,
  *  substr). Per dialect:

@@ -30,7 +30,7 @@ enum {
     TK_INC, TK_DEC,
     TK_PLUSEQ, TK_MINUSEQ, TK_STAREQ, TK_SLASHEQ, TK_PCTEQ,
     TK_LP, TK_RP, TK_LBRACE, TK_RBRACE, TK_LBRACK, TK_RBRACK,
-    TK_SEMI, TK_COMMA, TK_DOT, TK_COLON, TK_SCOPE, TK_QUEST,
+    TK_SEMI, TK_COMMA, TK_DOT, TK_ARROW, TK_COLON, TK_SCOPE, TK_QUEST,
 };
 
 typedef struct { int kind; long ival; const char *str; int line; } Tok;
@@ -41,7 +41,7 @@ enum {
     N_PREINC, N_PREDEC, N_POSTINC, N_POSTDEC, N_TERN, N_LOGAND, N_LOGOR,
     /* statements */
     N_BLOCK, N_VARDECL, N_DECLS, N_IF, N_WHILE, N_FOR, N_RET, N_BREAK, N_CONT, N_EXPRSTMT, N_EMPTY,
-    N_ASSIGNIDX, N_ARRLIT,
+    N_ASSIGNIDX, N_ARRLIT, N_FIELD, N_ASSIGNFLD,
 };
 
 typedef struct Node Node;
@@ -51,6 +51,7 @@ struct Node {
     long  ival;
     const char *str;        /* var/call name, string literal, static-ns flag   */
     int   isstatic;         /* N_VAR: a C# static namespace path (Console/Math) */
+    int   stype;            /* N_VARDECL: struct type index, or -1             */
     Node *a, *b, *c, *d;    /* operands / sub-statements                        */
     Node **kids; int nkids; /* call args / block statements                     */
 };
@@ -76,6 +77,7 @@ enum {
     OP_PRINT, OP_PRINTLN, OP_PRINTF, OP_CSPRINT, OP_PUTC,
     OP_BUILTIN, OP_INDEX, OP_HALT,
     OP_NEWARR, OP_ASTORE,
+    OP_NEWSTRUCT, OP_NEWSTRUCTARR, OP_FIELD, OP_FIELDSET, OP_REF,
 };
 enum { B_LEN, B_STR, B_INT, B_ABS, B_MIN, B_MAX, B_CHR, B_ORD,
        B_POW, B_SQRT, B_GCD, B_UPPER, B_LOWER, B_SUBSTR };
@@ -84,6 +86,34 @@ enum { B_LEN, B_STR, B_INT, B_ABS, B_MIN, B_MAX, B_CHR, B_ORD,
  * place in the source. It costs four bytes an instruction and is the difference
  * between a language you can debug and one you can only re-read. */
 typedef struct { int op; long a, b; const char *s; int line; } Instr;
+
+/* --------------------------------------------------------------- structs --- *
+ *  A struct type is a name and an ordered list of field names, and that is all
+ *  of it. The rest of this compiler is untyped -- parse_type() reads a type
+ *  specifier and throws it away, and a value carries its kind at runtime -- so
+ *  a struct is a block of Vals in the arena with the names on the side, and a
+ *  field access is a lookup of a name in that list.
+ *
+ *  A field lookup is therefore a linear scan of at most STRUCT_FIELDS names per
+ *  access rather than a compile-time offset. That is the price of not having a
+ *  type checker, it is paid at the same place the VM already pays for
+ *  everything else, and it is what makes the feature a few hundred lines
+ *  instead of a rewrite.
+ *
+ *  Structs are references, like arrays: `f(p)` passes the struct and not a
+ *  copy. In C that is what passing a pointer does, and it is *not* what passing
+ *  a struct by value does -- so a function that modifies its argument's fields
+ *  modifies the caller's struct. That difference is real and is documented
+ *  rather than hidden.
+ * --------------------------------------------------------------------------*/
+#define MAX_STRUCTS   32
+#define STRUCT_FIELDS 32
+
+typedef struct {
+    const char *name;
+    const char *fields[STRUCT_FIELDS];
+    int         nfields;
+} StructType;
 
 /* ------------------------------------------------------------- VM values --- */
 /* t: 0 int, 1 string, 2 array. An array keeps its element count in `i` and
@@ -111,6 +141,7 @@ typedef struct {
     char *astarena; int astpos, astcap;
     /* program */
     Func funcs[MAX_FUNCS]; int nfunc;
+    StructType structs[MAX_STRUCTS]; int nstruct;
     const char *gname[MAX_GLOBALS]; Node *ginit[MAX_GLOBALS]; int nglob;
     /* codegen */
     Instr *code; int ncode, codecap;
@@ -149,6 +180,7 @@ static Node *node(int kind) {
     Node *x = (Node *)ast_alloc(sizeof(Node));
     memset(x, 0, sizeof(*x));
     x->kind = kind;
+    x->stype = -1;             /* zeroing would name struct type 0 instead */
     /* The token the parser is looking at is the best approximation of where
      * this construct lives, and it is right for every construct that starts
      * with its own keyword or operand. */
@@ -241,6 +273,7 @@ static void lex(void) {
         TWO('+','=',TK_PLUSEQ) TWO('-','=',TK_MINUSEQ) TWO('*','=',TK_STAREQ)
         TWO('/','=',TK_SLASHEQ) TWO('%','=',TK_PCTEQ)
         TWO('<','<',TK_SHL) TWO('>','>',TK_SHR) TWO(':',':',TK_SCOPE)
+        TWO('-','>',TK_ARROW)
         #undef TWO
         int k;
         switch (c) {
@@ -284,9 +317,37 @@ static void expect(int k, const char *what) { if (!accept(k)) cc_error("expected
 static int  id_is(Tok *t, const char *s) { return t->kind == TK_ID && strcmp(t->str, s) == 0; }
 
 static Node *parse_expr(void);
+static int   parse_type(void);
 static Node *parse_assign(void);
 static Node *parse_stmt(void);
 static Node *parse_block(void);
+
+/* ---- struct types -------------------------------------------------------- */
+static int struct_find(const char *name) {
+    for (int i = 0; i < C->nstruct; i++)
+        if (strcmp(C->structs[i].name, name) == 0) return i;
+    return -1;
+}
+
+/* Is `name` a field of any struct declared so far? The parser has no types, so
+ * `a.b` cannot be resolved by looking at what `a` is -- but it can be told
+ * apart from `s.Length` by asking whether anything declared a field called b.
+ * A program with a field named Length keeps the built-in meaning, which is
+ * stated in the manual rather than guessed at here. */
+static int struct_field_anywhere(const char *name) {
+    for (int i = 0; i < C->nstruct; i++)
+        for (int f = 0; f < C->structs[i].nfields; f++)
+            if (strcmp(C->structs[i].fields[f], name) == 0) return 1;
+    return 0;
+}
+
+static int struct_field(int type, const char *name) {
+    if (type < 0 || type >= C->nstruct) return -1;
+    StructType *s = &C->structs[type];
+    for (int i = 0; i < s->nfields; i++)
+        if (strcmp(s->fields[i], name) == 0) return i;
+    return -1;
+}
 
 static int is_type_kw(Tok *t) {
     if (t->kind != TK_ID) return 0;
@@ -297,17 +358,83 @@ static int is_type_kw(Tok *t) {
     return 0;
 }
 
-/* consume a (possibly compound) type specifier; returns nothing */
-static void parse_type(void) {
+/* `struct NAME { type field; ... }` -- the fields in order, and nothing else.
+ * The type is registered before its body is read, so a field can refer to the
+ * struct being defined: that is what a linked list is made of. */
+static int parse_struct_body(const char *name) {
+    if (C->nstruct >= MAX_STRUCTS) cc_error("too many struct types", 0);
+    int idx = C->nstruct++;
+    StructType *s = &C->structs[idx];
+    s->name = name ? name : "(anonymous)";
+    s->nfields = 0;
+    expect(TK_LBRACE, "{");
+    while (curk() != TK_RBRACE && curk() != TK_EOF) {
+        parse_type();                                /* the field's own type */
+        do {
+            if (curk() != TK_ID) cc_error("expected a field name", 0);
+            if (s->nfields >= STRUCT_FIELDS) cc_error("too many fields in", s->name);
+            s->fields[s->nfields++] = cur()->str;
+            adv();
+            /* An array field is still one slot: it holds the array. */
+            while (curk() == TK_LBRACK) {
+                adv();
+                if (curk() != TK_RBRACK) parse_assign();
+                expect(TK_RBRACK, "]");
+            }
+        } while (accept(TK_COMMA));
+        expect(TK_SEMI, ";");
+    }
+    expect(TK_RBRACE, "}");
+    return idx;
+}
+
+/* Consume a (possibly compound) type specifier. Returns the struct type it
+ * names, or -1 -- which is all of a type this compiler has ever needed, since
+ * every value carries its own kind at runtime. */
+static int parse_type(void) {
+    int stype = -1;
+    if (id_is(cur(), "typedef")) adv();
+
+    if (id_is(cur(), "struct")) {
+        adv();
+        const char *nm = (curk() == TK_ID) ? cur()->str : 0;
+        if (nm) adv();
+        if (curk() == TK_LBRACE) {
+            stype = parse_struct_body(nm);
+            /* `typedef struct {...} Point;` -- the name after the body is
+             * another name for the same shape, registered as one so that
+             * `Point p;` finds it the way `struct Point p;` does. */
+            if (curk() == TK_ID && C->toks[C->ti + 1].kind == TK_SEMI) {
+                const char *alias = cur()->str;
+                if (!nm || strcmp(alias, nm) != 0) {
+                    if (C->nstruct >= MAX_STRUCTS) cc_error("too many struct types", 0);
+                    C->structs[C->nstruct] = C->structs[stype];
+                    C->structs[C->nstruct].name = alias;
+                    stype = C->nstruct++;
+                }
+                adv();
+            }
+        } else if (nm) {
+            stype = struct_find(nm);
+            if (stype < 0) cc_error("no such struct", nm);
+        }
+    }
     /* leading type keywords / a user type name */
-    if (is_type_kw(cur())) { while (is_type_kw(cur())) adv(); }
+    else if (is_type_kw(cur())) { while (is_type_kw(cur())) adv(); }
     else if (curk() == TK_ID && (C->toks[C->ti + 1].kind == TK_ID ||
                                  C->toks[C->ti + 1].kind == TK_STAR ||
-                                 C->toks[C->ti + 1].kind == TK_LT)) adv();
+                                 C->toks[C->ti + 1].kind == TK_LT)) {
+        stype = struct_find(cur()->str);             /* a typedef'd struct name */
+        adv();
+    }
     /* template args  <...>  (balanced) */
     if (curk() == TK_LT) { int d = 0; do { if (curk()==TK_LT) d++; else if (curk()==TK_GT) d--; adv(); } while (d > 0 && curk() != TK_EOF); }
-    while (curk() == TK_STAR || curk() == TK_AMP) adv();         /* pointers / refs */
+    int ptr = 0;
+    while (curk() == TK_STAR || curk() == TK_AMP) { adv(); ptr = 1; }
     while (curk() == TK_LBRACK) { adv(); accept(TK_RBRACK); }    /* array []        */
+    /* `struct Point *p;` declares a variable that will hold a reference, not
+     * storage to be allocated -- so the struct type is deliberately dropped. */
+    return ptr ? -1 : stype;
 }
 
 /* arg list:  ( e , e , ... ) -> fills kids */
@@ -363,10 +490,19 @@ static Node *parse_postfix(void) {
         } else if (curk() == TK_LBRACK) {            /* index */
             adv(); Node *idx = parse_expr(); expect(TK_RBRACK, "]");
             Node *n = node(N_INDEX); n->a = e; n->b = idx; e = n;
-        } else if (curk() == TK_DOT) {               /* member: .Length .length() .ToString() */
+        } else if (curk() == TK_DOT || curk() == TK_ARROW) {
+            int arrow = (curk() == TK_ARROW);
             adv();
             if (curk() != TK_ID) cc_error("expected member name", 0);
             const char *m = cur()->str; adv();
+            /* A struct field. `p->f` and `p.f` are the same operation, because
+             * a struct value here is already a reference -- which is also why
+             * the built-in pseudo-members below are only reachable through
+             * `.`, where they always were. */
+            if (arrow || struct_field_anywhere(m)) {
+                Node *fn = node(N_FIELD); fn->a = e; fn->str = m; e = fn;
+                continue;
+            }
             Node *call = node(N_CALL);
             if (strcmp(m, "Length") == 0)        call->str = "len";
             else if (strcmp(m, "length") == 0)   { call->str = "len"; if (curk()==TK_LP){adv();accept(TK_RP);} }
@@ -387,6 +523,11 @@ static Node *parse_unary(void) {
     if (k == TK_NOT)   { adv(); Node *n = node(N_UN); n->op = OP_NOT; n->a = parse_unary(); return n; }
     if (k == TK_PLUS)  { adv(); return parse_unary(); }
     if (k == TK_TILDE) { adv(); Node *n = node(N_UN); n->op = OP_BXOR; n->a = parse_unary(); return n; }
+    /* &x and *p. A struct and an array are already references here, so both
+     * are the identity -- but only on a reference. OP_REF says so at runtime
+     * rather than letting `&i` on an integer look as though it worked. */
+    if (k == TK_AMP || k == TK_STAR) {
+        adv(); Node *n = node(N_UN); n->op = OP_REF; n->a = parse_unary(); return n; }
     if (k == TK_INC)   { adv(); Node *n = node(N_PREINC); n->a = parse_unary(); return n; }
     if (k == TK_DEC)   { adv(); Node *n = node(N_PREDEC); n->a = parse_unary(); return n; }
     return parse_postfix();
@@ -454,6 +595,11 @@ static Node *parse_assign(void) {
         n->op = op; n->a = l->a; n->b = l->b; n->c = parse_assign();
         return n;
     }
+    if (l->kind == N_FIELD) {                 /* s.f = v, and s.f op= v */
+        Node *n = node(N_ASSIGNFLD);
+        n->op = op; n->a = l->a; n->str = l->str; n->b = parse_assign();
+        return n;
+    }
     if (l->kind != N_VAR) cc_error("assignment to non-variable", 0);
     adv();
     Node *n = node(N_ASSIGN); n->op = op; n->str = l->str; n->a = parse_assign();
@@ -484,18 +630,24 @@ static Node *parse_cout(void) {
 /* a declaration begins a statement when it looks like `type name` */
 static int looks_like_decl(void) {
     if (is_type_kw(cur())) return 1;
+    if (id_is(cur(), "struct") || id_is(cur(), "typedef")) return 1;
     if (curk() == TK_ID && C->toks[C->ti + 1].kind == TK_ID) return 1;   /* UserType v */
+    /* `Point *p;` -- a typedef'd struct name followed by a star, which the
+     * rule above does not catch because the next token is not an identifier. */
+    if (curk() == TK_ID && struct_find(cur()->str) >= 0) return 1;
     return 0;
 }
 
 static Node *parse_vardecl(void) {       /* one or more: type a [=e] (, b [=e])* ; */
-    parse_type();
+    int stype = parse_type();
+    /* `struct Point { ... };` on its own declares a type and no variable. */
+    if (curk() == TK_SEMI) { adv(); return node(N_EMPTY); }
     Node *blk = node(N_DECLS);
     Node *tmp[32]; int n = 0;
     do {
         if (curk() != TK_ID) cc_error("expected variable name", 0);
         const char *nm = cur()->str; adv();
-        Node *d = node(N_VARDECL); d->str = nm;
+        Node *d = node(N_VARDECL); d->str = nm; d->stype = stype;
         if (curk() == TK_LBRACK) {                       /* an array declaration */
             adv();
             d->ival = 1;
@@ -613,6 +765,9 @@ static int skip_top_noise(void) {  /* returns 1 if it consumed something */
 
 static void parse_func_or_global(void) {
     parse_type();
+    /* `struct Point { ... };` at file scope declares a type and stops there,
+     * which is how every header that matters begins. */
+    if (curk() == TK_SEMI) { adv(); return; }
     if (curk() != TK_ID) cc_error("expected a name at top level", 0);
     const char *nm = cur()->str; adv();
 
@@ -797,6 +952,7 @@ static void gen_expr(Node *n) {
         gen_load(n->str); break;
     case N_CALL: gen_call(n); break;
     case N_INDEX: gen_expr(n->a); gen_expr(n->b); emit(OP_INDEX, 0, 0, 0); break;
+    case N_FIELD: gen_expr(n->a); emit(OP_FIELD, 0, 0, n->str); break;
     case N_ARRLIT:
         /* Build the array, then fill it element by element, leaving the array
          * itself on the stack for whatever is consuming the expression. */
@@ -809,6 +965,18 @@ static void gen_expr(Node *n) {
             emit(OP_ASTORE, 0, 0, 0);
             emit(OP_POP, 0, 0, 0);          /* drop the stored value */
         }
+        break;
+    case N_ASSIGNFLD:
+        if (n->op == 0) {
+            gen_expr(n->a); gen_expr(n->b);
+        } else {
+            /* s.f op= v is s.f = s.f op v; the object expression is evaluated
+             * twice, which matters only if it has side effects. */
+            gen_expr(n->a);
+            gen_expr(n->a); emit(OP_FIELD, 0, 0, n->str);
+            gen_expr(n->b); emit(n->op, 0, 0, 0);
+        }
+        emit(OP_FIELDSET, 0, 0, n->str);
         break;
     case N_ASSIGNIDX:
         if (n->op == 0) {
@@ -882,7 +1050,13 @@ static void gen_stmt(Node *n) {
             emit(OP_STOREL, idx, 0, 0);
         } else if (n->ival) {                        /* `int a[N];` */
             if (n->b) gen_expr(n->b); else emit(OP_PUSHI, 0, 0, 0);
-            emit(OP_NEWARR, 0, 0, 0);
+            /* `struct Point pts[N];` fills the array with N structs, because
+             * an array of uninitialised slots would make pts[0].x a field
+             * access on an integer -- which is true but useless. */
+            emit(n->stype >= 0 ? OP_NEWSTRUCTARR : OP_NEWARR, n->stype, 0, 0);
+            emit(OP_STOREL, idx, 0, 0);
+        } else if (n->stype >= 0) {                  /* `struct Point p;` */
+            emit(OP_NEWSTRUCT, n->stype, 0, 0);
             emit(OP_STOREL, idx, 0, 0);
         }
         break; }
@@ -1090,7 +1264,8 @@ static void dbg_list(int from, int count, int mark) {
 }
 
 static void dbg_print_val(Val v) {
-    if (v.t == 2) kprintf("array[%ld]", v.i);
+    if (v.t == 3) kprintf("struct %s", C->structs[v.i].name);
+    else if (v.t == 2) kprintf("array[%ld]", v.i);
     else          kprintf("%s", val_cstr(v));
 }
 
@@ -1247,6 +1422,11 @@ static void vm_run(int start_ip) {
             Val b = POP(), a = POP(); int eq;
             if (a.t == 1 && b.t == 1) eq = strcmp(a.s ? a.s : "", b.s ? b.s : "") == 0;
             else if (a.t == 0 && b.t == 0) eq = a.i == b.i;
+            /* Two references are equal when they are the same object, which is
+             * what comparing two pointers means. A reference is never equal to
+             * an integer, so `p == 0` on a struct that exists is false and on
+             * one that was never assigned -- an integer 0 -- is true. */
+            else if (a.t >= 2 && b.t >= 2) eq = (a.s == b.s);
             else eq = 0;
             PUSH(VI(in->op == OP_EQ ? eq : !eq)); break; }
         case OP_LT: case OP_LE: case OP_GT: case OP_GE: {
@@ -1256,8 +1436,15 @@ static void vm_run(int start_ip) {
             int res = in->op==OP_LT ? r<0 : in->op==OP_LE ? r<=0 : in->op==OP_GT ? r>0 : r>=0;
             PUSH(VI(res)); break; }
         case OP_JMP: ip = (int)in->a; break;
-        case OP_JZ: { Val a = POP(); if (a.t == 1 ? (a.s == 0 || a.s[0] == 0) : a.i == 0) ip = (int)in->a; break; }
-        case OP_JNZ:{ Val a = POP(); if (a.t == 1 ? (a.s && a.s[0]) : a.i != 0) ip = (int)in->a; break; }
+        /* A reference is always true. Without this a struct whose type index
+         * happens to be 0 would test as false, and `if (p)` on the first
+         * struct a program declares would be wrong and nothing else would. */
+        case OP_JZ: { Val a = POP();
+            int zero = a.t >= 2 ? 0 : a.t == 1 ? (a.s == 0 || a.s[0] == 0) : a.i == 0;
+            if (zero) ip = (int)in->a; break; }
+        case OP_JNZ:{ Val a = POP();
+            int nz = a.t >= 2 ? 1 : a.t == 1 ? (a.s && a.s[0]) : a.i != 0;
+            if (nz) ip = (int)in->a; break; }
         case OP_CALL: {
             int fi = (int)in->a, argc = (int)in->b;
             if (fp + 1 >= 512) cc_error("runtime: call stack overflow (deep recursion?)", 0);
@@ -1287,6 +1474,53 @@ static void vm_run(int start_ip) {
             char *d = rt_alloc(2); d[0] = c.s[i]; d[1] = 0;
             Val r = { 1, 0, d };
             PUSH(r);
+            break;
+        }
+        case OP_NEWSTRUCT: {
+            StructType *sty = &C->structs[in->a];
+            Val *base = (Val *)rt_alloc((int)(sty->nfields * (long)sizeof(Val)));
+            for (int k = 0; k < sty->nfields; k++) base[k] = (Val){0,0,0};
+            PUSH(((Val){ 3, in->a, (char *)base }));
+            break;
+        }
+        case OP_NEWSTRUCTARR: {
+            StructType *sty = &C->structs[in->a];
+            long n = need_int(POP(), "array size");
+            if (n < 0 || n > 100000) cc_error("runtime: absurd array size", 0);
+            Val *base = (Val *)rt_alloc((int)(n * (long)sizeof(Val)));
+            for (long k = 0; k < n; k++) {
+                Val *f = (Val *)rt_alloc((int)(sty->nfields * (long)sizeof(Val)));
+                for (int q = 0; q < sty->nfields; q++) f[q] = (Val){0,0,0};
+                base[k] = (Val){ 3, in->a, (char *)f };
+            }
+            PUSH(((Val){ 2, n, (char *)base }));
+            break;
+        }
+        case OP_FIELD: {
+            Val o = POP();
+            if (o.t != 3) cc_error("runtime: not a struct, so it has no field", in->s);
+            int f = struct_field((int)o.i, in->s);
+            if (f < 0) cc_error("runtime: no such field", in->s);
+            PUSH(((Val *)o.s)[f]);
+            break;
+        }
+        case OP_FIELDSET: {
+            Val v = POP(), o = POP();
+            if (o.t != 3) cc_error("runtime: not a struct, so it has no field", in->s);
+            int f = struct_field((int)o.i, in->s);
+            if (f < 0) cc_error("runtime: no such field", in->s);
+            ((Val *)o.s)[f] = v;
+            PUSH(v);                       /* an assignment is an expression */
+            break;
+        }
+        case OP_REF: {
+            /* & and * are the identity on a reference, because a struct and an
+             * array already are one. On anything else they are a mistake worth
+             * naming rather than quietly accepting. */
+            Val a = POP();
+            if (a.t < 2)
+                cc_error("runtime: & and * need a struct or an array", 0);
+            PUSH(a);
             break;
         }
         case OP_NEWARR: {
