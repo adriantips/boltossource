@@ -326,9 +326,10 @@ static const manpage_t MAN[] = {
   "leasing an address." },
 { "hosts", "hosts [add NAME IP]",
   "The local name table, consulted before DNS. Survives reboots." },
-{ "dns", "dns [NAME | flush]",
+{ "dns", "dns [NAME | -6 NAME | flush]",
   "Resolve a name, show the cache, or empty it. Cached entries expire on the\n"
-  "TTL the server gave them." },
+  "TTL the server gave them. A bare name answers with whichever family this\n"
+  "machine can reach; -6 insists on the AAAA record." },
 { "ntp", "ntp [sync | on | off | server IP]",
   "Set the clock from a time server. A wrong clock fails certificate\n"
   "validity checks, which looks like HTTPS being broken rather than like the\n"

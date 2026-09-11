@@ -12,6 +12,7 @@
 #include "http.h"
 #include "socket.h"
 #include "net.h"
+#include "string.h"
 
 #define IA32_EFER  0xC0000080
 #define IA32_STAR  0xC0000081
@@ -230,6 +231,45 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2,
         uint32_t ip = 0;
         if (!dns_resolve((const char *)a1, &ip, 3000)) return (uint64_t)-1;
         *(uint32_t *)a2 = ip;
+        return 0;
+    }
+
+    /* ---- the same three, for addresses that do not fit in a register ---- */
+    case SYS_CONNECT6: {
+        if (!p || !uok(a2)) return (uint64_t)-1;
+        file *f = proc_fd_get(p, (int)a1);
+        if (!f) return (uint64_t)-1;
+        ip6_addr v6;
+        memcpy(v6.b, (const void *)a2, 16);
+        netaddr dst = netaddr_v6(&v6);
+        return (uint64_t)(int64_t)sock_connect_addr(f, &dst, (uint16_t)a3, (uint32_t)a4);
+    }
+    case SYS_ACCEPT6: {
+        if (!p) return (uint64_t)-1;
+        file *f = proc_fd_get(p, (int)a1);
+        if (!f) return (uint64_t)-1;
+        if ((a2 && !uok(a2)) || (a3 && !uok(a3))) return (uint64_t)-1;
+        netaddr peer; uint16_t port = 0;
+        file *nf = sock_accept_addr(f, &peer, &port, (uint32_t)a4);
+        if (!nf) return (uint64_t)-1;
+        int fd = proc_fd_alloc(p, nf);
+        if (fd < 0) { vfs_close(nf); return (uint64_t)-1; }
+        if (a2) {
+            /* A v4 peer reported here is :: rather than a v4-mapped address:
+             * this kernel has no ::ffff:0:0/96 anywhere else, and inventing
+             * one only at the edge of the ABI would be a lie about what the
+             * connection is. Such a program should be calling SYS_ACCEPT. */
+            if (peer.af == NET_AF_INET6) memcpy((void *)a2, peer.v6.b, 16);
+            else memset((void *)a2, 0, 16);
+        }
+        if (a3) *(uint16_t *)a3 = port;
+        return (uint64_t)fd;
+    }
+    case SYS_RESOLVE6: {
+        if (!p || !uok(a1) || !uok(a2)) return (uint64_t)-1;
+        ip6_addr v6;
+        if (!dns_resolve6((const char *)a1, &v6, 3000)) return (uint64_t)-1;
+        memcpy((void *)a2, v6.b, 16);
         return 0;
     }
 

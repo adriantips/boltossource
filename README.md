@@ -20,10 +20,10 @@ honest account of what it cannot do yet.
 > NVMe / AHCI SATA disks (HDD/SSD) behind a VFS and generic block layer, **EXT2
 > and FAT32** standard filesystem support, hardware interrupts, keyboard and
 > mouse drivers, an **xHCI USB** host-controller driver with **HID** support,
-> **Intel HDA + AC97 audio** drivers, an interactive shell, **IPv6 addressing with
-> Neighbour Discovery and SLAAC**, a full **IPv4/TCP/UDP/TLS
-> 1.2+1.3 network stack** (with X.509 certificate verification, **DHCP**,
-> persistent configuration, a DNS cache and an **SNTP** clock)
+> **Intel HDA + AC97 audio** drivers, an interactive shell, a dual-stack
+> **IPv4 + IPv6 TCP/UDP/TLS 1.2+1.3 network stack** (Neighbour Discovery and
+> SLAAC, X.509 certificate verification, **DHCP**, persistent configuration, a
+> DNS cache and an **SNTP** clock)
 > on **e1000** and **virtio-net** NICs, a **standards-ish web browser** with a real DOM tree, CSS
 > cascade, box/flex/grid layout engine and a from-scratch **JavaScript
 > interpreter**, a **multi-language IDE** with from-scratch **C / C++ / C#
@@ -637,12 +637,59 @@ detection, which polled, which delivered the next advertisement, until the
 kernel stack ran out. It now refuses to re-enter, and the work that needs to
 poll happens outside the handler.
 
-TCP and UDP are still IPv4-only. The sockets, the resolver and everything
-above them take a `uint32_t` address, and widening that is its own change rather
-than something to do halfway — so this reaches a neighbour and a router, not a
-web page. `test/host/ip6.c` checks the address text forms with no machine at
-all (where `::` printing as `:::` and `fe80:::1` parsing as `fe80::1` were both
-found), and `test/t_ipv6.py` boots against slirp's own NDP router.
+`test/host/ip6.c` checks the address text forms with no machine at all (where
+`::` printing as `:::` and `fe80:::1` parsing as `fe80::1` were both found),
+and `test/t_ipv6.py` boots against slirp's own NDP router.
+
+### One connection type, two families
+
+TCP and UDP carry both. A connection holds a `netaddr` (`include/netaddr.h`) --
+a uint32_t for v4 in host order, sixteen bytes for v6 in wire order, and a byte
+saying which -- rather than the `uint32_t` that used to stop IPv6 at the
+neighbour cache. Exactly two things below the state machine ask which family it
+is: the pseudo-header the checksum covers, and whether the segment leaves by
+`ip_output` or `ip6_output_from`. The handshake, the sequence arithmetic, the
+receive ring, the close and everything above them never ask.
+
+That checksum is the part IPv6 does not let you skip. Over IPv4 the UDP
+checksum is optional and there is a header checksum underneath; over IPv6 there
+is neither, so a datagram that arrives with a wrong one -- or with no checksum
+at all, which is what a zero means -- is dropped rather than delivered.
+
+The resolver asks for AAAA as well as A, and asks first for whichever family
+the machine can actually reach: on a box with no IPv4 address an A record is a
+route to nowhere and only adds a timeout to every lookup. `dns NAME` answers
+with whichever came back, `dns -6 NAME` insists on the AAAA.
+
+URLs take a bracketed literal, because an address full of colons cannot
+otherwise be told from a host and a port:
+
+```
+serve 8080 /srv                       # says both URLs it can be reached on
+download http://[fe80::5054:ff:fe12:3456]:8080/hello.txt
+ssh user@fe80::5054:ff:fe12:3456
+```
+
+Ring-3 programs get `SYS_CONNECT6`, `SYS_ACCEPT6` and `SYS_RESOLVE6`
+(`connect_ip6`, `accept_conn6`, `resolve_host6` in the SDK). They are new
+numbers rather than changes to the v4 calls: an address that size does not fit
+in a register argument, and a binary built against ABI 1 is untouched by a
+syscall it never makes. A listening socket takes either family without being
+told, so only the client side has two of each.
+
+What is still v4-only, and honestly so: the resolver's own *transport* -- a
+v6-only machine has nowhere to send a query until the RDNSS option in a Router
+Advertisement is parsed -- the file-share broadcast protocol, and firewall
+rules that name an address, since a rule holds a uint32_t and a CIDR mask.
+IPv6 traffic is filtered on direction, protocol and port, and by the default
+policy; address rules are skipped rather than matched against something they
+were not written for.
+
+`test/t_tcp6.py` puts two BoltOS machines on one wire -- no DHCP, no router, no
+static address, nothing configured on either -- and fetches a file between them
+over the addresses they gave themselves. The UDP path, which nothing on the
+machine sends yet, is checked byte for byte in `test/host/ip6.c` rather than
+shipped unrun.
 
 ### The interrupt that was installed but never opened
 

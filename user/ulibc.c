@@ -55,6 +55,16 @@ int accept_conn(int fd, uint32_t *peer_ip, uint16_t *peer_port, uint32_t timeout
 int resolve_host(const char *name, uint32_t *ip_out)
                                     { return (int)__syscall(SYS_RESOLVE, (long)name, (long)ip_out, 0, 0, 0); }
 
+/* IPv6: sixteen bytes by pointer, because they do not fit in the register an
+ * argument travels in. Otherwise identical -- the fd that comes back is the
+ * same kind of fd. */
+int connect_ip6(int fd, const uint8_t addr[16], uint16_t port, uint32_t timeout_ms)
+                                    { return (int)__syscall(SYS_CONNECT6, fd, (long)addr, port, (long)timeout_ms, 0); }
+int accept_conn6(int fd, uint8_t peer[16], uint16_t *peer_port, uint32_t timeout_ms)
+                                    { return (int)__syscall(SYS_ACCEPT6, fd, (long)peer, (long)peer_port, (long)timeout_ms, 0); }
+int resolve_host6(const char *name, uint8_t out[16])
+                                    { return (int)__syscall(SYS_RESOLVE6, (long)name, (long)out, 0, 0, 0); }
+
 /* --------------------------------------------------------------- heap ------
  * First-fit free list backed by SYS_BRK. Each block carries a header with its
  * usable size and a free flag; free() coalesces with the following block, and

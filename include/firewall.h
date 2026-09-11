@@ -16,6 +16,12 @@
  * remote port (host order, 0 if not TCP/UDP). Returns 1 to pass, 0 to drop. */
 int  fw_check(int dir, uint8_t proto, uint32_t peer, uint16_t port);
 
+/* The same verdict for an IPv6 datagram, which has no address to match: a
+ * rule holds a uint32_t and a CIDR mask, and neither can express a v6 prefix.
+ * Rules that name an address are skipped; direction, protocol and port rules
+ * apply to both families, and so does the default policy. */
+int  fw_check6(int dir, uint8_t proto, uint16_t port);
+
 int  fw_enabled(void);
 void fw_set_enabled(int on);
 void fw_set_default(int allow);

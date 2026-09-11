@@ -13,9 +13,13 @@
  *  What is here: link-local addressing from the MAC, Neighbour Discovery
  *  (solicitation, advertisement and a neighbour cache, which is ARP's job on
  *  this side), Router Discovery and SLAAC, duplicate address detection, and
- *  ICMPv6 echo. TCP and UDP are still IPv4-only: the sockets, the resolver and
- *  everything above them take a uint32_t, and widening that is its own change
- *  rather than something to do halfway.
+ *  ICMPv6 echo.
+ *
+ *  TCP and UDP over IPv6 live in net/tcp.c and net/udp.c with their v4
+ *  selves, because a connection is a connection: what differs is which
+ *  pseudo-header the checksum covers and which output path the segment
+ *  leaves by, and both of those are three lines. See include/netaddr.h for
+ *  the address type that let those two files stop caring.
  * ===========================================================================*/
 
 #define ETHERTYPE_IPV6  0x86DD
@@ -87,6 +91,14 @@ void ip6_solicited_node(const ip6_addr *a, ip6_addr *out);
 void ip6_init(struct netif *nif);          /* form the link-local address */
 int  ip6_output(struct netif *nif, const ip6_addr *dst, uint8_t next_hdr,
                 const void *payload, uint16_t len);
+/* The address a datagram to `dst` should claim to be from: the global one for
+ * a global destination, the link-local otherwise. An upper layer needs this
+ * before ip6_output does, because the checksum covers the source address. */
+const ip6_addr *ip6_source_for(const ip6_addr *dst);
+/* Where a datagram to `dst` is actually handed to the link: `dst` itself when
+ * it is on-link or multicast, otherwise the router. 0 when there is no route
+ * -- off-link with no router advertised is nowhere. */
+int  ip6_nexthop(const ip6_addr *dst, ip6_addr *out);
 /* Same, but with the source address chosen explicitly -- Neighbour Discovery
  * has to send from :: before it owns an address, and from the link-local when
  * a global one exists. */

@@ -191,20 +191,31 @@ int cmd_dns(int argc, char **argv) {
         kprintf("resolver cache cleared\n");
         return 0;
     }
+    if (argc >= 3 && !strcmp(argv[1], "-6")) {         /* dns -6 NAME -> AAAA */
+        ip6_addr a;
+        if (!dns_resolve6(argv[2], &a, 3000)) { kprintf("dns: %s has no AAAA record\n", argv[2]); return 1; }
+        char txt[46]; ip6_format(&a, txt);
+        kprintf("%s -> %s\n", argv[2], txt);
+        return 0;
+    }
     if (argc >= 2) {                                   /* dns NAME -> resolve */
-        uint32_t ip = 0;
-        if (!dns_resolve(argv[1], &ip, 3000)) { kprintf("dns: %s not found\n", argv[1]); return 1; }
-        kprintf("%s -> ", argv[1]); print_ip(ip); kprintf("\n");
+        /* Whichever family this machine can reach, because that is what every
+         * other caller of the resolver now gets -- `dns` reporting an A record
+         * while the browser had connected over v6 would be a lie. */
+        netaddr a;
+        if (!dns_resolve_addr(argv[1], &a, 3000)) { kprintf("dns: %s not found\n", argv[1]); return 1; }
+        char txt[NETADDR_STRLEN]; netaddr_format(&a, txt);
+        kprintf("%s -> %s\n", argv[1], txt);
         return 0;
     }
 
     kprintf("resolver: "); print_ip(net_dns); kprintf("\n");
-    const char *name; uint32_t ip, ttl; int n = 0;
+    const char *name; netaddr addr; uint32_t ttl; int n = 0;
     for (int i = 0; i < 64; i++) {
-        if (!dns_cache_dump(i, &name, &ip, &ttl)) continue;
-        if (!n++) { sh_pad("NAME", 34); sh_pad("ADDRESS", 18); kprintf("TTL\n"); }
+        if (!dns_cache_dump(i, &name, &addr, &ttl)) continue;
+        if (!n++) { sh_pad("NAME", 34); sh_pad("ADDRESS", 40); kprintf("TTL\n"); }
         sh_pad(name, 34);
-        char b[16]; netcfg_format_ip(ip, b); sh_pad(b, 18);
+        char b[NETADDR_STRLEN]; netaddr_format(&addr, b); sh_pad(b, 40);
         kprintf("%us\n", ttl);
     }
     if (!n) kprintf("cache is empty\n");

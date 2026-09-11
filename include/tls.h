@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include "netaddr.h"
 
 /* ===========================================================================
  *  TLS client over the BoltOS TCP stack. Negotiates TLS 1.3 (X25519 key share,
@@ -16,8 +17,11 @@
 
 struct tls_conn;
 
-/* Open a TLS session to dst_ip:port. `sni` is the hostname sent in the SNI
- * extension (required by most CDNs). Returns a connection or 0 on failure. */
+/* Open a TLS session to an address and port. `sni` is the hostname sent in the
+ * SNI extension (required by most CDNs). Returns a connection or 0 on failure.
+ * The v4-only form is kept for the callers that hold a uint32_t. */
+struct tls_conn *tls_connect_addr(const netaddr *dst, uint16_t port,
+                                  const char *sni, uint32_t timeout_ms);
 struct tls_conn *tls_connect(uint32_t dst_ip, uint16_t port,
                              const char *sni, uint32_t timeout_ms);
 

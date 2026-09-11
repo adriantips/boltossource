@@ -179,7 +179,7 @@ SRCS=(
     kernel/acpi.c kernel/apic.c kernel/hpet.c kernel/smp.c
     kernel/hw.c kernel/pci.c kernel/sysreg.c kernel/sched.c kernel/syscall.c
     kernel/vfs.c kernel/proc.c kernel/elf.c kernel/pe.c kernel/blk.c
-    net/netif.c net/driver.c net/eth.c net/arp.c net/ip.c net/icmp.c net/udp.c
+    net/netif.c net/driver.c net/eth.c net/arp.c net/ip.c net/icmp.c net/udp.c net/netaddr.c
     net/tcp.c net/dns.c net/crypto.c net/tls.c net/p256.c net/p384.c net/rsa.c net/x509.c net/inflate.c net/http.c
     net/ip6.c net/icmp6.c net/nd6.c
     net/wifi.c net/firmware.c net/firewall.c net/dhcp.c net/netcfg.c net/ntp.c

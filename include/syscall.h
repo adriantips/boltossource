@@ -26,7 +26,9 @@
 
 /* Sockets. A socket is an ordinary fd (kernel/socket.c), so read/write/close
  * above operate on one -- these calls only cover what a plain file cannot say.
- * Addresses are IPv4 in HOST order, matching the rest of the stack. */
+ * Addresses here are IPv4 in HOST order; the IPv6 forms are at 107-109 and
+ * pass sixteen bytes by pointer, because an address that size does not fit in
+ * a register argument. */
 #define SYS_SOCKET  41  /* (domain, type)            -> fd / -1               */
 #define SYS_CONNECT 42  /* (fd, ip, port, timeo_ms)  -> 0 / -1                */
 #define SYS_ACCEPT  43  /* (fd, ip*, port*, timeo_ms)-> fd / -1               */
@@ -43,6 +45,16 @@
 #define SYS_FBPRESENT 104 /* (xrgb w*h buffer)       -> 0/-1; blit to panel    */
 #define SYS_RESOLVE 105 /* (name, uint32_t *ip)      -> 0/-1; DNS + /etc/hosts */
 #define SYS_ABI     106 /* ()                        -> the ABI version below  */
+
+/* IPv6. Added rather than folded into 42/43/105, so a program built against
+ * ABI 1 keeps working unchanged -- the addresses are sixteen bytes and would
+ * have had to change those calls' arguments. An address is `const uint8_t[16]`
+ * in wire order, most significant byte first, which is how it is written and
+ * how it travels. */
+#define SYS_CONNECT6 107 /* (fd, addr16, port, timeo)   -> 0 / -1              */
+#define SYS_ACCEPT6  108 /* (fd, addr16*, port*, timeo) -> fd / -1; addr16 is
+                          *   :: when the peer arrived over IPv4              */
+#define SYS_RESOLVE6 109 /* (name, uint8_t out[16])     -> 0/-1; AAAA lookup   */
 
 /* ---------------------------------------------------------------------------
  *  The ABI version. Bumped when a syscall's number, arguments or meaning

@@ -449,8 +449,12 @@ static void sh_send(uint32_t ip, uint8_t type, uint16_t seq, uint32_t arg,
 }
 
 /* the single UDP listener: dispatches by our current role */
-static void share_cb(uint32_t src, uint16_t sport, const uint8_t *data, uint16_t len) {
+static void share_cb(const netaddr *from, uint16_t sport, const uint8_t *data, uint16_t len) {
     (void)sport;
+    /* File share is an IPv4 broadcast protocol -- discovery goes to
+     * 255.255.255.255, which has no v6 equivalent worth inventing here. */
+    if (!netaddr_is_v4(from)) return;
+    uint32_t src = from->v4;
     if (len < sizeof(struct shdr)) return;
     const struct shdr *h = (const struct shdr *)data;
     if (ntohl(h->magic) != SHARE_MAGIC) return;
