@@ -183,6 +183,14 @@ static const manpage_t MAN[] = {
 { "passwd", "passwd [USER]",
   "Change a password. Your own without an argument; anyone else's as admin.\n"
   "Passwords are stored salted and iterated, never in the clear." },
+{ "vault", "vault [status] | create [PASS] | unlock [PASS] | lock | destroy [PASS]",
+  "An encrypted directory, by default ~/vault. Unlocked it holds ordinary\n"
+  "files; locked they are one AES-256-GCM archive beside it and the\n"
+  "directory is empty. The key comes from the vault password through\n"
+  "PBKDF2-HMAC-SHA256 and is held only while the vault is open, which is\n"
+  "why locking the screen, logging out and shutting down can seal it\n"
+  "without asking again. A vault left unlocked is plain files, and BoltFS\n"
+  "commits those to the disk like any others: lock it before walking away." },
 { "sudo", "sudo COMMAND [args...]",
   "Run one command as root. Members of the `admin` group only, and the\n"
   "elevation lasts exactly that one command." },
@@ -464,8 +472,6 @@ static const manpage_t MAN[] = {
   "the current directory; extra files are not removed. vcs keeps commit history." },
 { "timeline", "timeline",
   "What has happened on this machine, in order." },
-{ "vault", "vault lock|unlock FILE PASSWORD",
-  "A toy encrypted store. Named honestly: it is not a security boundary." },
 { "doctor", "doctor",
   "Look for the things that commonly go wrong and offer to fix them." },
 { "assistant", "assistant [QUESTION]",

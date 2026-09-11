@@ -70,7 +70,13 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 - [x] 29. `passwd`, `userdel`, `groups`
 - [x] 30. `sudo` and an admin group, replacing implicit trust
 - [x] 31. Firewall GUI in Settings (rules list, per-app allow/deny)
-- [ ] 32. Encrypted home directory / vault for the persisted image
+- [x] 32. Encrypted vault directory: AES-256-GCM over the whole directory,
+        the key stretched from its own password with PBKDF2-HMAC-SHA256 and
+        held only while it is open, so the lock screen, a logout, switching
+        accounts and shutdown all seal it without asking again. Locking
+        commits twice more, so the slot holding the previous image is
+        overwritten and the plaintext is not on the disk at all. Replaces a
+        `vault` command that XOR'd a file against its password
 
 ## Phase 3 — Networking for daily use
 

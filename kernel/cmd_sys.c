@@ -6,6 +6,7 @@
 #include "fat32.h"
 #include "acpi.h"
 #include "install.h"
+#include "vault.h"
 #include "klog.h"
 #include "blk.h"
 #include "pmm.h"
@@ -248,6 +249,10 @@ int cmd_fsck(int argc, char **argv) {
  *  makes the next boot run a full fsck.
  * -------------------------------------------------------------------------- */
 static void shutdown_prepare(const char *what) {
+    /* First of all, before anything is committed: a machine that is off is a
+     * machine whose disk is all an attacker has, so the vault is sealed on the
+     * way down and the commit below writes the archive rather than the files. */
+    vault_lock_all();
     /* The shell keeps its history in memory and writes it here, so a day's
      * commands survive the reboot without paying a disk commit per command. */
     sh_history_save();

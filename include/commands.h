@@ -38,6 +38,7 @@ int cmd_whoami(int, char **); int cmd_users(int, char **);  int cmd_logout(int, 
 int cmd_id(int, char **);      int cmd_groups(int, char **);
 int cmd_useradd(int, char **); int cmd_userdel(int, char **);
 int cmd_passwd(int, char **);  int cmd_sudo(int, char **);
+int cmd_vault(int, char **);
 int cmd_chmod(int, char **);   int cmd_chown(int, char **);
 int cmd_lock(int, char **);
 int cmd_pkg(int, char **);    int cmd_ext2(int, char **);
@@ -104,7 +105,7 @@ int cmd_core(int, char **);
 
 /* ---- handlers: Bonus / Unique ------------------------------------------- */
 int cmd_focus(int, char **);  int cmd_snapshot(int, char **);int cmd_timeline(int, char **);
-int cmd_vault(int, char **);  int cmd_doctor(int, char **); int cmd_assistant(int, char **);
+int cmd_doctor(int, char **); int cmd_assistant(int, char **);
 int cmd_sandbox(int, char **);int cmd_workspace(int, char **);int cmd_panic(int, char **);
 int cmd_story(int, char **);
 

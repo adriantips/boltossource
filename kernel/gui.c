@@ -26,6 +26,7 @@
 #include "fs.h"
 #include "image.h"
 #include "users.h"
+#include "vault.h"
 #include "audio.h"
 #include "netif.h"
 #include "net.h"
@@ -2488,6 +2489,9 @@ void gui_lock(void) {
     if (login_active) return;
     const char *who = users_current();
     if (!who[0]) return;                     /* nobody signed in; nothing to lock */
+    /* Locking the screen is the moment somebody walks away from the machine,
+     * which is exactly the moment an open vault should stop being open. */
+    vault_lock_all();
     login_active = 1; login_locked = 1;
     strncpy(login_user, who, sizeof login_user - 1);
     login_ulen = (int)strlen(login_user);

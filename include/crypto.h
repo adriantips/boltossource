@@ -38,6 +38,14 @@ void sha384_final(sha512_ctx *c, uint8_t out[48]);
 void hmac_sha384(const uint8_t *key, uint32_t klen,
                  const uint8_t *msg, uint32_t mlen, uint8_t out[48]);
 
+/* ---- PBKDF2-HMAC-SHA256 ------------------------------------------------ *
+ *  Stretch a password into `outlen` bytes of key material. `rounds` is the
+ *  work factor: every guess an attacker makes costs the same. Used by the
+ *  account table to store a password and by the vault to derive one. */
+void pbkdf2_sha256(const void *pw, uint32_t pwlen,
+                   const uint8_t *salt, uint32_t saltlen,
+                   uint32_t rounds, uint8_t *out, uint32_t outlen);
+
 /* ---- AES-128 (encrypt only; GCM needs the forward cipher both ways) ---- */
 typedef struct { uint8_t rk[176]; } aes128_ctx;   /* 11 * 16-byte round keys */
 void aes128_init(aes128_ctx *c, const uint8_t key[16]);

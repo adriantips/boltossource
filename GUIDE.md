@@ -307,6 +307,36 @@ not again for five minutes. Only members of the admin group can do it.
 
 ---
 
+## Keeping files private
+
+```sh
+vault create                  # make ~/vault, and pick a password for it
+vault status                  # locked or unlocked, and how much is in it
+vault lock                    # seal it: the files become one encrypted archive
+vault unlock                  # open it again
+```
+
+While the vault is **unlocked**, `~/vault` is an ordinary directory — put files
+in it, edit them, open them in any app. While it is **locked**, the directory is
+empty and everything that was in it is one encrypted file, `~/.vault.bv`. Without
+the password there is no way back: the password is not stored anywhere, so if you
+forget it the files are gone.
+
+You do not have to remember to lock it. Locking the screen, logging out,
+switching accounts and `poweroff`/`reboot` all seal an open vault on the way,
+without asking for the password again.
+
+Two things to know, because a vault you misunderstand is worse than none:
+
+* **Unlocked means unlocked.** The files are real files on the disk while the
+  vault is open. Lock it before you walk away; pulling the power out of a
+  machine with the vault open leaves the files on the disk.
+* **The vault covers what is in it.** If you type a secret at the prompt it is
+  in your shell history, and if you `cat` it, it is in the system log. Neither
+  is inside the vault. Put the file in the vault and open it there.
+
+---
+
 ## Shutting down
 
 ```sh

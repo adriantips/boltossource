@@ -1193,9 +1193,36 @@ user's `passwd`) requires it.
 with the session left exactly as it was. The lock is intercepted in the
 compositor before any window sees the key, so no app can swallow it.
 
+**Files can be put out of reach.** `vault` (`kernel/vault.c`) is an encrypted
+directory, by default `~/vault`. Unlocked, it holds ordinary files. Locked, they
+are one **AES-256-GCM** sealed archive beside it and the directory is empty. The
+key comes from the vault's own password through **PBKDF2-HMAC-SHA256** (16384
+rounds over a per-vault random salt in `/etc/vault.conf`) and is held in kernel
+memory only while the vault is open — which is what lets the screen lock, a
+logout, switching accounts and shutting down all seal it without asking for the
+password again. A wrong password fails on the GCM tag, before anything is
+decrypted, and costs the same backoff a wrong login does.
+
+Locking commits twice more, because BoltFS alternates between two blob slots and
+the commit that publishes the archive leaves the previous image — the one with
+the plaintext in it — in the other one. `test/t_vault.py` runs on private disk
+images with `snapshot=False` and searches their raw bytes: after a lock, neither
+file is anywhere on any of them.
+
+Two things it does not do, stated plainly because a vault that is believed to do
+them is worse than none. An *unlocked* vault is plain files and BoltFS commits
+them like any others, so a power cut with the vault open leaves plaintext on the
+disk; sealing contents on their way into the image would need a filter in the
+persistence layer. And the vault is responsible for what is inside it, not for
+every copy: a secret typed at a prompt is in that account's shell history, and
+one printed by `cat` is in the kernel log that a clean shutdown writes to
+`/var/log`. It replaces a `vault` command that XOR'd a file against its own
+password and described itself as not a security boundary, which does not help
+much when it is still called vault and still says "locked".
+
 Commands: `whoami`, `id`, `groups`, `users`, `useradd`, `userdel`, `passwd`,
-`sudo`, `chmod`, `chown`, `lock`, `logout`. The **Security** desktop app shows
-the same state — session, firewall rules with one-click presets and live
+`sudo`, `chmod`, `chown`, `lock`, `logout`, `vault`. The **Security** desktop app
+shows the same state — session, firewall rules with one-click presets and live
 pass/block counters, and the account list.
 
 ## Package manager
@@ -1604,7 +1631,7 @@ The interactive OS shell supports a wide range of commands:
 - **Remote access:** `sshd` (SSH-2 server: real shell, password auth, encrypted), `sshkey` (host key fingerprint)
 - **Development:** `build` (build a project's target from its `build.txt`), `vcs` (local version control: init / add / commit / log / diff / checkout / branch)
 - **Language:** `cc` (multi-file C/C++/C# via the preprocessor + BoltCC; `-g` runs it under the source-level debugger), `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the **Code** app compiles C / C++ / C#
-- **Bonus / Unique:** `focus`, `snapshot`, `timeline`, `vault`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
+- **Bonus / Unique:** `focus`, `snapshot`, `timeline`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
 - **Shell:** `sh`, `source`, `.`, `test`, `[`, `true`, `false`, `set`, `unset`; variables, conditions, loops and functions (see [SHELL.md](SHELL.md))
 - **SDK & help:** `run` (ELF64 programs with arguments and exit status), `man` (pages/search/coverage), `help [COMMAND]`
 - **Audio:** `play` (a tone, or a WAV file streamed and converted as it goes), `media` (the player's transport: `open`, `play`/`pause`, `next`/`prev`, `track`, `seek`, `vol`, `repeat`, `list`)
