@@ -2614,8 +2614,12 @@ void gui_run(void) {
     } else {
         if (bbp) pmm_free_contig(bbp, maxframes);
         BB = (uint32_t *)kmalloc((uint64_t)PW * PH * 4);
-        if (!BB) { console_detach(); shell_run(); return; }   /* no memory -> shell */
-        BG = (uint32_t *)kmalloc((uint64_t)PW * PH * 4);
+        BG = BB ? (uint32_t *)kmalloc((uint64_t)PW * PH * 4) : 0;
+        /* Both or neither. The compositor draws into BB and compares it
+         * against BG to find what changed, so a desktop with only one of them
+         * faults on its first frame -- and BG's allocation was the one nobody
+         * was checking. Without them, the text shell. */
+        if (!BG) { kfree(BB); console_detach(); shell_run(); return; }
         hires_ok = 0;
     }
 

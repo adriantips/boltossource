@@ -25,6 +25,7 @@
 #include "mm.h"
 #include "syscall.h"
 #include "kheap.h"
+#include "notify.h"
 #include "keyboard.h"
 #include "mouse.h"
 #include "fs.h"
@@ -112,14 +113,21 @@ static void demo_thread_b(void) { demo_beat(1); }
  *  so out loud turns "the machine froze" into a diagnosable event, and the
  *  report lands in the crash log with everything else.
  *
- *  It also watches the heap: crossing 90% used is the last chance to say
- *  something before allocations start failing in places that cannot report it.
+ *  It also watches the heap. Crossing 90% used is the last chance to say
+ *  something before allocations start failing in places that cannot report it
+ *  -- but how full the heap is was never the whole story. A heap with plenty
+ *  free and none of it in one piece fails the same allocations while reporting
+ *  40% used, so the largest block that can still be handed out is watched too,
+ *  and so is the running count of allocations that have already failed.
  * ------------------------------------------------------------------------- */
 #define WATCHDOG_STARVE_TICKS  5000     /* ~5 s at 1000 Hz */
+#define WATCHDOG_FRAG_LARGEST  (1u << 20)    /* a megabyte, in one piece */
+#define WATCHDOG_FRAG_FREE     (8u << 20)    /* while this much is free */
 
 static void watchdog_thread(void) {
     uint64_t last = 0;
-    int warned_slot = -1, warned_heap = 0;
+    int warned_slot = -1, warned_heap = 0, warned_frag = 0;
+    uint64_t warned_fails = 0;
     for (;;) {
         if (pit_ticks() - last >= 1000) {
             last = pit_ticks();
@@ -134,17 +142,42 @@ static void watchdog_thread(void) {
                 warned_slot = -1;
             }
 
-            uint64_t used = 0, total = 0;
-            kheap_usage(&used, &total);
-            if (total && used * 100 / total >= 90) {
+            kheap_stats hs;
+            kheap_get_stats(&hs);
+            if (hs.total && hs.used * 100 / hs.total >= 90) {
                 if (!warned_heap) {
                     warned_heap = 1;
                     kprintf("[watchdog] kernel heap %lu%% full (%lu of %lu KiB)\n",
-                            (unsigned long)(used * 100 / total),
-                            (unsigned long)(used >> 10), (unsigned long)(total >> 10));
+                            (unsigned long)(hs.used * 100 / hs.total),
+                            (unsigned long)(hs.used >> 10), (unsigned long)(hs.total >> 10));
+                    notify_error("Memory", "the kernel heap is nearly full");
                 }
             } else {
                 warned_heap = 0;
+            }
+            /* Room, but not in any piece big enough to be worth having. */
+            if (hs.free_bytes >= WATCHDOG_FRAG_FREE &&
+                hs.largest_free < WATCHDOG_FRAG_LARGEST) {
+                if (!warned_frag) {
+                    warned_frag = 1;
+                    kprintf("[watchdog] kernel heap fragmented: %lu KiB free, "
+                            "largest block %lu KiB, %lu free blocks\n",
+                            (unsigned long)(hs.free_bytes >> 10),
+                            (unsigned long)(hs.largest_free >> 10),
+                            (unsigned long)hs.free_blocks);
+                }
+            } else {
+                warned_frag = 0;
+            }
+            /* An allocation that failed was reported to whoever asked for it,
+             * and very often that was the last anyone heard of it. */
+            if (hs.failures > warned_fails) {
+                kprintf("[watchdog] %lu kernel allocation%s have failed "
+                        "(largest free block %lu KiB)\n",
+                        (unsigned long)hs.failures, hs.failures == 1 ? "" : "s",
+                        (unsigned long)(hs.largest_free >> 10));
+                notify_error("Memory", "a kernel allocation could not be satisfied");
+                warned_fails = hs.failures;
             }
         }
         __asm__ volatile("hlt");

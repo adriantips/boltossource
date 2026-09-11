@@ -25,6 +25,10 @@ int users_current_gid(void) { return 0; }
 int boot_is_recovery(void) { return recovery; }
 uint32_t boot_flags(void) { return recovery ? BOOT_RECOVERY : 0; }
 void kprintf(const char *fmt, ...) { (void)fmt; }
+/* fs_init() panics if the root node cannot be allocated; a test that
+ * reaches it has found something worth stopping for. */
+void panic(const char *msg) { fprintf(stderr, "PANIC: %s
+", msg); abort(); }
 
 /* Protecting a disk read-only is a decision the person using the machine has
  * to be told about, so it is part of what these tests check, not a stub that

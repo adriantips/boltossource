@@ -112,11 +112,14 @@ static procbuf *proc_gen(const char *path) {
     char *o = buf;
     if (!strcmp(path, "/proc/meminfo")) {
         uint64_t total = pmm_total_count() * 4096, freeb = pmm_free_count() * 4096;
-        uint64_t hu = 0, ht = 0; kheap_usage(&hu, &ht);
-        o = put_str(o, "PhysTotal: "); o = put_u64(o, total >> 10); o = put_str(o, " kB\n");
-        o = put_str(o, "PhysFree:  "); o = put_u64(o, freeb >> 10); o = put_str(o, " kB\n");
-        o = put_str(o, "KHeapUsed: "); o = put_u64(o, hu >> 10);    o = put_str(o, " kB\n");
-        o = put_str(o, "KHeapTotal:"); o = put_u64(o, ht >> 10);    o = put_str(o, " kB\n");
+        kheap_stats h; kheap_get_stats(&h);
+        o = put_str(o, "PhysTotal: "); o = put_u64(o, total >> 10);   o = put_str(o, " kB\n");
+        o = put_str(o, "PhysFree:  "); o = put_u64(o, freeb >> 10);   o = put_str(o, " kB\n");
+        o = put_str(o, "KHeapUsed: "); o = put_u64(o, h.used >> 10);  o = put_str(o, " kB\n");
+        o = put_str(o, "KHeapTotal:"); o = put_u64(o, h.total >> 10); o = put_str(o, " kB\n");
+        /* What is free matters less than what is free in one piece. */
+        o = put_str(o, "KHeapAvail:"); o = put_u64(o, h.free_bytes >> 10); o = put_str(o, " kB\n");
+        o = put_str(o, "KHeapLargest:"); o = put_u64(o, h.largest_free >> 10); o = put_str(o, " kB\n");
     } else if (!strcmp(path, "/proc/version")) {
         o = put_str(o, "BoltOS 0.3 (x86-64 long mode)\n");
     } else {

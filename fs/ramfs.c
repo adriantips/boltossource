@@ -50,10 +50,12 @@ static fs_node *node_new(const char *name, int is_dir, fs_node *parent) {
 }
 
 void fs_init(void) {
-    root_ = (fs_node *)kmalloc(sizeof(fs_node));
-    memset(root_, 0, sizeof(*root_));
-    strncpy(root_->name, "/", FS_NAME_MAX);
-    root_->is_dir = 1;
+    /* Through node_new, so the root is built the same way as every other
+     * directory: it used to be assembled by hand and came out with no mode,
+     * owner or mtime at all, which fs_may() then had to read as a node from
+     * an image predating permissions. */
+    root_ = node_new("/", 1, 0);
+    if (!root_) panic("fs_init: no memory for the filesystem root");
     cwd_ = root_;
 
     /* seed a small tree so the file commands have something to show */

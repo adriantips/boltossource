@@ -223,7 +223,14 @@ static void paint_draw(window_t *w, int cx, int cy, int cw, int ch) {
 }
 
 void paint_app_init(void) {
-    canvas = (uint32_t *)kmalloc((uint64_t)CANVW * CANVH * 4);
+    /* An app with nowhere to paint is not worth a window. Drawing guards
+     * against a null canvas everywhere, so the old unchecked allocation gave
+     * an editor that silently refused every stroke instead of saying why. */
+    if (!canvas) canvas = (uint32_t *)kmalloc((uint64_t)CANVW * CANVH * 4);
+    if (!canvas) {
+        notify_error("Paint", "not enough memory for the canvas");
+        return;
+    }
     canvas_clear();
     window_t *win = gui_add_window("Paint", CANVW + 2 * PAD + 4, CANVH + TOOLH + 2 * PAD + 4,
                                    0xE0556B, ICON_PAINT);

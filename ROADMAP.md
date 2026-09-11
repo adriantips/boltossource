@@ -48,9 +48,14 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 - [x] 18. Scheduler watchdog: report a starved or wedged thread, and a
         `kill` that really terminates a ring-3 process
 - [x] 19. Free kernel stacks and address spaces on process exit
-- [~] 20. Out-of-memory handling (watchdog warns at 90% heap; failed BoltFS
-        loads preserve both the live tree and disk, failed commit allocations
-        report failure; other callers still need an audit)
+- [x] 20. Out-of-memory handling: the watchdog reports a full heap, a
+        fragmented one and every allocation that has failed; failed BoltFS
+        loads preserve both the live tree and the disk; the heap coalesces in
+        both directions, so memory given back is memory available again;
+        kmalloc runs with interrupts off, because the timer preempts into it;
+        stray and double frees are counted rather than honoured; and the
+        remaining unchecked callers (the filesystem root, the compositor's
+        second buffer, Paint's canvas) check now
 
 ## Phase 2 — Security & real multi-user
 
