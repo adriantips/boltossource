@@ -141,6 +141,11 @@ void tcp_close(struct tcp_conn *c);
  * connection nobody has claimed (0 on timeout). The result is an ordinary
  * tcp_conn, so send/recv/close are the same calls a client uses. */
 int  tcp_listen(uint16_t port);
+/* Walk the listening ports and the live connections; 0 when slot i is empty. */
+int  tcp_listener_dump(int i, uint16_t *port);
+int  tcp_conn_dump(int i, netaddr *peer, uint16_t *peer_port,
+                   uint16_t *local_port, const char **state);
+int  udp_listener_dump(int i, uint16_t *port);
 void tcp_unlisten(uint16_t port);
 struct tcp_conn *tcp_accept(uint16_t port, uint32_t timeout_ms);
 
