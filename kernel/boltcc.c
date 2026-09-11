@@ -507,6 +507,11 @@ static Node *parse_postfix(void) {
             if (strcmp(m, "Length") == 0)        call->str = "len";
             else if (strcmp(m, "length") == 0)   { call->str = "len"; if (curk()==TK_LP){adv();accept(TK_RP);} }
             else if (strcmp(m, "ToString") == 0) { call->str = "str"; if (curk()==TK_LP){adv();accept(TK_RP);} }
+            /* In a program with structs, an unrecognised member is a
+             * mistyped field far more often than it is a reach for one of the
+             * three pseudo-members below, and saying so names the actual
+             * problem. */
+            else if (C->nstruct) cc_error("no such field", m);
             else cc_error("unsupported member", m);
             call->nkids = 1; call->kids = (Node **)ast_alloc(sizeof(Node *)); call->kids[0] = e;
             e = call;
@@ -596,6 +601,7 @@ static Node *parse_assign(void) {
         return n;
     }
     if (l->kind == N_FIELD) {                 /* s.f = v, and s.f op= v */
+        adv();                                /* the '=' itself */
         Node *n = node(N_ASSIGNFLD);
         n->op = op; n->a = l->a; n->str = l->str; n->b = parse_assign();
         return n;
@@ -751,7 +757,11 @@ static Node *parse_block(void) {
 static int skip_top_noise(void) {  /* returns 1 if it consumed something */
     if (id_is(cur(), "using")) { while (curk() != TK_SEMI && curk() != TK_EOF) adv(); accept(TK_SEMI); return 1; }
     if (id_is(cur(), "namespace")) { adv(); while (curk()!=TK_LBRACE && curk()!=TK_EOF) adv(); accept(TK_LBRACE); return 1; }
-    if (id_is(cur(), "class") || id_is(cur(), "struct")) {
+    /* C++ and C# wrap top-level code in a class, and the body is unwrapped by
+     * skipping to the brace and dropping it. `struct` means that there too --
+     * but in C it declares a record, and swallowing it here is why every
+     * `struct Point { ... };` came back as "no such struct: Point". */
+    if (id_is(cur(), "class") || (id_is(cur(), "struct") && C->lang != BCC_C)) {
         adv(); while (curk()!=TK_LBRACE && curk()!=TK_EOF) adv(); accept(TK_LBRACE); return 1;
     }
     static const char *mods[] = { "public","private","protected","internal","static",
