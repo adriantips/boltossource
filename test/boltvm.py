@@ -379,6 +379,66 @@ class BoltVM:
         raise AssertionError("never reached a shell prompt\n--- serial tail ---\n"
                              + self.serial()[-2500:])
 
+    def open_app(self, name, probe=True):
+        """Open a desktop app from the Start menu, and make sure it opened.
+
+        Eight tests each carried their own copy of
+
+            vm.key("meta_l"); vm.type("Terminal"); vm.key("ret"); sleep(2)
+
+        which types the app's name into a menu that may not be on screen yet.
+        Start-menu search filters the grid as the characters arrive, so a
+        swallowed first character leaves "erminal" in the box, Enter launches
+        whatever that matches -- usually nothing -- and the test then waits out
+        its whole timeout for output from an app that was never opened. It
+        failed intermittently for months and reproducibly once the menu grew
+        enough work to do to widen the window.
+
+        So: let the menu come up before typing into it, and then confirm the
+        app is really taking input rather than trusting a sleep. `probe` types
+        a marker at the app's prompt and waits for it to come back, which is
+        only meaningful for Terminal; pass probe=False for the others, where
+        the open is all that can be checked without a screenshot.
+        """
+        for attempt in range(3):
+            self.key("esc")                    # any menu left over from a retry
+            time.sleep(0.3)
+            self.key("meta_l")
+            time.sleep(0.8)                    # the menu has to be up to type into
+            self.type(name)
+            time.sleep(0.5)                    # and the filter has to catch up
+            self.key("ret")
+            time.sleep(1.8)
+            if not probe:
+                return True
+            marker = "boltvmapp%d" % attempt
+            self._buf = ""
+            self.type(" echo %s\n" % marker)  # leading space: not in history
+            end = time.time() + 4
+            while time.time() < end:
+                if marker in self.serial():
+                    time.sleep(0.3)
+                    return True
+                time.sleep(0.2)
+        raise AssertionError("%r never opened and took input\n--- serial tail ---\n%s"
+                             % (name, self.serial()[-1500:]))
+
+    def sign_in(self, user, password, timeout=150):
+        """Wait for the desktop's sign-in screen and log in.
+
+        The same four lines were in six tests, including the sleep that has to
+        be there: the login screen is painted by the compositor after the
+        kernel says it is launching the desktop, so typing at that message is
+        typing at nothing.
+        """
+        self.expect("BoltOS is up. Launching desktop.", timeout=timeout)
+        time.sleep(4.0)
+        self.type(user)
+        self.key("tab")
+        self.type(password)
+        self.key("ret")
+        time.sleep(3.0)
+
     def wait_prompt(self, timeout=60):
         """Block until the shell prints its prompt.
 

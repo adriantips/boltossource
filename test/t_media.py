@@ -43,12 +43,8 @@ MIN_AUDIO_S = 4.0           # what must reach the sound card over the whole run
 
 
 def sign_in(vm):
-    vm.expect("BoltOS is up. Launching desktop.", timeout=180)
-    time.sleep(4.0)
-    vm.type(LOGIN_USER); vm.key("tab"); vm.type(LOGIN_PASS); vm.key("ret")
-    time.sleep(3.0)
-    vm.key("meta_l"); vm.type("Terminal"); vm.key("ret")
-    time.sleep(2.0)
+    vm.sign_in(LOGIN_USER, LOGIN_PASS, timeout=180)
+    vm.open_app("Terminal")
 
 
 def run(vm, line, wait_for, timeout=60, settle=0.0):
@@ -167,8 +163,7 @@ def main():
         # with the keyboard -- so bring it to the front to photograph it, which
         # is the point at which the Terminal stops receiving anything.
         run(vm, "media open " + CHIME, "Device  :")
-        vm.key("meta_l"); vm.type("Media"); vm.key("ret")
-        time.sleep(1.5)
+        vm.open_app("Media", probe=False)
         vm.screenshot("media.ppm")
         print("  ok: the window is in test/out/media.ppm")
 
