@@ -269,14 +269,14 @@ echo "[3d/6] embed a TrueType font (font.ttf -> blob)"
 # A monospace TrueType face for the scalable/anti-aliased text renderer. Copied
 # from the host's Lucida Console if present; the kernel falls back to its 8x16
 # bitmap face when no glyf-based TTF is embedded.
-if [ ! -f assets/font.ttf ]; then
-    mkdir -p assets
+if [ ! -f assets/fonts/font.ttf ]; then
+    mkdir -p assets/fonts
     for c in /c/Windows/Fonts/lucon.ttf /c/Windows/Fonts/cour.ttf /mnt/c/Windows/Fonts/lucon.ttf; do
-        [ -f "$c" ] && { cp "$c" assets/font.ttf; break; }
+        [ -f "$c" ] && { cp "$c" assets/fonts/font.ttf; break; }
     done
 fi
-[ -f assets/font.ttf ] || { echo "WARN: no font.ttf; embedding an empty blob"; : > assets/font.ttf; }
-cp assets/font.ttf build/font.ttf
+[ -f assets/fonts/font.ttf ] || { echo "WARN: no font.ttf; embedding an empty blob"; : > assets/fonts/font.ttf; }
+cp assets/fonts/font.ttf build/font.ttf
 ( cd build && "$OBJCOPY" -I binary -O elf64-x86-64 font.ttf font_ttf.o )
 KOBJS+=(build/font_ttf.o)
 
@@ -284,11 +284,30 @@ echo "[3d2/6] generate the system sounds (chime.wav, blip.wav -> blobs)"
 # Two shapes on purpose: 22 kHz mono 8-bit and 44.1 kHz stereo 16-bit. Between
 # them they make the decoder resample, expand mono to stereo and sign-convert,
 # which is what any WAV off a real disk asks of it.
-"$PYTHON" mkwav.py assets
-cp assets/chime.wav assets/blip.wav build/
+"$PYTHON" mkwav.py assets/audio
+cp assets/audio/chime.wav assets/audio/blip.wav build/
 ( cd build && "$OBJCOPY" -I binary -O elf64-x86-64 chime.wav chime_wav.o )
 ( cd build && "$OBJCOPY" -I binary -O elf64-x86-64 blip.wav  blip_wav.o  )
 KOBJS+=(build/chime_wav.o build/blip_wav.o)
+
+echo "[3d3/6] embed the desktop wallpapers (one render per resolution -> blobs)"
+# The compositor stretches the wallpaper with a nearest-neighbour sampler, so a
+# single file would be stair-stepped at four of the five modes. mkwall.py cuts
+# the 4K master down to one JPEG per entry in settings.c's res_tab[]; the whole
+# set is ~1.5 MB, where the same renders as PNG would be 13.5 MB and the 4K one
+# alone would want ~99 MiB of kheap to decode.
+WALLPAPERS=(assets/wallpapers/mountain-*.jpg)
+[ -e "${WALLPAPERS[0]}" ] || {
+    echo "ERROR: no assets/wallpapers/mountain-*.jpg -- run: python mkwall.py assets/wallpapers/mountain.png assets/wallpapers"
+    exit 1
+}
+for w in "${WALLPAPERS[@]}"; do
+    b=$(basename "$w")
+    cp "$w" "build/$b"
+    o="${b//[-.]/_}.o"
+    ( cd build && "$OBJCOPY" -I binary -O elf64-x86-64 "$b" "$o" )
+    KOBJS+=("build/$o")
+done
 
 echo "[3e/6] real NetSurf libraries (upstream source, compiled against the libc)"
 # The genuine NetSurf support stack, vendored under netsurf/ and built against

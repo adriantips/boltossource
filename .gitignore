@@ -6,8 +6,8 @@
 *.img
 *.ppm
 *.fd
-assets/font.ttf
-assets/*.wav
+assets/fonts/font.ttf
+assets/audio/*.wav
 test/out/
 __pycache__/
 *.pyc

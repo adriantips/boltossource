@@ -204,6 +204,16 @@ extern const uint8_t _binary_blip_wav_start[];
 extern const uint8_t _binary_blip_wav_end[];
 extern const uint8_t _binary_netget_elf_start[];
 extern const uint8_t _binary_netget_elf_end[];
+extern const uint8_t _binary_mountain_1024x768_jpg_start[];
+extern const uint8_t _binary_mountain_1024x768_jpg_end[];
+extern const uint8_t _binary_mountain_1280x720_jpg_start[];
+extern const uint8_t _binary_mountain_1280x720_jpg_end[];
+extern const uint8_t _binary_mountain_1920x1080_jpg_start[];
+extern const uint8_t _binary_mountain_1920x1080_jpg_end[];
+extern const uint8_t _binary_mountain_2560x1440_jpg_start[];
+extern const uint8_t _binary_mountain_2560x1440_jpg_end[];
+extern const uint8_t _binary_mountain_3840x2160_jpg_start[];
+extern const uint8_t _binary_mountain_3840x2160_jpg_end[];
 
 /* Create every missing directory along `path`'s parent chain, so a blob can be
  * seeded anywhere rather than only into /bin. */
@@ -240,6 +250,24 @@ static void seed_system_sounds(void) {
               _binary_chime_wav_start, _binary_chime_wav_end);
     seed_blob("/usr/share/sounds/blip.wav",
               _binary_blip_wav_start, _binary_blip_wav_end);
+}
+
+/* One render per entry in the resolution table (kernel/settings.c), because
+ * the compositor's stretch is nearest-neighbour and a photograph will not
+ * survive it. gui.c reads the "<stem>-<W>x<H>.jpg" naming: on a mode change it
+ * looks for the sibling that matches the new panel and swaps to it, so the
+ * stretch loop stays a 1:1 copy at every setting the Settings app offers. */
+static void seed_wallpapers(void) {
+    seed_blob("/usr/share/wallpapers/mountain-1024x768.jpg",
+              _binary_mountain_1024x768_jpg_start,  _binary_mountain_1024x768_jpg_end);
+    seed_blob("/usr/share/wallpapers/mountain-1280x720.jpg",
+              _binary_mountain_1280x720_jpg_start,  _binary_mountain_1280x720_jpg_end);
+    seed_blob("/usr/share/wallpapers/mountain-1920x1080.jpg",
+              _binary_mountain_1920x1080_jpg_start, _binary_mountain_1920x1080_jpg_end);
+    seed_blob("/usr/share/wallpapers/mountain-2560x1440.jpg",
+              _binary_mountain_2560x1440_jpg_start, _binary_mountain_2560x1440_jpg_end);
+    seed_blob("/usr/share/wallpapers/mountain-3840x2160.jpg",
+              _binary_mountain_3840x2160_jpg_start, _binary_mountain_3840x2160_jpg_end);
 }
 
 static void launch_user_demo(void) {
@@ -375,6 +403,7 @@ void kmain(struct bootinfo *bi) {
 
     proc_init();
     seed_system_sounds();
+    seed_wallpapers();
     users_init();    kprintf("[ok] user accounts (%d) loaded\n", users_count());
     /* After the filesystem, because the bindings live in /etc/keys.conf. */
     keymap_init();   kprintf("[ok] %d keyboard shortcuts\n", keymap_count());
