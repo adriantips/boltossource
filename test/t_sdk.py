@@ -66,20 +66,7 @@ def serve(directory):
 
 def reach_net_shell(vm, timeout=180):
     """Normal boot with no framebuffer: a serial shell with the network up."""
-    for _ in range(16):
-        if "boot mode" in vm.serial():
-            break
-        vm.key("1")
-        time.sleep(0.4)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        vm.clear()
-        vm.type("echo __shell_up__\n")
-        time.sleep(1.2)
-        if "__shell_up__" in vm.serial():
-            time.sleep(0.4)
-            return
-    raise AssertionError("never reached a shell\n" + vm.serial()[-2000:])
+    return vm.reach_shell(timeout, "1")
 
 
 def main():
