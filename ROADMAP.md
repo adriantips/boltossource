@@ -100,7 +100,12 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
         reaches a neighbour and a router but not a web page
 - [x] 40. TCP listen/accept (server sockets)
 - [x] 41. Socket syscalls, so ring-3 programs can use the network
-- [ ] 42. SSH client
+- [x] 42. SSH client: the same machinery as the server with the roles
+        swapped, a host key checked against known_hosts, and a changed key
+        refused rather than asked about. Two BoltOS machines on one wire in
+        test/t_sshclient.py -- which is also where it showed that a machine
+        idle at a prompt answered nothing at all, because the NIC's interrupt
+        line was never opened in the IO-APIC
 - [x] 43. SSH server (remote administration and development)
 - [ ] 44. Wi-Fi radio driver
 - [ ] 45. WPA2 four-way handshake

@@ -644,6 +644,33 @@ web page. `test/host/ip6.c` checks the address text forms with no machine at
 all (where `::` printing as `:::` and `fe80:::1` parsing as `fe80::1` were both
 found), and `test/t_ipv6.py` boots against slirp's own NDP router.
 
+### The interrupt that was installed but never opened
+
+The e1000 registered a receive-interrupt handler and enabled the card's
+interrupt mask, and the handler never ran once. `apic_init()` masks every
+IO-APIC redirection entry and then unmasks exactly four ISA lines — keyboard,
+mouse, COM1, ATA — so the NIC's line stayed masked and its interrupt could not
+be delivered. Frames were only ever taken off the card by `netif_poll_all()`,
+which every blocking wait in the stack calls, so the machine received *while it
+was already waiting for something* and not otherwise. An idle BoltOS did not
+answer an ARP request, which means nothing could open a connection to it at
+all; `sshd` worked only because its accept loop polls.
+
+`irq_install_pci()` installs the handler and opens the line, because those are
+one decision. A PCI INTx line is level-triggered and active low, which is the
+opposite of what the MADT implies by having no entry for it, so the polarity
+and trigger are stated rather than inferred. `rx_drain()` in both NIC drivers
+now refuses to re-enter, since a poll and an interrupt would otherwise walk the
+same descriptor ring.
+
+Those lines are also *shared*, and there is one handler per line, so a device
+sitting on the NIC's line that asserts INTx would be acknowledged by a handler
+that has nothing of its own to clear — and a level-triggered line that nothing
+clears fires again immediately, forever. Each line is counted, and one that
+fires ten thousand times inside a millisecond is masked and reported. A device
+that stops working is bad; a machine that stops is worse, and "line 11 is
+stuck" in the log is the difference between a diagnosis and a mystery.
+
 ### Configuration that survives the reboot
 
 Every boot used to run DHCP and forget everything afterwards, so a static
@@ -670,6 +697,35 @@ wire. Before the cache existed, every image on a page re-resolved the same host,
 putting a full DNS round trip in front of each one. `hosts add NAME IP` names a
 peer locally (and that lookup never leaves the machine); `dns NAME` resolves one,
 `dns` shows the cache with each entry's remaining TTL, and `dns flush` empties it.
+
+### SSH, in both directions
+
+`sshd` serves; `ssh` connects out. They are the same code with the roles
+swapped — the packet protocol, the key derivation and the buffers are written
+from neither end's point of view — so the client sends the first KEXINIT,
+verifies a signature instead of making one, and reads with the keys the server
+writes with.
+
+    ssh [-p PORT] [-w PASSWORD] [USER@]HOST [COMMAND...]
+
+With a command it runs that one command and exits with its status, which is
+what a script wants; without one it is a shell, and the keyboard is forwarded
+until Ctrl+D.
+
+The part a server does not have is deciding whether to trust the other end. The
+host key is checked against `/etc/ssh/known_hosts`: a host that is not there is
+added and its fingerprint printed, and a host whose key has **changed** is
+refused outright rather than asked about — that question has exactly one safe
+answer, and asking it teaches people to press y. `sshkey known` lists what is
+remembered and `sshkey forget HOST` drops one, which is what a legitimately
+rebuilt machine needs.
+
+`test/t_ssh.py` drives the server with a real OpenSSH, which is the test that
+matters: a mis-encoded exchange hash verifies perfectly against your own
+verifier. `test/t_sshclient.py` puts two BoltOS machines on one wire — QEMU's
+socket netdev, since slirp gives each guest its own private network — and has
+one log in to the other, which checks the client against a server a third party
+already validated.
 
 ### Sockets, and taking connections
 

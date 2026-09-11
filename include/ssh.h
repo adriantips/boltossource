@@ -44,3 +44,22 @@ void ssh_hostkey_fingerprint(char *out, uint32_t cap);
  * Blocking, like `serve` -- this kernel has no daemons, and a server you can
  * see and stop is a better fit for it than one you cannot. */
 int  ssh_server_run(uint16_t port);
+
+/* Connect out. With `command`, it runs that one command and returns its exit
+ * status through `status_out`; without one, the session is a shell and the
+ * keyboard is forwarded to it until the far end closes or Ctrl+D is pressed.
+ * Returns 0 if the session ran at all, -1 if it never got that far.
+ *
+ * The host key is checked against /etc/ssh/known_hosts. A host that is not in
+ * there is added, with its fingerprint printed; a host whose key has changed
+ * is refused outright rather than asked about, because "the host key changed,
+ * continue?" has exactly one safe answer and asking it teaches people to press
+ * y. */
+#define SSH_KNOWN_HOSTS_PATH "/etc/ssh/known_hosts"
+int  ssh_client_connect(const char *host, uint16_t port, const char *user,
+                        const char *password, const char *command,
+                        int *status_out);
+
+/* The remembered hosts, for `sshkey known` and `sshkey forget HOST`. */
+int  ssh_known_hosts_list(int idx, char *host, uint32_t hcap, char *fp, uint32_t fcap);
+int  ssh_known_hosts_forget(const char *host);

@@ -94,7 +94,8 @@ class BoltVM:
     def __init__(self, name="vm", uefi=False, disks=True, net=True, snapshot=True,
                  memory="2G", smp=2, extra=None, port=None, workdir=None,
                  boot_img=None, data_disks=None, no_reboot=False, nic="e1000",
-                 hostfwd=None, audio="ac97", wav=None, ipv6=False):
+                 hostfwd=None, audio="ac97", wav=None, ipv6=False,
+                 netdev=None, mac=None):
         self.name = name
         self.uefi = uefi
         self.workdir = workdir or os.path.join(ROOT, "test", "out")
@@ -174,18 +175,32 @@ class BoltVM:
             # `hostfwd` is a list of (host_port, guest_port) pairs, which is how
             # a test reaches a server running INSIDE the guest -- slirp gives the
             # guest no address the host can dial otherwise.
-            nd = "user,id=net0"
-            # slirp does IPv6 too, but only when asked: fec0::/64 with the
-            # gateway at fec0::2, advertised over NDP. That is a real router
-            # advertisement from a real implementation, which is what makes it
-            # worth testing SLAAC against rather than a fixture.
-            # ipv4 has to be asked for as well: naming ipv6 alone turns the
-            # v4 side of slirp off, and the machine then has no DHCP either.
-            if ipv6:
-                nd += ",ipv4=on,ipv6=on"
-            for hp, gp in (hostfwd or []):
-                nd += ",hostfwd=tcp::%d-:%d" % (hp, gp)
-            a += ["-netdev", nd, "-device", nic + ",netdev=net0"]
+            # `netdev` replaces slirp outright, which is how two guests are
+            # put on the same wire: one QEMU listens on a host socket and the
+            # other connects to it, and the two machines then see each other's
+            # frames with nothing in between. slirp cannot do that -- each
+            # guest gets its own private network and no route to the other.
+            if netdev:
+                nd = netdev
+            else:
+                nd = "user,id=net0"
+                # slirp does IPv6 too, but only when asked: fec0::/64 with the
+                # gateway at fec0::2, advertised over NDP. That is a real router
+                # advertisement from a real implementation, which is what makes
+                # it worth testing SLAAC against rather than a fixture.
+                # ipv4 has to be asked for as well: naming ipv6 alone turns the
+                # v4 side of slirp off, and the machine then has no DHCP either.
+                if ipv6:
+                    nd += ",ipv4=on,ipv6=on"
+                for hp, gp in (hostfwd or []):
+                    nd += ",hostfwd=tcp::%d-:%d" % (hp, gp)
+            dev = nic + ",netdev=net0"
+            # Two machines on one wire need two MAC addresses; QEMU hands every
+            # guest the same one, and two of those on a shared segment makes
+            # ARP answer for the wrong machine.
+            if mac:
+                dev += ",mac=" + mac
+            a += ["-netdev", nd, "-device", dev]
         a += ["-display", "none",
               "-serial", "file:" + self.serial_path,
               "-qmp", "tcp:127.0.0.1:%d,server,nowait" % self.port]

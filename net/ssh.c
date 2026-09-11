@@ -956,9 +956,16 @@ static int serve_one(struct tcp_conn *tc, uint32_t peer_ip) {
          * the console once the server stopped: an unprivileged user could
          * start sshd, have someone log in as root, and inherit root. */
         int caller_uid = users_current_uid();
+        fs_node *caller_cwd = fs_cwd();
         users_login(uid);
+        /* And into that account's home, the way signing in anywhere else
+         * starts. The working directory is process-wide for the same reason
+         * the identity is, so it goes back with it. */
+        fs_node *home = fs_lookup(users_home());
+        if (home && home->is_dir) fs_set_cwd(home);
         rc = server_session(s, user);
         users_login(caller_uid);
+        if (caller_cwd) fs_set_cwd(caller_cwd);
         kprintf("sshd: session for %s ended\n", user);
     } while (0);
 
@@ -991,4 +998,494 @@ int ssh_server_run(uint16_t port) {
     tcp_unlisten(port);
     kprintf("sshd: stopped after %d connection%s\n", served, served == 1 ? "" : "s");
     return 0;
+}
+
+
+/* ============================== client =================================== *
+ *  The other half. Everything above this -- the packet protocol, the key
+ *  derivation, the buffers -- is written from neither end's point of view, so
+ *  the client is the same machinery with the roles swapped: it sends the first
+ *  KEXINIT, it verifies a signature instead of making one, and it reads what
+ *  the server writes with the keys the server writes with.
+ *
+ *  The part a server does not have is deciding whether to trust the other end.
+ *  A host key is checked against /etc/ssh/known_hosts, and a key that has
+ *  changed for a host already in there stops the connection outright rather
+ *  than asking: the question "the host key changed, continue?" has exactly one
+ *  safe answer and asking it teaches people to press y.
+ * ------------------------------------------------------------------------- */
+
+#define MSG_USERAUTH_BANNER   53
+#define MSG_CHANNEL_EXTENDED_DATA 95
+#define SSH_KNOWN_HOSTS "/etc/ssh/known_hosts"
+
+/* The SHA-256 fingerprint of any public key blob, in OpenSSH's format. */
+static void blob_fingerprint(const uint8_t *blob, uint32_t len, char *out, uint32_t cap) {
+    uint8_t h[32];
+    sha256(blob, len, h);
+    char b[64];
+    uint32_t n = b64(h, 32, b, sizeof b);
+    while (n && b[n-1] == '=') b[--n] = 0;
+    snprintf(out, cap, "SHA256:%s", b);
+}
+
+/* An mpint as it arrives -- possibly with a leading zero the sender added to
+ * keep it positive, possibly shorter than 32 bytes because leading zeros are
+ * not sent -- into the fixed 32 bytes p256 wants. */
+static int mpint_to_32(const uint8_t *p, uint32_t n, uint8_t out[32]) {
+    while (n && p[0] == 0) { p++; n--; }
+    if (n > 32) return -1;
+    memset(out, 0, 32);
+    memcpy(out + (32 - n), p, n);
+    return 0;
+}
+
+/* ---- known hosts -------------------------------------------------------- *
+ *  "host fingerprint" a line, which is not OpenSSH's format -- that stores the
+ *  whole key -- but is what this can compare and what a person can read. */
+static int known_hosts_find(const char *host, char *fp_out, uint32_t cap) {
+    fs_node *f = fs_lookup(SSH_KNOWN_HOSTS);
+    if (!f || !f->data) return 0;
+    uint32_t i = 0, hl = (uint32_t)strlen(host);
+    while (i < f->size) {
+        uint32_t e = i;
+        while (e < f->size && f->data[e] != '\n') e++;
+        if (e - i > hl + 1 && !memcmp(f->data + i, host, hl) && f->data[i + hl] == ' ') {
+            uint32_t o = 0, p = i + hl + 1;
+            while (p < e && o < cap - 1) fp_out[o++] = (char)f->data[p++];
+            fp_out[o] = 0;
+            return 1;
+        }
+        i = e + 1;
+    }
+    return 0;
+}
+
+static void known_hosts_add(const char *host, const char *fp) {
+    if (!fs_lookup("/etc/ssh")) {
+        if (!fs_lookup("/etc")) fs_create("/etc", 1);
+        fs_create("/etc/ssh", 1);
+    }
+    fs_node *f = fs_lookup(SSH_KNOWN_HOSTS);
+    if (!f) f = fs_create(SSH_KNOWN_HOSTS, 0);
+    if (!f) return;
+    char line[160];
+    snprintf(line, sizeof line, "%s %s\n", host, fp);
+    fs_append(f, line, (uint32_t)strlen(line));
+    f->mode = 0644;
+}
+
+/* Walk the file for `sshkey known`. 0 when there is no line i. */
+int ssh_known_hosts_list(int idx, char *host, uint32_t hcap, char *fp, uint32_t fcap) {
+    fs_node *f = fs_lookup(SSH_KNOWN_HOSTS);
+    if (!f || !f->data) return 0;
+    uint32_t i = 0;
+    int n = 0;
+    while (i < f->size) {
+        uint32_t e = i;
+        while (e < f->size && f->data[e] != '\n') e++;
+        if (e > i) {
+            if (n++ == idx) {
+                uint32_t sp = i;
+                while (sp < e && f->data[sp] != ' ') sp++;
+                uint32_t o = 0;
+                for (uint32_t p = i; p < sp && o < hcap - 1; p++) host[o++] = (char)f->data[p];
+                host[o] = 0;
+                o = 0;
+                for (uint32_t p = sp + 1; p < e && o < fcap - 1; p++) fp[o++] = (char)f->data[p];
+                fp[o] = 0;
+                return 1;
+            }
+        }
+        i = e + 1;
+    }
+    return 0;
+}
+
+/* Drop one host's line, so a machine that was legitimately rebuilt can be
+ * connected to again without hand-editing the file. */
+int ssh_known_hosts_forget(const char *host) {
+    fs_node *f = fs_lookup(SSH_KNOWN_HOSTS);
+    if (!f || !f->data) return -1;
+    uint32_t hl = (uint32_t)strlen(host);
+    char *out = (char *)kmalloc(f->size + 1);
+    if (!out) return -1;
+    uint32_t i = 0, n = 0;
+    int dropped = 0;
+    while (i < f->size) {
+        uint32_t e = i;
+        while (e < f->size && f->data[e] != '\n') e++;
+        uint32_t len = e - i;
+        int match = len > hl && !memcmp(f->data + i, host, hl) && f->data[i + hl] == ' ';
+        if (match) dropped = 1;
+        else if (len) { memcpy(out + n, f->data + i, len); n += len; out[n++] = '\n'; }
+        i = e + 1;
+    }
+    int rc = dropped ? fs_write(f, out, n) : -1;
+    kfree(out);
+    return rc;
+}
+
+/* ---- key exchange ------------------------------------------------------- */
+static int client_kex(ssh_conn *s, const buf *my_kexinit,
+                      const uint8_t *peer_kexinit, uint32_t peer_kexinit_len,
+                      const char *host) {
+    uint8_t eph_priv[32], Q_C[32], Q_S[32], K[32];
+    crypto_rand_bytes(eph_priv, 32);
+    static const uint8_t basepoint[32] = { 9 };
+    x25519(Q_C, eph_priv, basepoint);
+
+    buf init; buf_init(&init, 64);
+    put_u8(&init, MSG_KEX_ECDH_INIT);
+    put_str(&init, Q_C, 32);
+    int rc = init.oom ? -1 : pkt_send(s, init.b, init.len);
+    buf_free(&init);
+    if (rc != 0) return -1;
+
+    if (pkt_recv(s, IOTIMEOUT) != 0) return -1;
+    if (s->pktlen < 1 || s->pkt[0] != MSG_KEX_ECDH_REPLY) return -1;
+
+    rdr r; rd_init(&r, s->pkt, s->pktlen);
+    rd_u8(&r);
+    uint32_t kslen;  const uint8_t *ks  = rd_str(&r, &kslen);
+    uint32_t qslen;  const uint8_t *qs  = rd_str(&r, &qslen);
+    uint32_t siglen; const uint8_t *sig = rd_str(&r, &siglen);
+    if (r.bad || qslen != 32) return -1;
+
+    /* Copy what is still needed: the shared secret goes into the same packet
+     * buffer these point at the moment anything else is received. */
+    uint8_t hostblob[256];
+    if (kslen > sizeof hostblob) return -1;
+    memcpy(hostblob, ks, kslen);
+    memcpy(Q_S, qs, 32);
+    uint8_t sigcopy[256];
+    if (siglen > sizeof sigcopy) return -1;
+    memcpy(sigcopy, sig, siglen);
+
+    x25519(K, eph_priv, Q_S);
+
+    buf kmp; buf_init(&kmp, 64); put_mpint(&kmp, K, 32);
+    buf h; buf_init(&h, 1024);
+    put_cstr(&h, SSH_VERSION_STR);                /* V_C -- ours, we are the client */
+    put_cstr(&h, s->peer_version);                /* V_S */
+    put_str(&h, my_kexinit->b, my_kexinit->len);  /* I_C */
+    put_str(&h, peer_kexinit, peer_kexinit_len);  /* I_S */
+    put_str(&h, hostblob, kslen);                 /* K_S */
+    put_str(&h, Q_C, 32);
+    put_str(&h, Q_S, 32);
+    put_raw(&h, kmp.b, kmp.len);
+    if (h.oom || kmp.oom) { buf_free(&h); buf_free(&kmp); return -1; }
+
+    uint8_t H[32];
+    sha256(h.b, h.len, H);
+    buf_free(&h);
+
+    /* The host key, out of its blob: name, curve name, then the point. */
+    rdr hb; rd_init(&hb, hostblob, kslen);
+    char alg[40]; rd_cstr(&hb, alg, sizeof alg);
+    char curve[40]; rd_cstr(&hb, curve, sizeof curve);
+    uint32_t publen; const uint8_t *pub = rd_str(&hb, &publen);
+    if (hb.bad || strcmp(alg, "ecdsa-sha2-nistp256") || publen != 65 || pub[0] != 0x04) {
+        kprintf("ssh: the server's host key is not an ecdsa-sha2-nistp256 point\n");
+        buf_free(&kmp);
+        return -1;
+    }
+    uint8_t hostpub[65];
+    memcpy(hostpub, pub, 65);
+
+    /* And the signature: name, then r and s as mpints inside a second string. */
+    rdr sb; rd_init(&sb, sigcopy, siglen);
+    char salg[40]; rd_cstr(&sb, salg, sizeof salg);
+    uint32_t rslen; const uint8_t *rs = rd_str(&sb, &rslen);
+    if (sb.bad || strcmp(salg, "ecdsa-sha2-nistp256")) { buf_free(&kmp); return -1; }
+    rdr rsb; rd_init(&rsb, rs, rslen);
+    uint32_t rl; const uint8_t *rv = rd_str(&rsb, &rl);
+    uint32_t sl; const uint8_t *sv = rd_str(&rsb, &sl);
+    uint8_t sr[32], ss2[32];
+    if (rsb.bad || mpint_to_32(rv, rl, sr) != 0 || mpint_to_32(sv, sl, ss2) != 0) {
+        buf_free(&kmp);
+        return -1;
+    }
+
+    /* ECDSA signs the digest of its message, and the message is H. */
+    uint8_t Hh[32];
+    sha256(H, 32, Hh);
+    if (p256_ecdsa_verify(Hh, 32, hostpub, sr, ss2) != 0) {
+        kprintf("ssh: the server's signature does not verify -- not continuing\n");
+        buf_free(&kmp);
+        return -1;
+    }
+
+    /* Now that the key is proved to belong to whoever is on the other end,
+     * whether it is the right whoever is a separate question. */
+    char fp[80], known[80];
+    blob_fingerprint(hostblob, kslen, fp, sizeof fp);
+    if (known_hosts_find(host, known, sizeof known)) {
+        if (strcmp(known, fp) != 0) {
+            kprintf("ssh: the host key for %s has CHANGED.\n", host);
+            kprintf("     known    %s\n", known);
+            kprintf("     offered  %s\n", fp);
+            kprintf("     Refusing to continue. Either the machine was rebuilt, in\n"
+                    "     which case remove its line from %s, or somebody is\n"
+                    "     between you and it.\n", SSH_KNOWN_HOSTS);
+            buf_free(&kmp);
+            return -1;
+        }
+    } else {
+        kprintf("ssh: %s is new. Its key fingerprint is\n     %s\n", host, fp);
+        kprintf("     Remembering it in %s.\n", SSH_KNOWN_HOSTS);
+        known_hosts_add(host, fp);
+    }
+
+    uint8_t nk = MSG_NEWKEYS;
+    if (pkt_send(s, &nk, 1) != 0) { buf_free(&kmp); return -1; }
+    if (pkt_recv(s, IOTIMEOUT) != 0 || s->pktlen < 1 || s->pkt[0] != MSG_NEWKEYS) {
+        buf_free(&kmp);
+        return -1;
+    }
+
+    memcpy(s->session_id, H, 32);
+    uint8_t iv_c2s[16], iv_s2c[16], key_c2s[16], key_s2c[16];
+    derive(&kmp, H, 'A', s->session_id, iv_c2s,  16);
+    derive(&kmp, H, 'B', s->session_id, iv_s2c,  16);
+    derive(&kmp, H, 'C', s->session_id, key_c2s, 16);
+    derive(&kmp, H, 'D', s->session_id, key_s2c, 16);
+    derive(&kmp, H, 'E', s->session_id, s->mac_out, 32);   /* we are the client: */
+    derive(&kmp, H, 'F', s->session_id, s->mac_in,  32);   /* c2s out, s2c in    */
+    buf_free(&kmp);
+
+    ctr_init(&s->enc, key_c2s, iv_c2s);
+    ctr_init(&s->dec, key_s2c, iv_s2c);
+    s->encrypted = 1;
+    return 0;
+}
+
+/* ---- authentication ----------------------------------------------------- */
+static int client_auth(ssh_conn *s, const char *user, const char *password) {
+    buf o; buf_init(&o, 64);
+    put_u8(&o, MSG_SERVICE_REQUEST);
+    put_cstr(&o, "ssh-userauth");
+    int rc = o.oom ? -1 : pkt_send(s, o.b, o.len);
+    buf_free(&o);
+    if (rc != 0) return -1;
+
+    for (;;) {
+        if (pkt_recv(s, IOTIMEOUT) != 0 || s->pktlen < 1) return -1;
+        uint8_t t = s->pkt[0];
+        if (t == MSG_SERVICE_ACCEPT) break;
+        if (t == MSG_IGNORE || t == MSG_DEBUG) continue;
+        if (t == MSG_DISCONNECT) return -1;
+        return -1;
+    }
+
+    buf a; buf_init(&a, 128);
+    put_u8(&a, MSG_USERAUTH_REQUEST);
+    put_cstr(&a, user);
+    put_cstr(&a, "ssh-connection");
+    put_cstr(&a, "password");
+    put_u8(&a, 0);                                /* not a change request */
+    put_cstr(&a, password ? password : "");
+    rc = a.oom ? -1 : pkt_send(s, a.b, a.len);
+    buf_free(&a);
+    if (rc != 0) return -1;
+
+    for (;;) {
+        if (pkt_recv(s, IOTIMEOUT) != 0 || s->pktlen < 1) return -1;
+        uint8_t t = s->pkt[0];
+        if (t == MSG_USERAUTH_SUCCESS) return 0;
+        if (t == MSG_USERAUTH_FAILURE) {
+            kprintf("ssh: authentication failed for '%s'\n", user);
+            return -1;
+        }
+        if (t == MSG_USERAUTH_BANNER) {           /* the server has something to say */
+            rdr r; rd_init(&r, s->pkt, s->pktlen);
+            rd_u8(&r);
+            uint32_t n; const uint8_t *m = rd_str(&r, &n);
+            if (!r.bad) for (uint32_t i = 0; i < n; i++) kputc((char)m[i]);
+            continue;
+        }
+        if (t == MSG_IGNORE || t == MSG_DEBUG) continue;
+        return -1;
+    }
+}
+
+/* ---- the session -------------------------------------------------------- */
+/* One channel. `command` runs a single command and ends; without one the
+ * session is a shell and the keyboard is forwarded to it until the far end
+ * closes the channel or Ctrl+D is pressed. */
+static int client_session(ssh_conn *s, const char *command) {
+    const uint32_t local_ch = 0, window = 1u << 20, maxpkt = 32768;
+
+    buf o; buf_init(&o, 64);
+    put_u8(&o, MSG_CHANNEL_OPEN);
+    put_cstr(&o, "session");
+    put_u32(&o, local_ch);
+    put_u32(&o, window);
+    put_u32(&o, maxpkt);
+    int rc = o.oom ? -1 : pkt_send(s, o.b, o.len);
+    buf_free(&o);
+    if (rc != 0) return -1;
+
+    uint32_t peer_ch = 0;
+    for (;;) {
+        if (pkt_recv(s, IOTIMEOUT) != 0 || s->pktlen < 1) return -1;
+        uint8_t t = s->pkt[0];
+        if (t == MSG_CHANNEL_OPEN_CONFIRMATION) {
+            rdr r; rd_init(&r, s->pkt, s->pktlen);
+            rd_u8(&r); rd_u32(&r);
+            peer_ch = rd_u32(&r);
+            if (r.bad) return -1;
+            break;
+        }
+        if (t == MSG_CHANNEL_OPEN_FAILURE) {
+            kprintf("ssh: the server refused to open a session\n");
+            return -1;
+        }
+        if (t == MSG_IGNORE || t == MSG_DEBUG || t == MSG_GLOBAL_REQUEST) continue;
+        return -1;
+    }
+
+    buf req; buf_init(&req, 128);
+    put_u8(&req, MSG_CHANNEL_REQUEST);
+    put_u32(&req, peer_ch);
+    if (command) {
+        put_cstr(&req, "exec");
+        put_u8(&req, 1);                          /* want a reply */
+        put_cstr(&req, command);
+    } else {
+        put_cstr(&req, "shell");
+        put_u8(&req, 1);
+    }
+    rc = req.oom ? -1 : pkt_send(s, req.b, req.len);
+    buf_free(&req);
+    if (rc != 0) return -1;
+
+    int exit_status = 0, open = 1, sent_eof = 0;
+    while (open) {
+        /* Anything typed goes to the far end. Only in shell mode: a command
+         * was given on our own command line, and its input is not the
+         * keyboard. */
+        if (!command) {
+            int c;
+            while ((c = kbd_trygetc()) >= 0) {
+                if (c == 4) {                     /* Ctrl+D: close our side */
+                    if (!sent_eof) {
+                        buf e; buf_init(&e, 16);
+                        put_u8(&e, MSG_CHANNEL_EOF);
+                        put_u32(&e, peer_ch);
+                        if (!e.oom) pkt_send(s, e.b, e.len);
+                        buf_free(&e);
+                        sent_eof = 1;
+                    }
+                    continue;
+                }
+                uint8_t ch = (uint8_t)c;
+                kputc((char)c);                   /* local echo: the far end
+                                                   * runs a line shell, not a
+                                                   * pty, and echoes nothing */
+                send_channel_data(s, peer_ch, &ch, 1);
+            }
+        }
+
+        if (pkt_recv(s, 200) != 0) {
+            if (!tcp_is_open(s->tcp)) break;
+            continue;                             /* just nothing yet */
+        }
+        if (s->pktlen < 1) continue;
+        rdr r; rd_init(&r, s->pkt, s->pktlen);
+        uint8_t t = rd_u8(&r);
+
+        switch (t) {
+        case MSG_CHANNEL_DATA: {
+            rd_u32(&r);
+            uint32_t n; const uint8_t *d = rd_str(&r, &n);
+            if (!r.bad) for (uint32_t i = 0; i < n; i++) kputc((char)d[i]);
+            break;
+        }
+        case MSG_CHANNEL_EXTENDED_DATA: {
+            rd_u32(&r); rd_u32(&r);               /* channel, data type code */
+            uint32_t n; const uint8_t *d = rd_str(&r, &n);
+            if (!r.bad) for (uint32_t i = 0; i < n; i++) kputc((char)d[i]);
+            break;
+        }
+        case MSG_CHANNEL_REQUEST: {
+            rd_u32(&r);
+            char what[32]; rd_cstr(&r, what, sizeof what);
+            rd_u8(&r);
+            if (!r.bad && !strcmp(what, "exit-status")) exit_status = (int)rd_u32(&r);
+            break;
+        }
+        case MSG_CHANNEL_EOF:
+            break;
+        case MSG_CHANNEL_CLOSE: {
+            buf c; buf_init(&c, 16);
+            put_u8(&c, MSG_CHANNEL_CLOSE);
+            put_u32(&c, peer_ch);
+            if (!c.oom) pkt_send(s, c.b, c.len);
+            buf_free(&c);
+            open = 0;
+            break;
+        }
+        case MSG_DISCONNECT:
+            open = 0;
+            break;
+        default:
+            break;                                /* window adjust, success,
+                                                   * failure: nothing to do */
+        }
+    }
+    return exit_status;
+}
+
+int ssh_client_connect(const char *host, uint16_t port, const char *user,
+                       const char *password, const char *command, int *status_out) {
+    uint32_t ip;
+    if (!dns_resolve(host, &ip, 4000)) {
+        kprintf("ssh: cannot resolve '%s'\n", host);
+        return -1;
+    }
+
+    struct tcp_conn *tc = tcp_connect(ip, port, 5000);
+    if (!tc) {
+        kprintf("ssh: cannot connect to %s port %u\n", host, (unsigned)port);
+        return -1;
+    }
+
+    ssh_conn *s = (ssh_conn *)kmalloc(sizeof *s);
+    if (!s) { tcp_close(tc); return -1; }
+    memset(s, 0, sizeof *s);
+    s->tcp = tc;
+    s->is_server = 0;
+
+    int rc = -1;
+    buf mine; buf_init(&mine, 256);
+    do {
+        if (version_exchange(s) != 0) { kprintf("ssh: no SSH version from the server\n"); break; }
+
+        build_kexinit(&mine);
+        if (mine.oom || pkt_send(s, mine.b, mine.len) != 0) break;
+        if (pkt_recv(s, IOTIMEOUT) != 0) break;
+
+        const char *why = 0;
+        if (check_kexinit(s->pkt, s->pktlen, &why) != 0) {
+            kprintf("ssh: no shared %s with the server\n", why ? why : "algorithm");
+            break;
+        }
+        static uint8_t peer_kexinit[4096];
+        if (s->pktlen > sizeof peer_kexinit) break;
+        uint32_t peer_len = s->pktlen;
+        memcpy(peer_kexinit, s->pkt, peer_len);
+
+        if (client_kex(s, &mine, peer_kexinit, peer_len, host) != 0) break;
+        if (client_auth(s, user, password) != 0) break;
+        int st = client_session(s, command);
+        if (status_out) *status_out = st;
+        rc = 0;
+    } while (0);
+
+    buf_free(&mine);
+    if (rc != 0) send_disconnect(s, 2, "bye");
+    tcp_close(tc);
+    kfree(s);
+    return rc;
 }
