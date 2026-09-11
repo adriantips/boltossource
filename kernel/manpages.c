@@ -339,6 +339,18 @@ static const manpage_t MAN[] = {
 { "netget", "netget HOST [PATH] [PORT]",
   "Fetch a URL from a ring-3 program over a real socket -- the demonstration\n"
   "that the socket syscalls work outside the kernel." },
+{ "ssh", "ssh [-p PORT] [-w PASSWORD] [USER@]HOST [COMMAND...]",
+  "Connect to an SSH-2 server. With a command it runs that one command and\n"
+  "exits with its status; without one it is a shell, and the keyboard goes to\n"
+  "the far end until Ctrl+D. USER defaults to whoever is signed in here.\n"
+  "\n"
+  "-w gives the password on the command line, for scripts; otherwise it is\n"
+  "asked for. The server's host key is checked against /etc/ssh/known_hosts:\n"
+  "a host that is not there is added and its fingerprint printed, and a host\n"
+  "whose key has CHANGED is refused outright rather than asked about --\n"
+  "that question has one safe answer and asking it teaches people to press y.\n"
+  "`sshkey known` lists what is remembered and `sshkey forget HOST` drops one,\n"
+  "which is what a legitimately rebuilt machine needs." },
 { "sshd", "sshd [PORT]",
   "The SSH-2 server: a real encrypted shell on this machine. Needs `sudo` for\n"
   "port 22. `sshkey` shows the fingerprint to check on first connection." },

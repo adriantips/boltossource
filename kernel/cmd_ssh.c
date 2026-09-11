@@ -2,6 +2,7 @@
 #include "commands.h"
 #include "ssh.h"
 #include "users.h"
+#include "shell.h"
 #include "fs.h"
 #include "crypto.h"
 #include "kprintf.h"
@@ -63,6 +64,25 @@ static int selftest(void) {
 int cmd_sshkey(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "selftest")) return selftest();
 
+    if (argc > 1 && !strcmp(argv[1], "known")) {
+        char h[80], fp[80];
+        int n = 0;
+        for (int i = 0; ssh_known_hosts_list(i, h, sizeof h, fp, sizeof fp); i++) {
+            kprintf("  %-24s %s\n", h, fp);
+            n++;
+        }
+        if (!n) kprintf("no hosts remembered yet (%s)\n", SSH_KNOWN_HOSTS_PATH);
+        return 0;
+    }
+    if (argc > 2 && !strcmp(argv[1], "forget")) {
+        if (ssh_known_hosts_forget(argv[2]) != 0) {
+            kprintf("sshkey: '%s' is not in %s\n", argv[2], SSH_KNOWN_HOSTS_PATH);
+            return 1;
+        }
+        kprintf("forgot the host key for '%s'\n", argv[2]);
+        return 0;
+    }
+
     if (ssh_hostkey_load() != 0) { kprintf("sshkey: no host key\n"); return 1; }
     char fp[80];
     ssh_hostkey_fingerprint(fp, sizeof fp);
@@ -72,4 +92,77 @@ int cmd_sshkey(int argc, char **argv) {
     kprintf("\nThis is the fingerprint an ssh client shows on a first connection.\n"
             "If it does not match what you see there, do not type your password.\n");
     return 0;
+}
+
+/* ---------------------------------------------------------------------------
+ *  `ssh` -- the other direction. The machine can be administered from
+ *  somewhere else; this is how it administers somewhere else.
+ *
+ *      ssh [-p PORT] [-w PASSWORD] [USER@]HOST [COMMAND...]
+ *
+ *  With a command it runs that one command and exits with its status, which is
+ *  what a script wants. Without one it is a shell, and the keyboard goes to the
+ *  far end until Ctrl+D. -w takes the password on the command line for scripts
+ *  and tests; otherwise it is asked for, the way `passwd` asks.
+ * ------------------------------------------------------------------------- */
+int cmd_ssh(int argc, char **argv) {
+    uint16_t port = SSH_PORT;
+    const char *password = 0;
+    int i = 1;
+
+    for (; i < argc; i++) {
+        if (!strcmp(argv[i], "-p") && i + 1 < argc) {
+            int v = atoi(argv[++i]);
+            if (v <= 0 || v > 65535) { kprintf("ssh: bad port '%s'\n", argv[i]); return 1; }
+            port = (uint16_t)v;
+        } else if (!strcmp(argv[i], "-w") && i + 1 < argc) {
+            password = argv[++i];
+        } else break;
+    }
+    if (i >= argc) {
+        kprintf("usage: ssh [-p PORT] [-w PASSWORD] [USER@]HOST [COMMAND...]\n");
+        return 1;
+    }
+
+    /* USER@HOST, or just a host and whoever is signed in here. */
+    char user[USER_NAME_MAX], host[80];
+    const char *at = strchr(argv[i], '@');
+    if (at) {
+        uint32_t n = (uint32_t)(at - argv[i]);
+        if (n >= sizeof user) { kprintf("ssh: user name too long\n"); return 1; }
+        memcpy(user, argv[i], n); user[n] = 0;
+        strncpy(host, at + 1, sizeof host - 1); host[sizeof host - 1] = 0;
+    } else {
+        const char *me = users_current();
+        if (!me || !me[0]) {
+            kprintf("ssh: nobody is signed in; give a user as USER@HOST\n");
+            return 1;
+        }
+        strncpy(user, me, sizeof user - 1); user[sizeof user - 1] = 0;
+        strncpy(host, argv[i], sizeof host - 1); host[sizeof host - 1] = 0;
+    }
+    if (!host[0]) { kprintf("ssh: no host\n"); return 1; }
+    i++;
+
+    /* The rest of the line is the remote command, put back together with the
+     * single spaces the shell split it on. */
+    char command[256];
+    command[0] = 0;
+    for (int k = i; k < argc; k++) {
+        if (command[0]) strlcat(command, " ", sizeof command);
+        strlcat(command, argv[k], sizeof command);
+    }
+
+    char pwbuf[64];
+    if (!password) {
+        kprintf("%s@%s's password: ", user, host);
+        sh_readline(pwbuf, sizeof pwbuf);
+        password = pwbuf;
+    }
+
+    int status = 0;
+    if (ssh_client_connect(host, port, user, password, command[0] ? command : 0,
+                           &status) != 0)
+        return 1;
+    return status;
 }
