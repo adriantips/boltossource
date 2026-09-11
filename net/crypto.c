@@ -100,6 +100,38 @@ void hmac_sha256(const uint8_t *key, uint32_t klen,
     sha256_init(&c); sha256_update(&c, opad, 64); sha256_update(&c, inner, 32); sha256_final(&c, out);
 }
 
+/* =========================== PBKDF2-HMAC-SHA256 ========================== *
+ *  RFC 8018. Turning a password -- short, low-entropy and chosen by a person
+ *  -- into a key, at a cost that has to be paid again for every guess. The
+ *  account table uses it to store a password (kernel/users.c) and the vault
+ *  uses it to derive one (kernel/vault.c); they had better be the same
+ *  function, and this is it.
+ * ------------------------------------------------------------------------- */
+void pbkdf2_sha256(const void *pw, uint32_t pwlen,
+                   const uint8_t *salt, uint32_t saltlen,
+                   uint32_t rounds, uint8_t *out, uint32_t outlen) {
+    if (rounds == 0) rounds = 1;
+    uint8_t block[128 + 4];
+    if (saltlen > sizeof block - 4) saltlen = sizeof block - 4;
+    memcpy(block, salt, saltlen);
+
+    for (uint32_t i = 1; outlen; i++) {
+        block[saltlen + 0] = (uint8_t)(i >> 24); block[saltlen + 1] = (uint8_t)(i >> 16);
+        block[saltlen + 2] = (uint8_t)(i >> 8);  block[saltlen + 3] = (uint8_t)i;
+
+        uint8_t u[32], acc[32];
+        hmac_sha256(pw, pwlen, block, saltlen + 4, u);
+        memcpy(acc, u, 32);
+        for (uint32_t k = 1; k < rounds; k++) {
+            hmac_sha256(pw, pwlen, u, 32, u);
+            for (int b = 0; b < 32; b++) acc[b] ^= u[b];
+        }
+        uint32_t take = outlen < 32 ? outlen : 32;
+        memcpy(out, acc, take);
+        out += take; outlen -= take;
+    }
+}
+
 /* =========================== AES-128 ==================================== */
 static const uint8_t sbox[256] = {
 0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,

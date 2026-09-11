@@ -109,27 +109,10 @@ int cmd_snapshot(int argc, char **argv) {
     return 0;
 }
 
-/* ------------------------------- vault ----------------------------------- */
-/* Toy XOR cipher - reversible, NOT real cryptography. Transforms a file's
- * bytes in place using a repeating key derived from the password. */
-int cmd_vault(int argc, char **argv) {
-    if (argc < 4) {
-        kprintf("usage: vault lock|unlock FILE PASSWORD\n");
-        kprintf("note : toy XOR cipher for demo - not secure\n");
-        return (argc < 2) ? 0 : 1;
-    }
-    int lock = strcmp(argv[1], "lock") == 0;
-    if (!lock && strcmp(argv[1], "unlock") != 0) { kprintf("vault: use 'lock' or 'unlock'\n"); return 1; }
-    fs_node *n = fs_lookup(argv[2]);
-    if (!n || n->is_dir) { kprintf("vault: %s: not a file\n", argv[2]); return 1; }
-    const char *pw = argv[3];
-    uint32_t pl = (uint32_t)strlen(pw);
-    if (!pl) { kprintf("vault: empty password\n"); return 1; }
-    for (uint32_t i = 0; i < n->size; i++) n->data[i] ^= (uint8_t)pw[i % pl];
-    kprintf("%s '%s' with toy XOR cipher (%lu bytes)\n",
-            lock ? "locked" : "unlocked", argv[2], (unsigned long)n->size);
-    return 0;
-}
+/* `vault` lived here as a toy XOR cipher over one file, named honestly as not
+ * being a security boundary -- which does not help much when the command is
+ * still called vault and still says "locked". It is now a real encrypted
+ * directory: kernel/vault.c and kernel/cmd_vault.c. */
 
 /* ------------------------------ assistant -------------------------------- */
 int cmd_assistant(int argc, char **argv) {

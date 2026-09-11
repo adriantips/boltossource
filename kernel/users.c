@@ -6,6 +6,7 @@
  * ===========================================================================*/
 #include <stdint.h>
 #include "users.h"
+#include "vault.h"
 #include "fs.h"
 #include "crypto.h"
 #include "string.h"
@@ -40,20 +41,8 @@ static uint64_t next_attempt_tick;
  * ------------------------------------------------------------------------- */
 static void pbkdf2(const char *pw, const uint8_t *salt, uint32_t rounds,
                    uint8_t out[USER_HASH_LEN]) {
-    uint32_t pwlen = (uint32_t)strlen(pw);
-    uint8_t block[USER_SALT_LEN + 4];
-    memcpy(block, salt, USER_SALT_LEN);
-    block[USER_SALT_LEN + 0] = 0; block[USER_SALT_LEN + 1] = 0;
-    block[USER_SALT_LEN + 2] = 0; block[USER_SALT_LEN + 3] = 1;   /* INT(1) */
-
-    uint8_t u[USER_HASH_LEN], acc[USER_HASH_LEN];
-    hmac_sha256((const uint8_t *)pw, pwlen, block, sizeof block, u);
-    memcpy(acc, u, USER_HASH_LEN);
-    for (uint32_t i = 1; i < rounds; i++) {
-        hmac_sha256((const uint8_t *)pw, pwlen, u, USER_HASH_LEN, u);
-        for (int k = 0; k < USER_HASH_LEN; k++) acc[k] ^= u[k];
-    }
-    memcpy(out, acc, USER_HASH_LEN);
+    pbkdf2_sha256(pw, (uint32_t)strlen(pw), salt, USER_SALT_LEN,
+                  rounds, out, USER_HASH_LEN);
 }
 
 /* Constant-time compare, so a wrong password cannot be narrowed byte by byte
@@ -64,18 +53,13 @@ static int ct_equal(const uint8_t *a, const uint8_t *b, int n) {
     return diff == 0;
 }
 
-/* Salt material. No hardware RNG here, so mix the timestamp counter (which the
- * stack-canary seed already relies on) with the tick count and a running
- * counter, then hash it -- enough that two accounts made in the same second do
- * not share a salt. */
+/* Salt material, from the DRBG the rest of the system already trusts for keys
+ * and nonces. This used to hash the timestamp counter with the tick count and a
+ * running counter, which does give distinct salts -- all a salt strictly needs
+ * -- but out of a state an attacker can narrow down. The note saying there was
+ * no hardware RNG here predates net/crypto.c having one. */
 static void make_salt(uint8_t out[USER_SALT_LEN]) {
-    static uint64_t counter;
-    uint32_t lo, hi;
-    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-    uint64_t seed[3] = { ((uint64_t)hi << 32) | lo, pit_ticks(), ++counter };
-    uint8_t digest[32];
-    sha256(seed, sizeof seed, digest);
-    memcpy(out, digest, USER_SALT_LEN);
+    crypto_rand_bytes(out, USER_SALT_LEN);
 }
 
 static user_t *find(const char *name) {
@@ -289,6 +273,11 @@ void users_login(int uid) {
     for (int i = 0; i < nuser; i++) {
         if (users[i].uid != uid) continue;
         if (cur_uid != uid) {
+            /* Somebody else is about to be the machine's identity, so the
+             * vault that belongs to this one stops being open. Its files are
+             * mode 0600, which keeps another standard account out, but root
+             * is not another standard account. */
+            vault_lock_all();
             sh_history_save();
             sh_history_reset();
             sh_script_reset();
@@ -304,6 +293,9 @@ void users_login(int uid) {
 }
 
 void users_logout(void) {
+    /* Before the identity goes, not after: sealing the vault needs to know
+     * whose it is. */
+    vault_lock_all();
     sh_history_save();
     sh_history_reset();
     sh_script_reset();
