@@ -7,16 +7,24 @@
  *      - BMP   (24/32-bit uncompressed)
  *      - TGA   (truecolor 24/32 + grayscale 8, uncompressed or RLE)
  *  Output is a 0xAARRGGBB buffer. Large images are box-downscaled on the way
- *  out so the resident cost stays small on the 16 MiB kernel heap.
+ *  out so the resident cost stays small on the kernel heap.
  * ===========================================================================*/
 #include <stdint.h>
 #include "image.h"
 #include "kheap.h"
 #include "string.h"
 
-/* keep any single decoded image bounded; the browser scales to fit anyway */
-#define IMG_MAX_PIXELS  1000000u   /* reject absurd headers before allocating */
-#define IMG_FIT_DIM     640        /* downscale so max(w,h) <= this           */
+/* Ceilings on a single decode. The browser's pair is deliberately mean -- a
+ * page can point at a hundred-megapixel JPEG and the heap still has to be
+ * there afterwards -- so anything it loads is rejected above a megapixel and
+ * box-averaged down to 640 px on the long edge. The desktop wallpaper asks for
+ * its own pair through image_decode_upto(): a render made for this exact panel
+ * must not come back at 640 px and get stretched over 4K. */
+#define IMG_BROWSE_PX   1000000u   /* reject absurd headers before allocating */
+#define IMG_BROWSE_DIM  640        /* downscale so max(w,h) <= this           */
+
+static uint32_t img_max_px  = IMG_BROWSE_PX;
+static int      img_fit_dim = IMG_BROWSE_DIM;
 
 static uint8_t clamp8(int v) { return v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v; }
 static uint32_t rd_be32(const uint8_t *p) { return (uint32_t)p[0]<<24 | p[1]<<16 | p[2]<<8 | p[3]; }
@@ -192,11 +200,11 @@ static int inflate_raw(const uint8_t *src, uint32_t srclen, uint8_t *out, uint32
 }
 
 /* ===========================================================================
- *  Downscale + finalise: box-average the buffer down until it fits IMG_FIT_DIM.
+ *  Downscale + finalise: box-average the buffer down until it fits img_fit_dim.
  * ===========================================================================*/
 static image_t *finalize(uint32_t *px, int w, int h) {
     if (!px || w <= 0 || h <= 0) { if (px) kfree(px); return 0; }
-    while (w > IMG_FIT_DIM || h > IMG_FIT_DIM) {
+    while (w > img_fit_dim || h > img_fit_dim) {
         int nw = (w + 1) / 2, nh = (h + 1) / 2;
         uint32_t *np = (uint32_t *)kmalloc((uint32_t)nw * nh * 4);
         if (!np) break;
@@ -267,7 +275,7 @@ static image_t *decode_png(const uint8_t *d, uint32_t len) {
         p += 12 + clen;
     }
 
-    if (!w || !h || interlace != 0 || (uint64_t)w*h > IMG_MAX_PIXELS) { kfree(zbuf); return 0; }
+    if (!w || !h || interlace != 0 || (uint64_t)w*h > img_max_px) { kfree(zbuf); return 0; }
     if (bitdepth != 8 && bitdepth != 16) { kfree(zbuf); return 0; }
 
     int channels = colortype==0?1 : colortype==2?3 : colortype==3?1 : colortype==4?2 : colortype==6?4 : 0;
@@ -343,7 +351,7 @@ static image_t *decode_bmp(const uint8_t *d, uint32_t len) {
     (void)hdr;
     if (comp != 0 || (bpp != 24 && bpp != 32)) return 0;
     int flip = h > 0; if (h < 0) h = -h;
-    if (w <= 0 || h <= 0 || (uint64_t)w*h > IMG_MAX_PIXELS) return 0;
+    if (w <= 0 || h <= 0 || (uint64_t)w*h > img_max_px) return 0;
     int bytespp = bpp / 8;
     uint32_t rowsz = ((uint32_t)w * bytespp + 3) & ~3u;
     if (off + rowsz * (uint32_t)h > len) return 0;
@@ -380,7 +388,7 @@ static image_t *decode_tga(const uint8_t *d, uint32_t len) {
     if (imgtyp != 2 && imgtyp != 3 && imgtyp != 10 && imgtyp != 11) return 0;
     int rle = (imgtyp == 10 || imgtyp == 11);
     if (bpp != 8 && bpp != 24 && bpp != 32) return 0;
-    if (w <= 0 || h <= 0 || (uint64_t)w*h > IMG_MAX_PIXELS) return 0;
+    if (w <= 0 || h <= 0 || (uint64_t)w*h > img_max_px) return 0;
 
     int bytespp = bpp / 8;
     uint32_t pos = 18u + idlen;          /* skip image-ID (no color map here) */
@@ -428,7 +436,7 @@ static image_t *decode_tga(const uint8_t *d, uint32_t len) {
 static image_t *decode_gif(const uint8_t *d, uint32_t len) {
     if (len < 13 || d[0]!='G'||d[1]!='I'||d[2]!='F') return 0;
     int w = (int)rd_le16(d + 6), h = (int)rd_le16(d + 8);
-    if (w <= 0 || h <= 0 || (uint64_t)w*h > IMG_MAX_PIXELS) return 0;
+    if (w <= 0 || h <= 0 || (uint64_t)w*h > img_max_px) return 0;
     uint8_t flags = d[10];
     uint32_t p = 13;
     uint8_t gpal[256*3]; int gpaln = 0;
@@ -718,7 +726,7 @@ static image_t *decode_jpeg(const uint8_t *d, uint32_t len) {
             j->img_h = jget16(j); j->img_w = jget16(j);
             j->ncomp = jget8(j);
             if (j->ncomp != 1 && j->ncomp != 3) goto fail;
-            if ((uint64_t)j->img_w * j->img_h > IMG_MAX_PIXELS) goto fail;
+            if ((uint64_t)j->img_w * j->img_h > img_max_px) goto fail;
             for (int c = 0; c < j->ncomp; c++) {
                 j->comp[c].id = jget8(j);
                 int hv = jget8(j); j->comp[c].h = hv >> 4; j->comp[c].v = hv & 15;
@@ -833,6 +841,20 @@ image_t *image_decode(const uint8_t *buf, uint32_t len) {
     if (buf[0]=='G' && buf[1]=='I' && buf[2]=='F')                  return decode_gif(buf, len);
     if (buf[0]=='B' && buf[1]=='M')                                  return decode_bmp(buf, len);
     return decode_tga(buf, len);   /* no magic: validated fallback */
+}
+
+/* Same decoders, a taller ceiling. Used by the wallpaper, which wants the
+ * render at the panel's own size and nothing smaller. Not reentrant: the
+ * kernel decodes one image at a time, on whichever thread asked for it. */
+image_t *image_decode_upto(const uint8_t *buf, uint32_t len, int fit_dim) {
+    if (fit_dim < IMG_BROWSE_DIM) fit_dim = IMG_BROWSE_DIM;
+    if (fit_dim > 8192) fit_dim = 8192;
+    uint32_t save_px = img_max_px; int save_dim = img_fit_dim;
+    img_fit_dim = fit_dim;
+    img_max_px  = (uint32_t)fit_dim * (uint32_t)fit_dim;
+    image_t *im = image_decode(buf, len);
+    img_max_px = save_px; img_fit_dim = save_dim;
+    return im;
 }
 
 void image_free(image_t *im) {

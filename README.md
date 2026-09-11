@@ -1288,6 +1288,42 @@ coverage bitmap using a non-zero winding scanline fill. The GUI uses it alongsid
 the built-in 8×8 and 8×16 bitmap fonts — the Settings app lets the user switch
 between `FONT_RETRO`, `FONT_ARIAL`, and `FONT_TTF`.
 
+## Wallpapers, one per resolution
+
+Changing the resolution in Settings reprograms the GPU to a real native mode --
+there is no scaler anywhere in the path -- so the desktop is genuinely 1024x768
+or genuinely 4K, and the wallpaper has to be too. The compositor stretches a
+wallpaper with a nearest-neighbour sampler, which is fine for a gradient and
+merciless on a photograph: a 1024x768 render blown up to 3840x2160 turns every
+ridgeline into a staircase.
+
+So BoltOS ships five renders of the same scene, one for each entry in
+`res_tab[]`, seeded to `/usr/share/wallpapers` as `mountain-<W>x<H>.jpg`. The
+naming is the mechanism, not decoration: `kernel/gui.c` splits the live
+wallpaper's filename at its last dash, and after a mode change looks for the
+sibling cut for the new panel. Find one, load it, and the stretch loop becomes a
+1:1 copy. Find nothing -- because the user picked a photo of their own -- and the
+current image stands, which is the right answer for a wallpaper that was never
+part of a set.
+
+`mkwall.py` produces the set from the 4K master in `assets/wallpapers`, reading
+the mode list out of `kernel/settings.c` so the two cannot drift apart. Every
+mode is 16:9 except 1024x768, which gets a centre crop first; squashing a
+mountain range to three quarters of its width is worse than losing the outer
+eighth of the sky. They are JPEG rather than PNG for a reason worth stating: the
+set is embedded in the kernel image, and a 4K PNG needs the inflate buffer, the
+unfiltered rows and the ARGB output all live at once -- about 99 MiB against a
+96 MiB kheap. The JPEG path peaks near 46 MiB, and the five files together come
+to 1.5 MB instead of 13.5 MB.
+
+The one thing that had to change in the decoder is its ceiling.
+`kernel/image.c` box-averages everything down to 640 px on the long edge,
+because a web page can point at a hundred-megapixel JPEG and the heap still has
+to be there afterwards. A wallpaper cut for this exact panel must not be shrunk
+to 640 px and stretched back, so the wallpaper path asks through
+`image_decode_upto()` for the panel's own size and nothing smaller. The browser
+keeps the mean limits it always had.
+
 ## `edit` -- a text editor for the terminal
 
 The Notes app could edit a file, but only from the desktop. Everything done from
