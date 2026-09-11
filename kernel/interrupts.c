@@ -16,12 +16,60 @@ void irq_install(int irq, irq_handler_t h) {
     if (irq >= 0 && irq < 16) handlers[irq] = h;
 }
 
+/* A PCI device's legacy interrupt. Installing the handler was never enough:
+ * apic_init() masks every IO-APIC redirection entry and then unmasks exactly
+ * four ISA lines, so a driver that registered an ISR for its PCI line got an
+ * interrupt that could not be delivered. The e1000 had one for its receive
+ * ring, which meant the machine only ever took packets off the card while
+ * something was already polling -- so an idle BoltOS did not answer so much as
+ * an ARP request, and nothing could open a connection to it. Registering the
+ * handler and opening the line are the same decision, so they are one call. */
+void irq_install_pci(int irq, irq_handler_t h) {
+    if (irq < 0 || irq >= 16) return;
+    handlers[irq] = h;
+    if (apic_active()) ioapic_route_pci_irq((uint8_t)irq, (uint8_t)(32 + irq));
+    /* Without an APIC the PIC is already unmasked across the board. */
+}
+
 void msi_install(uint8_t vector, irq_handler_t h) {
     if (vector >= MSI_VECTOR_BASE && vector < MSI_VECTOR_BASE + 16)
         msi_handlers[vector - MSI_VECTOR_BASE] = h;
 }
 
 void irq_set_tick_hook(tick_hook_t h) { tick_hook = h; }
+
+/* ---------------------------------------------------------------------------
+ *  Stuck interrupts.
+ *
+ *  A PCI INTx line is level-triggered and shared: several devices can pull the
+ *  same one, and it stays asserted until whichever device pulled it is told to
+ *  stop. Only the network drivers open a line at all, and there is one handler
+ *  per line -- so if a device on the same line as the NIC asserts INTx, the
+ *  NIC's handler runs, finds nothing of its own to acknowledge, and the line is
+ *  still asserted when the interrupt is dismissed. It fires again immediately,
+ *  and the machine does nothing else ever again.
+ *
+ *  The line is counted instead, and a line that fires absurdly often inside one
+ *  millisecond is masked and reported. A device that stops working is a bad
+ *  outcome; a machine that stops is a worse one, and "IRQ 11 is stuck" in the
+ *  log is the difference between a diagnosis and a mystery.
+ * ------------------------------------------------------------------------- */
+#define IRQ_STORM_PER_TICK 10000
+
+static uint32_t irq_count[16];
+static int      irq_stuck[16];
+
+static void irq_storm_check(void) {
+    for (int i = 0; i < 16; i++) {
+        if (irq_count[i] > IRQ_STORM_PER_TICK && !irq_stuck[i]) {
+            irq_stuck[i] = 1;
+            ioapic_mask_irq((uint8_t)i, 1);
+            kprintf("[irq] line %d fired %u times in a millisecond and nothing "
+                    "cleared it; masking it\n", i, (unsigned)irq_count[i]);
+        }
+        irq_count[i] = 0;
+    }
+}
 
 static const char *exc[32] = {
     "Divide-by-zero", "Debug", "NMI", "Breakpoint", "Overflow",
@@ -117,10 +165,14 @@ struct registers *isr_handler(struct registers *r) {
 
     if (r->int_no >= 32 && r->int_no < 48) {
         int irq = (int)r->int_no - 32;
+        irq_count[irq]++;
         if (handlers[irq]) handlers[irq](r);
         if (apic_active()) lapic_eoi(); else pic_eoi(irq);
         /* preemptive reschedule on the timer tick; may return a new frame */
-        if (irq == 0 && tick_hook) r = tick_hook(r);
+        if (irq == 0) {
+            irq_storm_check();
+            if (tick_hook) r = tick_hook(r);
+        }
     }
 
     /* Message-signalled interrupts (NVMe completions, xHCI events). Delivered

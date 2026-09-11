@@ -15,6 +15,9 @@ typedef void (*irq_handler_t)(struct registers *);
 void idt_init(void);
 void idt_load(void);                    /* load the built IDT on an AP */
 void irq_install(int irq, irq_handler_t h);
+/* For a PCI device's legacy INTx line: installs the handler *and* opens the
+ * line, which is a separate step and was the missing one. */
+void irq_install_pci(int irq, irq_handler_t h);
 
 /* Register a handler for a Message-Signalled Interrupt vector. MSI vectors live
  * in 0x70..0x7F, outside the legacy IRQ window (32..47), so device MSIs never
