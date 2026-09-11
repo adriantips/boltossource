@@ -453,14 +453,30 @@ class BoltVM:
         be there: the login screen is painted by the compositor after the
         kernel says it is launching the desktop, so typing at that message is
         typing at nothing.
+
+        The sleep was still a guess, and on a loaded host it was sometimes the
+        wrong one -- the credentials went into a screen that was not listening
+        yet and the test then failed several steps later, looking like whatever
+        it tried next. The compositor now logs the sign-in, so this waits for
+        that and types again if it does not come.
         """
         self.expect("BoltOS is up. Launching desktop.", timeout=timeout)
-        time.sleep(4.0)
-        self.type(user)
-        self.key("tab")
-        self.type(password)
-        self.key("ret")
-        time.sleep(3.0)
+        for attempt in range(4):
+            time.sleep(4.0 if attempt == 0 else 2.0)
+            self.type(user)
+            self.key("tab")
+            self.type(password)
+            self.key("ret")
+            end = time.time() + 8
+            while time.time() < end:
+                if ("[gui] %s signed in" % user) in self.serial():
+                    time.sleep(1.5)          # let the desktop paint
+                    return
+                if "failed sign-in" in self.serial():
+                    raise AssertionError("the desktop refused %r" % user)
+                time.sleep(0.3)
+        raise AssertionError("never signed in as %r\n--- serial tail ---\n%s"
+                             % (user, self.serial()[-1500:]))
 
     def wait_prompt(self, timeout=60):
         """Block until the shell prints its prompt.
