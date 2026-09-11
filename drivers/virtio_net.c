@@ -143,7 +143,14 @@ static void rx_fill(void) {
 
 /* Drain the receive used-ring into the stack. Called from the ISR and from the
  * poll hook, so a machine whose interrupt never arrives still receives. */
+/* Reached from the poll every blocking wait performs and from the receive
+ * interrupt, so the two are kept out of each other: both walk the same used
+ * ring, and one arriving in the middle of the other would deliver a frame
+ * twice. Whichever is already draining takes the new ones too. */
 static void rx_drain(void) {
+    static volatile int busy;
+    if (busy) return;
+    busy = 1;
     while (vn.rx.last_used != vn.rx.used->idx) {
         uint16_t slot = vn.rx.last_used % vn.rx.size;
         struct vring_used_elem *e = &vn.rx.used->ring[slot];
@@ -164,6 +171,7 @@ static void rx_drain(void) {
     }
     __asm__ volatile("" ::: "memory");
     vw16(VR_QUEUE_NOTIFY, 0);
+    busy = 0;
 }
 
 static void virtio_net_isr(struct registers *r) {
@@ -255,7 +263,7 @@ static int virtio_net_probe(struct device *d) {
     vn.up = 1;
 
     uint8_t line = pci_interrupt_line(pd);
-    irq_install(line, virtio_net_isr);
+    irq_install_pci(line, virtio_net_isr);
 
     kprintf("[virtio-net] %x:%x @ PCI %x:%x.%x io=0x%x IRQ%u "
             "mac %x:%x:%x:%x:%x:%x q=%u/%u\n",

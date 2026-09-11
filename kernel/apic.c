@@ -89,6 +89,23 @@ void ioapic_route_irq(uint8_t irq, uint8_t vector) {
     ioapic_write(0x10 + idx * 2,     lo);         /* unmasked (bit16 clear) */
 }
 
+/* A legacy PCI INTx line. The MADT's interrupt-source overrides describe the
+ * ISA lines; a PCI line usually has no entry at all, and the default those
+ * flags mean is edge-triggered and active high -- which is the opposite of
+ * what PCI INTx is. Routing a PCI interrupt as though it were an ISA one is
+ * how an interrupt that fires once never fires again, so the polarity and the
+ * trigger are stated here rather than inferred from a table that does not
+ * describe this line. */
+void ioapic_route_pci_irq(uint8_t irq, uint8_t vector) {
+    if (!g_ioapic) return;
+    uint32_t gsi = acpi_irq_to_gsi(irq, 0);
+    uint32_t idx = gsi - g_ioapic_gsi_base;
+    uint32_t lo = (uint32_t)vector | (1 << 13) | (1 << 15);   /* active low, level */
+    uint32_t hi = (uint32_t)lapic_id() << 24;
+    ioapic_write(0x10 + idx * 2 + 1, hi);
+    ioapic_write(0x10 + idx * 2,     lo);                     /* unmasked */
+}
+
 void ioapic_mask_irq(uint8_t irq, int masked) {
     if (!g_ioapic) return;
     uint32_t gsi = acpi_irq_to_gsi(irq, 0);

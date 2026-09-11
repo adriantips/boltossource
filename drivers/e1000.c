@@ -180,7 +180,17 @@ static void tx_init(void) {
     ew(REG_TIPG, 0x0060200A);
 }
 
+/* Hands each received frame up the stack. Reached from two places now -- the
+ * poll every blocking wait in the network stack performs, and the receive
+ * interrupt -- so the two have to be kept out of each other: an interrupt
+ * arriving while a poll is halfway through the ring would walk the same
+ * descriptors and deliver a frame twice. Whichever is already draining takes
+ * the new ones as well, since it loops until the ring is empty, so the loser
+ * returns and loses nothing. */
 static void rx_drain(void) {
+    static volatile int busy;
+    if (busy) return;
+    busy = 1;
     while (dev.rx[dev.rx_cur].status & RXD_STA_DD) {
         struct rx_desc *d = &dev.rx[dev.rx_cur];
         uint16_t len = d->length;
@@ -191,6 +201,7 @@ static void rx_drain(void) {
         dev.rx_cur = (dev.rx_cur + 1) % RX_DESCS;
         ew(REG_RDT, old);            /* hand the buffer back to the NIC */
     }
+    busy = 0;
 }
 
 static int e1000_send(struct netif *nif, const void *frame, uint16_t len) {
@@ -264,7 +275,7 @@ static int e1000_probe(struct device *d) {
 
     /* wire the legacy INTx line and enable RX interrupts */
     uint8_t line = pci_interrupt_line(pd);
-    irq_install(line, e1000_isr);
+    irq_install_pci(line, e1000_isr);
     ew(REG_IMS, INT_RXT0 | INT_RXDMT0 | INT_RXO | INT_LSC);
     (void)er(REG_ICR);
 
