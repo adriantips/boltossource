@@ -302,6 +302,27 @@ struct tcp_conn *tcp_connect_addr(const netaddr *dst, uint16_t dport, uint32_t t
  *  claimed. That keeps a server connection identical to a client connection, so
  *  tcp_send/tcp_recv/tcp_close need no server-side variants.
  * ------------------------------------------------------------------------- */
+/* The listening ports and the live connections, for `ports`. The stack has
+ * always known both; nothing ever asked it. 0 when slot i is empty. */
+int tcp_listener_dump(int i, uint16_t *port) {
+    if (i < 0 || i >= MAX_LISTEN || !listeners[i]) return 0;
+    if (port) *port = listeners[i];
+    return 1;
+}
+
+int tcp_conn_dump(int i, netaddr *peer, uint16_t *peer_port,
+                  uint16_t *local_port, const char **state) {
+    if (i < 0 || i >= MAX_CONNS || !conns[i]) return 0;
+    static const char *names[] = { "CLOSED", "LISTEN", "SYN_SENT", "SYN_RCVD",
+                                   "ESTABLISHED", "CLOSE_WAIT", "FIN_WAIT", "DONE" };
+    struct tcp_conn *c = conns[i];
+    if (peer)       *peer       = c->peer;
+    if (peer_port)  *peer_port  = c->peer_port;
+    if (local_port) *local_port = c->local_port;
+    if (state)      *state = (c->state >= 0 && c->state <= DONE) ? names[c->state] : "?";
+    return 1;
+}
+
 int tcp_listen(uint16_t port) {
     if (!port) return -1;
     if (is_listening(port)) return 0;

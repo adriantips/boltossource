@@ -126,12 +126,29 @@ def main():
             print("  ok: the far machine is serving SSH")
 
 
+            # While it is serving, `ports` says so. It used to answer
+            # "network ports: none (no TCP/UDP stack)" whatever was running,
+            # which is a worse answer than no command at all -- somebody
+            # working out why their server is unreachable reads it and
+            # concludes the wrong thing.
+            o = run(cli, "ports", "listening:", timeout=30)
+            assert "(nothing)" in o, \
+                "the client is not serving anything and should say so:\n" + o[-500:]
+
             # --- the first connection remembers the key --------------------
             o = run(cli, "ssh -p %d -w bolt user@%s id" % (SSH_PORT, SRV_IP),
                     "uid=1000(user)", timeout=120)
             assert "is new" in o and "SHA256:" in o, \
                 "the client did not report the new host key:\n" + o[-900:]
             print("  ok: a password login, a remote command, and its output back")
+
+            o = run(cli, "ssh -p %d -w bolt user@%s ports" % (SSH_PORT, SRV_IP),
+                    "listening:", timeout=120)
+            assert ("tcp  %d" % SSH_PORT) in o, \
+                "`ports` on the serving machine does not list its own port:\n" + o[-700:]
+            assert "ESTABLISHED" in o, \
+                "`ports` does not list the connection it is answering on:\n" + o[-700:]
+            print("  ok: `ports` lists the listener and the live connection")
 
             o = run(cli, "sshkey known", "SHA256:", timeout=30)
             assert SRV_IP in o, "the host was not remembered:\n" + o[-600:]

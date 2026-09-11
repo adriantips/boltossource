@@ -51,6 +51,13 @@ void udp_listen(uint16_t port, udp_listener_fn fn) {
     for (int i = 0; i < UDP_LISTENERS; i++)
         if (listeners[i].port == 0) { listeners[i].port = port; listeners[i].fn = fn; return; }
 }
+/* The bound UDP ports, for `ports`. 0 when slot i is empty. */
+int udp_listener_dump(int i, uint16_t *port) {
+    if (i < 0 || i >= UDP_LISTENERS || !listeners[i].port) return 0;
+    if (port) *port = listeners[i].port;
+    return 1;
+}
+
 void udp_unlisten(uint16_t port) {
     for (int i = 0; i < UDP_LISTENERS; i++)
         if (listeners[i].port == port) { listeners[i].port = 0; listeners[i].fn = 0; return; }

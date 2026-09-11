@@ -710,9 +710,13 @@ int cmd_wifi(int argc, char **argv) {
 
 /* ports: no TCP/UDP listeners (no stack). Show the real hardware I/O port map
  * instead, which is the closest thing BoltOS actually has. */
-int cmd_ports(int argc, char **argv) {
-    (void)argc; (void)argv;
-    kprintf("network ports: none (no TCP/UDP stack)\n");
+/* This printed "network ports: none (no TCP/UDP stack)" and then the hardware
+ * I/O map, on the grounds that the map was the closest thing the machine had.
+ * It has had a stack that listens and accepts for a long time, and a command
+ * that says otherwise is worse than one that does not exist -- somebody
+ * working out why their server is unreachable reads it and stops looking.
+ * `ports -io` still prints the map. */
+static void print_io_map(void) {
     kprintf("hardware I/O port map:\n");
     kprintf("  0x0020-0x0021  PIC master\n");
     kprintf("  0x0040-0x0043  PIT timer\n");
@@ -721,6 +725,36 @@ int cmd_ports(int argc, char **argv) {
     kprintf("  0x00A0-0x00A1  PIC slave\n");
     kprintf("  0x03F8-0x03FF  COM1 serial\n");
     kprintf("  0x0CF8-0x0CFF  PCI config\n");
+}
+
+int cmd_ports(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "-io")) { print_io_map(); return 0; }
+
+    uint16_t p;
+    int n = 0;
+    kprintf("listening:\n");
+    for (int i = 0; i < 8; i++)
+        if (tcp_listener_dump(i, &p)) { kprintf("  tcp  %u\n", (unsigned)p); n++; }
+    for (int i = 0; i < 8; i++)
+        if (udp_listener_dump(i, &p)) { kprintf("  udp  %u\n", (unsigned)p); n++; }
+    if (!n) kprintf("  (nothing)\n");
+
+    n = 0;
+    kprintf("connections:\n");
+    netaddr peer; uint16_t rport, lport; const char *st;
+    for (int i = 0; i < 16; i++) {
+        if (!tcp_conn_dump(i, &peer, &rport, &lport, &st)) continue;
+        char txt[NETADDR_STRLEN];
+        netaddr_format(&peer, txt);
+        /* A listener hears both families on one port, so the family belongs
+         * on the connection rather than beside the port above. */
+        kprintf("  tcp%s  :%u -> %s:%u  %s\n",
+                netaddr_is_v6(&peer) ? "6" : " ", (unsigned)lport,
+                txt, (unsigned)rport, st);
+        n++;
+    }
+    if (!n) kprintf("  (none)\n");
+    kprintf("\n'ports -io' prints the hardware I/O port map.\n");
     return 0;
 }
 

@@ -369,9 +369,11 @@ static const manpage_t MAN[] = {
   "a neighbour or a router, not a web page." },
 { "trace", "trace HOST",
   "Placeholder: route tracing is not implemented and the command returns failure." },
-{ "ports", "ports",
-  "Prints the hardware I/O port map. The network-port display is a legacy\n"
-  "placeholder; its 'no stack' message does not describe the current network stack." },
+{ "ports", "ports [-io]",
+  "The ports the machine is listening on and the TCP connections it has open,\n"
+  "either family. `ports -io` prints the hardware I/O port map instead, which\n"
+  "is what this command used to print on the grounds that there was no network\n"
+  "stack to report -- which stopped being true a long time ago." },
 { "download", "download URL [DEST]",
   "Fetch a URL over HTTP or HTTPS into a file. This is one of the ways a\n"
   "program built elsewhere gets onto the machine (see SDK.md)." },
