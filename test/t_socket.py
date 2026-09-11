@@ -27,20 +27,14 @@ GUEST_PORT = 8080
 
 
 def reach_shell(vm, timeout=180):
-    for _ in range(16):
-        if "boot mode" in vm.serial():
-            break
-        vm.key("1")
-        time.sleep(0.4)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        vm.clear()
-        vm.type("echo __shell_up__\n")
-        time.sleep(1.2)
-        if "__shell_up__" in vm.serial():
-            time.sleep(0.4)
-            return
-    raise AssertionError("never reached a shell\n--- serial ---\n" + vm.serial()[-2500:])
+    """Normal boot (entry 1), no framebuffer: a serial shell with the network up.
+
+    Safe mode has a serial shell but skips network bring-up, and a normal boot
+    puts the desktop on the screen instead of a shell. `-vga none` gives both
+    at once: with no framebuffer the kernel falls back to the serial shell,
+    with the network up.
+    """
+    return vm.reach_shell(timeout, "1")
 
 
 def wait_prompt(vm, timeout=30):

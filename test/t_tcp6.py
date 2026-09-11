@@ -41,21 +41,14 @@ def free_port():
 
 
 def reach_shell(vm, timeout=180):
-    """Normal boot, no framebuffer: a serial shell with the network up."""
-    for _ in range(16):
-        if "boot mode" in vm.serial():
-            break
-        vm.key("1")
-        time.sleep(0.4)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        vm.clear()
-        vm.type(" echo __shell_up__\n")
-        time.sleep(1.2)
-        if "__shell_up__" in vm.serial():
-            time.sleep(0.4)
-            return
-    raise AssertionError("never reached a shell\n--- serial ---\n" + vm.serial()[-2000:])
+    """Normal boot (entry 1), no framebuffer: a serial shell with the network up.
+
+    Safe mode has a serial shell but skips network bring-up, and a normal boot
+    puts the desktop on the screen instead of a shell. `-vga none` gives both
+    at once: with no framebuffer the kernel falls back to the serial shell,
+    with the network up.
+    """
+    return vm.reach_shell(timeout, "1")
 
 
 def settle(vm, quiet=0.8, limit=15):
@@ -84,19 +77,6 @@ def run(vm, line, expect=None, timeout=60):
     return vm.serial()
 
 
-def flush(vm):
-    """Terminate whatever half-typed line the boot probe left behind.
-
-    reach_shell types its marker over and over until one comes back, and the
-    last one is often still sitting in the shell's line buffer, unterminated,
-    when it does. The next command then appends itself to that fragment: the
-    first run of this test asked the machine to run `__ifconfig`, which is not
-    a command, and then waited a minute for output that was never coming."""
-    vm.type("\n")
-    settle(vm)
-    vm.clear()
-
-
 def link_local(vm):
     """The address the machine gave itself, read back off its own ifconfig."""
     out = run(vm, "ifconfig", "link-local", timeout=60)
@@ -120,8 +100,6 @@ def main():
         try:
             reach_shell(srv)
             reach_shell(cli)
-            flush(srv)
-            flush(cli)
 
             srv6 = link_local(srv)
             cli6 = link_local(cli)
