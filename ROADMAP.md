@@ -96,9 +96,28 @@ with the reason given
 - [x] 39. SLAAC autoconfiguration: router solicitation, the prefix out of the
         advertisement, and a global address formed and checked before it is
         used. No server involved at all -- that's the whole idea
-- [ ] 39b. TCP and UDP over IPv6. The sockets, the resolver and everything
-        above them take a uint32_t address; until that is widened, IPv6
-        reaches a neighbour and a router but not a web page
+- [x] 39b. TCP and UDP over IPv6. One `netaddr` (include/netaddr.h) holds
+        either family, and the two transports carry both: only the
+        pseudo-header the checksum covers and the output path the segment
+        leaves by differ, so the handshake, the sequence arithmetic and the
+        receive ring never ask which it is. The resolver asks for AAAA as
+        well as A, preferring whichever family the machine can actually
+        reach; `http://[fe80::1]:8080/` works, brackets and all, through
+        http, TLS, ssh and the ring-3 sockets (SYS_CONNECT6 / SYS_ACCEPT6 /
+        SYS_RESOLVE6, added rather than folded into the v4 calls so ABI 1
+        binaries are untouched). A v6 datagram with no checksum, or a wrong
+        one, is dropped rather than delivered -- there is no header checksum
+        underneath to have caught it. test/t_tcp6.py puts two BoltOS
+        machines on one wire with nothing configured on either and fetches a
+        file between them; the UDP path, which nothing on the machine sends
+        yet, is checked byte for byte in test/host/ip6.c instead of being
+        shipped unrun.
+        Still v4-only: the resolver's *transport* (a v6-only machine has
+        nowhere to send a query until the RDNSS option in a Router
+        Advertisement is parsed), the file-share broadcast protocol, and
+        firewall rules that name an address -- a rule holds a uint32_t and a
+        CIDR mask, so v6 traffic is filtered on direction, protocol and port
+        and by the default policy, which beats not filtering it at all
 - [x] 40. TCP listen/accept (server sockets)
 - [x] 41. Socket syscalls, so ring-3 programs can use the network
 - [x] 42. SSH client: the same machinery as the server with the roles

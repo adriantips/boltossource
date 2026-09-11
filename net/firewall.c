@@ -60,6 +60,22 @@ int fw_check(int dir, uint8_t proto, uint32_t peer, uint16_t port) {
     return default_allow;
 }
 
+/* Rules that name an address cannot be judged against a v6 peer, so they are
+ * skipped rather than matched against a zero. Everything else -- direction,
+ * protocol, port, and the default policy -- applies to both families. */
+int fw_check6(int dir, uint8_t proto, uint16_t port) {
+    if (!enabled) return 1;
+    for (int i = 0; i < rule_count; i++) {
+        if (rules[i].has_addr) continue;
+        if (rule_matches(&rules[i], dir, proto, 0, port)) {
+            if (rules[i].action) stat_passed++; else stat_blocked++;
+            return rules[i].action;
+        }
+    }
+    if (default_allow) stat_passed++; else stat_blocked++;
+    return default_allow;
+}
+
 static int parse_port(const char *s, uint16_t *out) {
     int p = 0; const char *q = s;
     if (!*q) return 0;

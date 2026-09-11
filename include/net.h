@@ -1,11 +1,13 @@
 #pragma once
 #include <stdint.h>
 #include "netif.h"
+#include "netaddr.h"
 
 /* ===========================================================================
- *  Minimal IPv4 stack: Ethernet / ARP / IPv4 / ICMP / UDP.
- *  IP addresses are carried as uint32_t in HOST order; conversion to network
- *  order happens at the wire boundary. x86 is little-endian.
+ *  Ethernet / ARP / IPv4 / ICMP, and the transports that sit on both families.
+ *  IPv4 addresses are carried as uint32_t in HOST order; conversion to network
+ *  order happens at the wire boundary. x86 is little-endian. The v6 half of
+ *  the stack is in net6.h; TCP and UDP straddle the two and take a `netaddr`.
  * ===========================================================================*/
 static inline uint16_t htons(uint16_t x) { return (uint16_t)((x << 8) | (x >> 8)); }
 static inline uint16_t ntohs(uint16_t x) { return htons(x); }
@@ -107,10 +109,15 @@ int  icmp_wait_reply(uint16_t id, uint16_t seq, uint32_t timeout_ms); /* 1 = got
 
 /* UDP */
 void udp_input(struct netif *nif, uint32_t src_ip, const uint8_t *pkt, uint16_t len);
+void udp_input6(struct netif *nif, const ip6_addr *src, const ip6_addr *dst,
+                const uint8_t *pkt, uint16_t len);
 int  udp_send(struct netif *nif, uint32_t dst_ip, uint16_t sport, uint16_t dport,
               const void *data, uint16_t len);
-/* Bind a callback to a local UDP port (one per port). Used by the DNS resolver. */
-typedef void (*udp_listener_fn)(uint32_t src_ip, uint16_t sport,
+int  udp_send_addr(struct netif *nif, const netaddr *dst, uint16_t sport, uint16_t dport,
+                   const void *data, uint16_t len);
+/* Bind a callback to a local UDP port (one per port). Used by the DNS resolver.
+ * A listener hears both families on its port; `src` says which arrived. */
+typedef void (*udp_listener_fn)(const netaddr *src, uint16_t sport,
                                 const uint8_t *data, uint16_t len);
 void udp_listen(uint16_t port, udp_listener_fn fn);
 void udp_unlisten(uint16_t port);
@@ -119,7 +126,11 @@ void udp_unlisten(uint16_t port);
  * opaque; one heap allocation per connection. */
 struct tcp_conn;
 void tcp_input(struct netif *nif, uint32_t src_ip, const uint8_t *pkt, uint16_t len);
+void tcp_input6(struct netif *nif, const ip6_addr *src, const ip6_addr *dst,
+                const uint8_t *pkt, uint16_t len);
 struct tcp_conn *tcp_connect(uint32_t dst_ip, uint16_t dport, uint32_t timeout_ms);
+/* The same, to either family. tcp_connect is this with an IPv4 address. */
+struct tcp_conn *tcp_connect_addr(const netaddr *dst, uint16_t dport, uint32_t timeout_ms);
 int  tcp_send(struct tcp_conn *c, const void *data, uint32_t len);
 /* Blocks until some bytes arrive, the peer closes (returns 0), or timeout (-1). */
 int  tcp_recv(struct tcp_conn *c, void *buf, uint32_t cap, uint32_t timeout_ms);
@@ -133,14 +144,23 @@ int  tcp_listen(uint16_t port);
 void tcp_unlisten(uint16_t port);
 struct tcp_conn *tcp_accept(uint16_t port, uint32_t timeout_ms);
 
+/* 0 for a v6 peer, which has no uint32_t form -- use tcp_peer_addr. */
 uint32_t tcp_peer_ip(struct tcp_conn *c);
+void     tcp_peer_addr(struct tcp_conn *c, netaddr *out);
 uint16_t tcp_peer_port(struct tcp_conn *c);
 int      tcp_is_open(struct tcp_conn *c);   /* 1 while it can still carry data */
 
-/* DNS: resolve a hostname to an IPv4 address (host order). 1 = ok, 0 = failed.
- * Answers from /etc/hosts and a TTL-honouring cache before going to the wire. */
+/* DNS. 1 = ok, 0 = failed. Answers from /etc/hosts and a TTL-honouring cache
+ * before going to the wire.
+ *
+ * dns_resolve is the IPv4 answer and nothing else -- a AAAA-only name fails
+ * rather than returning something that is not an IPv4 address. Callers that
+ * can hold either family want dns_resolve_addr, which asks for the family
+ * this machine can actually reach first. */
 int  dns_resolve(const char *host, uint32_t *ip_out, uint32_t timeout_ms);
+int  dns_resolve6(const char *host, ip6_addr *out, uint32_t timeout_ms);
+int  dns_resolve_addr(const char *host, netaddr *out, uint32_t timeout_ms);
 
 void dns_cache_flush(void);
 /* Walk the cache for `netinfo dns`. Returns 0 when slot `i` is empty or stale. */
-int  dns_cache_dump(int i, const char **name, uint32_t *ip, uint32_t *secs_left);
+int  dns_cache_dump(int i, const char **name, netaddr *addr, uint32_t *secs_left);

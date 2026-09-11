@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "net.h"
+#include "net6.h"
 #include "netif.h"
 #include "pit.h"
 #include "kheap.h"
@@ -13,6 +14,12 @@
  *  so RX is serviced on this thread while we wait. No retransmit queue, no
  *  congestion control, no out-of-order reassembly: a basic browser over slirp
  *  doesn't need them, and we keep transfers short and bounded by timeouts.
+ *
+ *  Both families come through here. A connection holds a `netaddr` rather than
+ *  a uint32_t, and exactly two things below the state machine care which one
+ *  it is: the pseudo-header the checksum covers, and which of ip_output /
+ *  ip6_output_from carries the segment. Everything else -- the handshake, the
+ *  sequence arithmetic, the receive ring, the close -- never asks.
  * ===========================================================================*/
 
 enum { CLOSED, LISTEN, SYN_SENT, SYN_RCVD, ESTABLISHED, CLOSE_WAIT, FIN_WAIT, DONE };
@@ -22,7 +29,7 @@ enum { CLOSED, LISTEN, SYN_SENT, SYN_RCVD, ESTABLISHED, CLOSE_WAIT, FIN_WAIT, DO
 struct tcp_conn {
     int           state;
     struct netif *nif;
-    uint32_t      peer_ip;
+    netaddr       peer;
     uint16_t      local_port, peer_port;
     uint32_t      snd_nxt;          /* next seq we will send          */
     uint32_t      snd_una;          /* oldest unacknowledged seq      */
@@ -71,6 +78,23 @@ static uint16_t tcp_checksum(const void *seg, uint16_t seglen, uint32_t src, uin
     return (uint16_t)~sum;
 }
 
+/* The checksum covers a pseudo-header built from the two addresses, so it is
+ * built per family. On v6 it is not optional: there is no header checksum
+ * underneath to catch an address that arrived corrupted. */
+static uint16_t seg_checksum(struct tcp_conn *c, const void *seg, uint16_t len) {
+    if (c->peer.af == NET_AF_INET6)
+        return ip6_checksum(ip6_source_for(&c->peer.v6), &c->peer.v6,
+                            IPPROTO_TCP, seg, len);
+    return tcp_checksum(seg, len, net_ip, c->peer.v4);
+}
+
+static int seg_output(struct tcp_conn *c, const void *seg, uint16_t len) {
+    if (c->peer.af == NET_AF_INET6)
+        return ip6_output_from(c->nif, ip6_source_for(&c->peer.v6), &c->peer.v6,
+                               IPPROTO_TCP, seg, len, 64);
+    return ip_output(c->nif, c->peer.v4, IPPROTO_TCP, seg, len);
+}
+
 static int tcp_xmit(struct tcp_conn *c, uint8_t flags, const void *data, uint16_t dlen) {
     uint8_t seg[20 + 1460];
     if (dlen > 1460) dlen = 1460;
@@ -86,16 +110,17 @@ static int tcp_xmit(struct tcp_conn *c, uint8_t flags, const void *data, uint16_
     h->checksum = 0;
     h->urgent   = 0;
     if (dlen) memcpy(seg + 20, data, dlen);
-    h->checksum = htons(tcp_checksum(seg, (uint16_t)(20 + dlen), net_ip, c->peer_ip));
+    h->checksum = htons(seg_checksum(c, seg, (uint16_t)(20 + dlen)));
 
-    int r = ip_output(c->nif, c->peer_ip, IPPROTO_TCP, seg, (uint16_t)(20 + dlen));
+    int r = seg_output(c, seg, (uint16_t)(20 + dlen));
     if (flags & TCP_SYN) c->snd_nxt++;
     if (flags & TCP_FIN) c->snd_nxt++;
     c->snd_nxt += dlen;
     return r;
 }
 
-void tcp_input(struct netif *nif, uint32_t src_ip, const uint8_t *pkt, uint16_t len) {
+static void tcp_input_at(struct netif *nif, const netaddr *src,
+                         const uint8_t *pkt, uint16_t len) {
     if (len < (int)sizeof(struct tcp_hdr)) return;
     const struct tcp_hdr *h = (const struct tcp_hdr *)pkt;
     uint16_t dport = ntohs(h->dst_port), sport = ntohs(h->src_port);
@@ -103,7 +128,8 @@ void tcp_input(struct netif *nif, uint32_t src_ip, const uint8_t *pkt, uint16_t 
     struct tcp_conn *c = 0;
     for (int i = 0; i < MAX_CONNS; i++)
         if (conns[i] && conns[i]->local_port == dport &&
-            conns[i]->peer_port == sport && conns[i]->peer_ip == src_ip) { c = conns[i]; break; }
+            conns[i]->peer_port == sport &&
+            netaddr_equal(&conns[i]->peer, src)) { c = conns[i]; break; }
 
     /* No connection yet: a bare SYN to a listening port opens one. This is the
      * passive-open half of the handshake -- the client side has always been
@@ -122,7 +148,7 @@ void tcp_input(struct netif *nif, uint32_t src_ip, const uint8_t *pkt, uint16_t 
         c->rx = (uint8_t *)kmalloc(RXBUF);
         if (!c->rx) { kfree(c); return; }
         c->nif        = nif ? nif : netif_default();
-        c->peer_ip    = src_ip;
+        c->peer       = *src;
         c->peer_port  = sport;
         c->local_port = dport;
         c->passive    = 1;
@@ -186,14 +212,34 @@ void tcp_input(struct netif *nif, uint32_t src_ip, const uint8_t *pkt, uint16_t 
     }
 }
 
+void tcp_input(struct netif *nif, uint32_t src_ip, const uint8_t *pkt, uint16_t len) {
+    netaddr src = netaddr_v4(src_ip);
+    tcp_input_at(nif, &src, pkt, len);
+}
+
+void tcp_input6(struct netif *nif, const ip6_addr *src6, const ip6_addr *dst6,
+                const uint8_t *pkt, uint16_t len) {
+    /* Checked before anything in the segment is believed, the same rule
+     * icmp6.c follows -- over v6 nothing underneath has verified the
+     * addresses this segment claims to be between. */
+    if (ip6_checksum(src6, dst6, IPPROTO_TCP, pkt, len) != 0) return;
+    netaddr src = netaddr_v6(src6);
+    tcp_input_at(nif, &src, pkt, len);
+}
+
 static void pump(uint32_t ms) {
     uint64_t start = pit_ticks();
     do { netif_poll_all(); __asm__ volatile("hlt"); } while (pit_ticks() - start < ms);
 }
 
 struct tcp_conn *tcp_connect(uint32_t dst_ip, uint16_t dport, uint32_t timeout_ms) {
+    netaddr dst = netaddr_v4(dst_ip);
+    return tcp_connect_addr(&dst, dport, timeout_ms);
+}
+
+struct tcp_conn *tcp_connect_addr(const netaddr *dst, uint16_t dport, uint32_t timeout_ms) {
     struct netif *nif = netif_default();
-    if (!nif) return 0;
+    if (!nif || !dst) return 0;
 
     int slot = -1;
     for (int i = 0; i < MAX_CONNS; i++) if (!conns[i]) { slot = i; break; }
@@ -205,7 +251,7 @@ struct tcp_conn *tcp_connect(uint32_t dst_ip, uint16_t dport, uint32_t timeout_m
     c->rx = (uint8_t *)kmalloc(RXBUF);
     if (!c->rx) { kfree(c); return 0; }
     c->nif        = nif;
-    c->peer_ip    = dst_ip;
+    c->peer       = *dst;
     c->peer_port  = dport;
     c->local_port = next_port++; if (next_port == 0) next_port = 49152;
     /* Knuth's multiplicative hash of the tick count, not a CSPRNG -- the ISN
@@ -217,10 +263,18 @@ struct tcp_conn *tcp_connect(uint32_t dst_ip, uint16_t dport, uint32_t timeout_m
     c->state   = SYN_SENT;
     conns[slot] = c;
 
-    /* resolve next hop once up front so the SYN isn't dropped behind ARP */
-    uint32_t nexthop = ((dst_ip & net_mask) == (net_ip & net_mask)) ? dst_ip : net_gw;
+    /* Resolve the next hop once up front so the SYN isn't dropped behind ARP
+     * or Neighbour Discovery. The retransmit below would cover it, but only
+     * after half a second of silence on every first connection. */
     uint8_t mac[6];
-    if (!arp_resolve(nif, nexthop, mac, 1000)) { tcp_close(c); return 0; }
+    if (dst->af == NET_AF_INET6) {
+        ip6_addr nexthop;
+        if (!ip6_nexthop(&dst->v6, &nexthop)) { tcp_close(c); return 0; }
+        if (!nd6_resolve(nif, &nexthop, mac, 1000)) { tcp_close(c); return 0; }
+    } else {
+        uint32_t nexthop = ((dst->v4 & net_mask) == (net_ip & net_mask)) ? dst->v4 : net_gw;
+        if (!arp_resolve(nif, nexthop, mac, 1000)) { tcp_close(c); return 0; }
+    }
 
     uint64_t start = pit_ticks();
     uint64_t last  = 0;
@@ -288,7 +342,13 @@ struct tcp_conn *tcp_accept(uint16_t port, uint32_t timeout_ms) {
     }
 }
 
-uint32_t tcp_peer_ip(struct tcp_conn *c)   { return c ? c->peer_ip   : 0; }
+uint32_t tcp_peer_ip(struct tcp_conn *c) {
+    return (c && c->peer.af == NET_AF_INET) ? c->peer.v4 : 0;
+}
+void tcp_peer_addr(struct tcp_conn *c, netaddr *out) {
+    if (!out) return;
+    if (c) *out = c->peer; else *out = netaddr_v4(0);
+}
 uint16_t tcp_peer_port(struct tcp_conn *c) { return c ? c->peer_port : 0; }
 int      tcp_is_open(struct tcp_conn *c) {
     return c && !c->reset && (c->state == ESTABLISHED || c->state == CLOSE_WAIT);

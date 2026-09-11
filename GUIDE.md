@@ -442,7 +442,12 @@ Being straight about this is more useful than a feature list:
 - **No USB mass storage.** USB keyboards and mice work; USB drives do not appear
   in File Explorer.
 - **No printing.**
-- **No IPv6.**
+- **IPv6 works, but nothing hands out a resolver over it.** The machine
+  addresses itself, finds its router, and opens TCP connections over v6 --
+  `download http://[fe80::1]:8080/x` and `ssh user@fe80::1` both work. What it
+  cannot yet do is find a *name server* over v6: that address still comes from
+  DHCP, so on a network with no IPv4 at all, addresses you type work and names
+  you type do not.
 - **Sound plays; nothing records.** Intel HD Audio and AC'97 are both driven,
   and the Media player plays WAV files. There is no microphone input, no volume
   mixer beyond the one master level, and no MP3 or any other compressed format

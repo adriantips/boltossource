@@ -165,7 +165,18 @@ static int parse_url(const char *url, char *host, uint32_t hcap, uint16_t *port,
     else if (strncmp(s, "https://", 8) == 0) { s += 8; *secure = 1; }
 
     uint32_t i = 0;
-    while (*s && *s != '/' && *s != ':' && i < hcap - 1) host[i++] = *s++;
+    if (*s == '[') {
+        /* An IPv6 literal is bracketed precisely because it is full of the
+         * colon that otherwise means "port" (RFC 3986). The brackets are not
+         * kept: what comes out is the address, which is what the resolver and
+         * the Host: header both want. */
+        s++;
+        while (*s && *s != ']' && i < hcap - 1) host[i++] = *s++;
+        if (*s != ']') return -1;
+        s++;
+    } else {
+        while (*s && *s != '/' && *s != ':' && i < hcap - 1) host[i++] = *s++;
+    }
     host[i] = 0;
     if (i == 0) return -1;
 
@@ -181,6 +192,21 @@ static int parse_url(const char *url, char *host, uint32_t hcap, uint16_t *port,
     while (*s && i < pcap - 1) path[i++] = *s++;
     path[i] = 0;
     return 0;
+}
+
+/* An IPv6 literal loses its brackets in parse_url, because the resolver and
+ * the connect want the address and not the punctuation. The Host: header is
+ * the one place that wants them back: RFC 7230 says the field is a URI
+ * authority, and an authority with bare colons in it cannot be told from a
+ * host and a port. */
+static void host_hdr(const char *host, char *out, uint32_t cap) {
+    int v6 = 0;
+    for (const char *q = host; *q; q++) if (*q == ':') { v6 = 1; break; }
+    uint32_t o = 0;
+    if (v6 && o + 2 < cap) out[o++] = '[';
+    for (const char *q = host; *q && o + 2 < cap; ) out[o++] = *q++;
+    if (v6 && o + 1 < cap) out[o++] = ']';
+    out[o] = 0;
 }
 
 static int parse_status(const char *resp) {       /* "HTTP/1.x NNN ..." */
@@ -286,8 +312,8 @@ struct http_conn *http_open(const char *url, int *status) {
     if (parse_url(url, host, sizeof(host), &port, path, sizeof(path), &secure) != 0) {
         if (status) *status = -1; return 0;
     }
-    uint32_t ip;
-    if (!dns_resolve(host, &ip, 3000)) { if (status) *status = -3; return 0; }
+    netaddr addr;
+    if (!dns_resolve_addr(host, &addr, 3000)) { if (status) *status = -3; return 0; }
 
     struct http_conn *c = (struct http_conn *)kmalloc(sizeof(*c));
     if (!c) { if (status) *status = -1; return 0; }
@@ -295,9 +321,9 @@ struct http_conn *http_open(const char *url, int *status) {
     c->secure = secure; c->port = port;
     uint32_t i = 0; while (host[i] && i < sizeof(c->host) - 1) { c->host[i] = host[i]; i++; } c->host[i] = 0;
 
-    if (secure) { c->sc = tls_connect(ip, port, host, 8000);
+    if (secure) { c->sc = tls_connect_addr(&addr, port, host, 8000);
                   if (!c->sc) { kfree(c); if (status) *status = -5; return 0; } }
-    else        { c->tc = tcp_connect(ip, port, 5000);
+    else        { c->tc = tcp_connect_addr(&addr, port, 5000);
                   if (!c->tc) { kfree(c); if (status) *status = -4; return 0; } }
     if (status) *status = 0;
     return c;
@@ -333,7 +359,8 @@ int http_fetch(struct http_conn *c, const char *url, char *out, uint32_t cap,
     if (parse_url(url, host, sizeof(host), &port, path, sizeof(path), &secure) != 0) return -1;
 
     char req[1600]; int n = 0;
-    const char *parts[] = { "GET ", path, " HTTP/1.1\r\nHost: ", host,
+    char hh[136]; host_hdr(host, hh, sizeof hh);
+    const char *parts[] = { "GET ", path, " HTTP/1.1\r\nHost: ", hh,
                             "\r\nUser-Agent: BoltOS/1.0\r\nAccept: */*\r\nAccept-Encoding: gzip, deflate\r\nConnection: keep-alive\r\n" };
     for (uint32_t i = 0; i < sizeof(parts)/sizeof(parts[0]); i++)
         for (const char *q = parts[i]; *q && n < (int)sizeof(req) - 1; ) req[n++] = *q++;
@@ -403,20 +430,21 @@ int http_get(const char *url, char *out, uint32_t cap,
     int pr = parse_url(url, host, sizeof(host), &port, path, sizeof(path), &secure);
     if (pr != 0)  { if (status) *status = 0;  return -1; }
 
-    uint32_t ip;
-    if (!dns_resolve(host, &ip, 3000)) { if (status) *status = -3; return -1; } /* DNS fail */
+    netaddr addr;
+    if (!dns_resolve_addr(host, &addr, 3000)) { if (status) *status = -3; return -1; }
 
     /* one transport, two backends: plain TCP for http, TLS for https */
     struct tcp_conn *tc = 0; struct tls_conn *sc = 0;
-    if (secure) { sc = tls_connect(ip, port, host, 8000);
+    if (secure) { sc = tls_connect_addr(&addr, port, host, 8000);
                   if (!sc) { if (status) *status = -5; return -1; } }   /* TLS fail */
-    else        { tc = tcp_connect(ip, port, 5000);
+    else        { tc = tcp_connect_addr(&addr, port, 5000);
                   if (!tc) { if (status) *status = -4; return -1; } }   /* connect fail */
 
     /* build and send the request */
     char req[1600];
     int n = 0;
-    const char *parts[] = { "GET ", path, " HTTP/1.1\r\nHost: ", host,
+    char hh[136]; host_hdr(host, hh, sizeof hh);
+    const char *parts[] = { "GET ", path, " HTTP/1.1\r\nHost: ", hh,
                             "\r\nUser-Agent: BoltOS/1.0\r\nAccept-Encoding: gzip, deflate\r\nConnection: close\r\n" };
     for (uint32_t i = 0; i < sizeof(parts) / sizeof(parts[0]); i++)
         for (const char *q = parts[i]; *q && n < (int)sizeof(req) - 1; ) req[n++] = *q++;

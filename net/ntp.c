@@ -35,8 +35,8 @@ static int64_t  clock_offset;
 static int      synced;
 static uint32_t last_sync_unix;
 
-static void ntp_reply(uint32_t src_ip, uint16_t sport, const uint8_t *data, uint16_t len) {
-    (void)src_ip; (void)sport;
+static void ntp_reply(const netaddr *src, uint16_t sport, const uint8_t *data, uint16_t len) {
+    (void)src; (void)sport;
     if (len < NTP_PKTLEN || got_reply) return;
     /* Bytes 40..43 are the transmit timestamp's integer seconds, big-endian. */
     reply_secs = ((uint32_t)data[40] << 24) | ((uint32_t)data[41] << 16) |

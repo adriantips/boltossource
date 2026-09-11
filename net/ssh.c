@@ -908,16 +908,16 @@ static int server_session(ssh_conn *s, const char *user) {
 }
 
 /* ============================ server: one connection ==================== */
-static int serve_one(struct tcp_conn *tc, uint32_t peer_ip) {
+static int serve_one(struct tcp_conn *tc, const netaddr *peer) {
     ssh_conn *s = (ssh_conn *)kmalloc(sizeof(ssh_conn));
     if (!s) return -1;
     memset(s, 0, sizeof(*s));
     s->tcp = tc;
     s->is_server = 1;
 
-    kprintf("sshd: connection from %u.%u.%u.%u\n",
-            (peer_ip >> 24) & 0xFF, (peer_ip >> 16) & 0xFF,
-            (peer_ip >> 8) & 0xFF, peer_ip & 0xFF);
+    char who[NETADDR_STRLEN];
+    netaddr_format(peer, who);
+    kprintf("sshd: connection from %s\n", who);
 
     int rc = -1;
     do {
@@ -988,8 +988,8 @@ int ssh_server_run(uint16_t port) {
         if (kbd_trygetc() >= 0) break;
         struct tcp_conn *c = tcp_accept(port, 250);
         if (!c) continue;
-        uint32_t pip = tcp_peer_ip(c);
-        serve_one(c, pip);
+        netaddr peer; tcp_peer_addr(c, &peer);
+        serve_one(c, &peer);
         tcp_close(c);
         served++;
     }
@@ -1437,13 +1437,13 @@ static int client_session(ssh_conn *s, const char *command) {
 
 int ssh_client_connect(const char *host, uint16_t port, const char *user,
                        const char *password, const char *command, int *status_out) {
-    uint32_t ip;
-    if (!dns_resolve(host, &ip, 4000)) {
+    netaddr addr;
+    if (!dns_resolve_addr(host, &addr, 4000)) {
         kprintf("ssh: cannot resolve '%s'\n", host);
         return -1;
     }
 
-    struct tcp_conn *tc = tcp_connect(ip, port, 5000);
+    struct tcp_conn *tc = tcp_connect_addr(&addr, port, 5000);
     if (!tc) {
         kprintf("ssh: cannot connect to %s port %u\n", host, (unsigned)port);
         return -1;

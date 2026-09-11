@@ -75,16 +75,24 @@ static file *sock_alloc(void) {
 }
 
 file *sock_create(int domain, int type) {
-    if (domain != AF_INET || type != SOCK_STREAM) return 0;
+    /* The family is not recorded. Nothing below the connect needs it: a
+     * connected socket knows its peer, and a listening one takes whichever
+     * family knocks. */
+    if ((domain != AF_INET && domain != AF_INET6) || type != SOCK_STREAM) return 0;
     return sock_alloc();
 }
 
-int sock_connect(file *f, uint32_t ip, uint16_t port, uint32_t timeout_ms) {
-    if (!sock_is_socket(f)) return -1;
+int sock_connect_addr(file *f, const netaddr *dst, uint16_t port, uint32_t timeout_ms) {
+    if (!sock_is_socket(f) || !dst) return -1;
     sock_t *s = (sock_t *)f->priv;
     if (!s || s->conn || s->listening) return -1;      /* already in use */
-    s->conn = tcp_connect(ip, port, timeout_ms ? timeout_ms : 5000);
+    s->conn = tcp_connect_addr(dst, port, timeout_ms ? timeout_ms : 5000);
     return s->conn ? 0 : -1;
+}
+
+int sock_connect(file *f, uint32_t ip, uint16_t port, uint32_t timeout_ms) {
+    netaddr dst = netaddr_v4(ip);
+    return sock_connect_addr(f, &dst, port, timeout_ms);
 }
 
 int sock_listen(file *f, uint16_t port) {
@@ -103,7 +111,7 @@ int sock_listen(file *f, uint16_t port) {
     return 0;
 }
 
-file *sock_accept(file *f, uint32_t *peer_ip, uint16_t *peer_port, uint32_t timeout_ms) {
+file *sock_accept_addr(file *f, netaddr *peer, uint16_t *peer_port, uint32_t timeout_ms) {
     if (!sock_is_socket(f)) return 0;
     sock_t *s = (sock_t *)f->priv;
     if (!s || !s->listening) return 0;
@@ -114,7 +122,14 @@ file *sock_accept(file *f, uint32_t *peer_ip, uint16_t *peer_port, uint32_t time
     file *nf = sock_alloc();
     if (!nf) { tcp_close(c); return 0; }
     ((sock_t *)nf->priv)->conn = c;
-    if (peer_ip)   *peer_ip   = tcp_peer_ip(c);
+    if (peer)      tcp_peer_addr(c, peer);
     if (peer_port) *peer_port = tcp_peer_port(c);
+    return nf;
+}
+
+file *sock_accept(file *f, uint32_t *peer_ip, uint16_t *peer_port, uint32_t timeout_ms) {
+    netaddr peer;
+    file *nf = sock_accept_addr(f, &peer, peer_port, timeout_ms);
+    if (peer_ip) *peer_ip = nf ? (peer.af == NET_AF_INET ? peer.v4 : 0) : 0;
     return nf;
 }

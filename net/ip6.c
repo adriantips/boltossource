@@ -2,6 +2,7 @@
 #include "net.h"
 #include "net6.h"
 #include "netif.h"
+#include "firewall.h"
 #include "string.h"
 
 /* ===========================================================================
@@ -204,6 +205,34 @@ int ip6_is_ours(const ip6_addr *a) {
     return 0;
 }
 
+/* ---- routing -------------------------------------------------------------
+ *  On-link if it is link-local, or inside the prefix we were given; otherwise
+ *  it goes to the router. Without a router and without a matching prefix there
+ *  is nowhere to send it.
+ *
+ *  These two used to be buried inside ip6_output_from. TCP pulled them out:
+ *  the segment checksum covers the source address, so the transport has to
+ *  know which address it will go out as *before* it builds the segment, and a
+ *  connect wants to resolve the next hop up front rather than lose its first
+ *  SYN to a neighbour cache miss. */
+const ip6_addr *ip6_source_for(const ip6_addr *dst) {
+    if (net6_have_addr && dst && !ip6_is_link_local(dst) && !ip6_is_multicast(dst))
+        return &net6_addr;
+    return &net6_link;
+}
+
+int ip6_nexthop(const ip6_addr *dst, ip6_addr *out) {
+    if (!dst || !out) return 0;
+    if (ip6_is_multicast(dst) || ip6_is_link_local(dst)) { ip6_copy(out, dst); return 1; }
+    if (net6_have_addr) {
+        int bytes = net6_prefix_len / 8;
+        if (memcmp(dst->b, net6_addr.b, (size_t)bytes) == 0) { ip6_copy(out, dst); return 1; }
+    }
+    if (!net6_have_gw) return 0;
+    ip6_copy(out, &net6_gw);
+    return 1;
+}
+
 /* ---- output -------------------------------------------------------------- */
 static uint8_t pkt6[IP6_HDR_LEN + 1500];
 
@@ -216,21 +245,9 @@ int ip6_output_from(struct netif *nif, const ip6_addr *src, const ip6_addr *dst,
     if (ip6_is_multicast(dst)) {
         ip6_multicast_mac(dst, mac);
     } else {
-        /* On-link if it is link-local, or inside the prefix we were given;
-         * otherwise it goes to the router. Without a router and without a
-         * matching prefix there is nowhere to send it. */
-        const ip6_addr *nexthop = dst;
-        if (!ip6_is_link_local(dst) && net6_have_addr) {
-            int bytes = net6_prefix_len / 8;
-            if (memcmp(dst->b, net6_addr.b, (size_t)bytes) != 0) {
-                if (!net6_have_gw) return -1;
-                nexthop = &net6_gw;
-            }
-        } else if (!ip6_is_link_local(dst)) {
-            if (!net6_have_gw) return -1;
-            nexthop = &net6_gw;
-        }
-        if (!nd6_lookup(nexthop, mac)) { nd6_solicit(nif, nexthop); return -1; }
+        ip6_addr nexthop;
+        if (!ip6_nexthop(dst, &nexthop)) return -1;
+        if (!nd6_lookup(&nexthop, mac)) { nd6_solicit(nif, &nexthop); return -1; }
     }
 
     struct ip6_hdr *h = (struct ip6_hdr *)pkt6;
@@ -247,13 +264,7 @@ int ip6_output_from(struct netif *nif, const ip6_addr *src, const ip6_addr *dst,
 
 int ip6_output(struct netif *nif, const ip6_addr *dst, uint8_t next_hdr,
                const void *payload, uint16_t len) {
-    /* A global destination gets the global source if there is one; anything
-     * link-local or multicast is answered from the link-local address, which
-     * always exists. */
-    const ip6_addr *src = &net6_link;
-    if (net6_have_addr && !ip6_is_link_local(dst) && !ip6_is_multicast(dst))
-        src = &net6_addr;
-    return ip6_output_from(nif, src, dst, next_hdr, payload, len, 64);
+    return ip6_output_from(nif, ip6_source_for(dst), dst, next_hdr, payload, len, 64);
 }
 
 /* ---- input --------------------------------------------------------------- */
@@ -272,14 +283,26 @@ void ip6_input(struct netif *nif, const uint8_t *pkt, uint16_t len,
     memcpy(dst.b, h->dst, 16);
     if (!ip6_is_ours(&dst)) return;
 
+    /* The firewall's rules carry a uint32_t address, so only the ones that
+     * name no address can be applied here. Better than not filtering v6 at
+     * all, which is what turning the firewall on used to mean. */
+    if (h->next_hdr == IPPROTO_TCP || h->next_hdr == IPPROTO_UDP) {
+        const uint8_t *l4 = pkt + IP6_HDR_LEN;
+        uint16_t sport = plen >= 2 ? (uint16_t)((l4[0] << 8) | l4[1]) : 0;
+        if (!fw_check6(FW_IN, h->next_hdr, sport)) return;
+    }
+
     switch (h->next_hdr) {
     case IPPROTO_ICMPV6:
         icmp6_input(nif, &src, &dst, pkt + IP6_HDR_LEN, plen);
         break;
+    case IPPROTO_TCP:
+        tcp_input6(nif, &src, &dst, pkt + IP6_HDR_LEN, plen);
+        break;
+    case IPPROTO_UDP:
+        udp_input6(nif, &src, &dst, pkt + IP6_HDR_LEN, plen);
+        break;
     default:
-        /* TCP and UDP over IPv6 are not wired up; a datagram for them is
-         * dropped rather than handed to a v4 handler that would read the
-         * wrong addresses out of it. */
         break;
     }
 }

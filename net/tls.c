@@ -726,12 +726,21 @@ static int do_handshake(struct tls_conn *c, const char *sni, uint32_t timeout) {
 /* ------------------------------ public API ------------------------------ */
 struct tls_conn *tls_connect(uint32_t dst_ip, uint16_t port,
                              const char *sni, uint32_t timeout_ms) {
+    netaddr dst = netaddr_v4(dst_ip);
+    return tls_connect_addr(&dst, port, sni, timeout_ms);
+}
+
+/* Nothing in the handshake below cares which family carried it -- TLS is a
+ * byte stream over a byte stream. This takes a netaddr only so it can open
+ * the connection underneath. */
+struct tls_conn *tls_connect_addr(const netaddr *dst, uint16_t port,
+                                  const char *sni, uint32_t timeout_ms) {
     rng_mix();
     struct tls_conn *c = (struct tls_conn *)kmalloc(sizeof(*c));
     if (!c) return 0;
     memset(c, 0, sizeof(*c));
 
-    c->tcp = tcp_connect(dst_ip, port, timeout_ms);
+    c->tcp = tcp_connect_addr(dst, port, timeout_ms);
     if (!c->tcp) { kfree(c); return 0; }
 
     if (do_handshake(c, sni, timeout_ms ? timeout_ms : 8000) != 0) {

@@ -208,19 +208,25 @@ int cmd_serve(int argc, char **argv) {
     kprintf("serving %s on http://%u.%u.%u.%u:%u/  (any key stops)\n", root,
             (net_ip >> 24) & 0xFF, (net_ip >> 16) & 0xFF,
             (net_ip >> 8) & 0xFF, net_ip & 0xFF, port);
+    /* The same listener takes v6 connections, so say where. The brackets are
+     * not decoration: without them nobody can tell the address from the port. */
+    if (!ip6_is_zero(&net6_link)) {
+        char txt[46];
+        ip6_format(net6_have_addr ? &net6_addr : &net6_link, txt);
+        kprintf("      and on http://[%s]:%u/\n", txt, port);
+    }
 
     int served = 0;
     for (;;) {
         if (kbd_trygetc() >= 0) break;             /* a keypress ends the server */
         struct tcp_conn *c = tcp_accept(port, 250);
         if (!c) continue;                          /* just a poll timeout */
-        uint32_t pip = tcp_peer_ip(c);
+        netaddr peer; tcp_peer_addr(c, &peer);
         int rc = handle(c, root);
         tcp_close(c);
         served++;
-        kprintf("  [%d] %u.%u.%u.%u %s\n", served,
-                (pip >> 24) & 0xFF, (pip >> 16) & 0xFF, (pip >> 8) & 0xFF, pip & 0xFF,
-                rc == 0 ? "served" : "dropped");
+        char who[NETADDR_STRLEN]; netaddr_format(&peer, who);
+        kprintf("  [%d] %s %s\n", served, who, rc == 0 ? "served" : "dropped");
     }
 
     tcp_unlisten(port);

@@ -96,15 +96,31 @@ timer-driven execution; it does not force an immediate context switch.
 
 A socket is an ordinary fd: `read`, `write` and `close` work on one. IPv4
 addresses are passed in **host** byte order, as everywhere else in the stack.
+IPv6 addresses are sixteen bytes in wire order, passed by pointer, because an
+address that size does not fit in a register argument.
 
 | # | Name | Arguments | Returns |
 | --- | --- | --- | --- |
-| 41 | `SYS_SOCKET` | domain (`AF_INET`), type (`SOCK_STREAM`/`SOCK_DGRAM`) | fd, −1 |
+| 41 | `SYS_SOCKET` | domain (`AF_INET` / `AF_INET6`), type (`SOCK_STREAM`/`SOCK_DGRAM`) | fd, −1 |
 | 42 | `SYS_CONNECT` | fd, ip, port, timeout_ms | 0, −1 |
+| 107 | `SYS_CONNECT6` | fd, `const uint8_t addr[16]`, port, timeout_ms | 0, −1 |
 | 50 | `SYS_LISTEN` | fd, port | 0, −1 |
 | 43 | `SYS_ACCEPT` | fd, `uint32_t *ip`, `uint16_t *port`, timeout_ms | fd, −1 |
-| 105 | `SYS_RESOLVE` | name, `uint32_t *ip` | 0, −1 (`/etc/hosts`, then DNS) |
+| 108 | `SYS_ACCEPT6` | fd, `uint8_t peer[16]`, `uint16_t *port`, timeout_ms | fd, −1 |
+| 105 | `SYS_RESOLVE` | name, `uint32_t *ip` | 0, −1 (`/etc/hosts`, then an A lookup) |
+| 109 | `SYS_RESOLVE6` | name, `uint8_t out[16]` | 0, −1 (an AAAA lookup) |
 | 102 | `SYS_HTTPGET` | url, buf, cap, `int *status` | body length, −1 |
+
+The v6 calls are separate numbers rather than changes to 42, 43 and 105: a
+binary built against ABI 1 cannot be broken by a syscall it never makes, and
+folding sixteen bytes into those calls' arguments would have broken all of
+them. The family is not recorded on the socket -- `AF_INET6` and `AF_INET`
+both give you a stream socket, and which `connect` you call decides where it
+goes. A **listening** socket takes connections of either family without being
+told, so there is no `listen6`; `SYS_ACCEPT` reports a v6 peer's address as 0
+(it has no `uint32_t` form) and `SYS_ACCEPT6` reports a v4 peer's as `::` --
+neither invents a v4-mapped address, because nothing else in this kernel uses
+one. Call the one that matches the connections you expect.
 
 ### The screen and the keyboard
 
@@ -127,7 +143,8 @@ with it.
 
 `user/ulibc.h` wraps every syscall above (`open`, `read`, `write`, `lseek`,
 `fstat`, `mmap`, `getpid`, `yield`, `exit`, `bolt_abi`, `socket`, `connect_ip`,
-`listen_port`, `accept_conn`, `resolve_host`, `fb_map`, `fb_present`, `fb_release`, `getkey`,
+`connect_ip6`, `listen_port`, `accept_conn`, `accept_conn6`, `resolve_host`,
+`resolve_host6`, `fb_map`, `fb_present`, `fb_release`, `getkey`,
 `http_get_u`). On top of that:
 
 - `user/stdio.h` — `printf`, `snprintf`, `puts`, `putchar`, `fopen`/`fread`/

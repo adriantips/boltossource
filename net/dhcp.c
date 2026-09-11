@@ -106,8 +106,8 @@ static uint8_t parse_reply(const struct dhcp_msg *m, uint16_t len) {
     return mtype;
 }
 
-static void on_dhcp(uint32_t src_ip, uint16_t sport, const uint8_t *data, uint16_t len) {
-    (void)src_ip; (void)sport;
+static void on_dhcp(const netaddr *src, uint16_t sport, const uint8_t *data, uint16_t len) {
+    (void)src; (void)sport;
     uint8_t t = parse_reply((const struct dhcp_msg *)data, len);
     if (t == DHCPOFFER) got_offer = 1;
     else if (t == DHCPACK) got_ack = 1;

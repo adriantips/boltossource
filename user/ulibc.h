@@ -48,14 +48,20 @@ long  http_get_u(const char *url, char *buf, unsigned long cap, int *status);
 
 /* ---- sockets (see include/socket.h) --------------------------------------
  * A socket is an ordinary fd: read()/write()/close() work on it directly.
- * Addresses are IPv4 in host order, as everywhere else in the stack. */
+ * IPv4 addresses are uint32_t in host order, as everywhere else in the stack;
+ * IPv6 addresses are sixteen bytes in wire order. A listening socket takes
+ * connections of either family, so only the client side has two of each. */
 #define AF_INET     2
+#define AF_INET6   10
 #define SOCK_STREAM 1
 int   socket(int domain, int type);
 int   connect_ip(int fd, uint32_t ip, uint16_t port, uint32_t timeout_ms);
+int   connect_ip6(int fd, const uint8_t addr[16], uint16_t port, uint32_t timeout_ms);
 int   listen_port(int fd, uint16_t port);      /* ports < 1024 need root */
 int   accept_conn(int fd, uint32_t *peer_ip, uint16_t *peer_port, uint32_t timeout_ms);
+int   accept_conn6(int fd, uint8_t peer[16], uint16_t *peer_port, uint32_t timeout_ms);
 int   resolve_host(const char *name, uint32_t *ip_out);   /* /etc/hosts, cache, DNS */
+int   resolve_host6(const char *name, uint8_t out[16]);   /* the AAAA record  */
 
 /* heap */
 void *malloc(unsigned long n);
