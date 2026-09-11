@@ -18,20 +18,6 @@ from boltvm import BoltVM
 LOGIN_USER, LOGIN_PASS = "user", "bolt"
 
 
-def sign_in(vm):
-    vm.expect("BoltOS is up. Launching desktop.", timeout=150)
-    time.sleep(4.0)
-    vm.type(LOGIN_USER); vm.key("tab"); vm.type(LOGIN_PASS); vm.key("ret")
-    time.sleep(3.0)
-
-
-def open_app(vm, name):
-    vm.key("meta_l")
-    vm.type(name)
-    vm.key("ret")
-    time.sleep(2.0)
-
-
 def term(vm, line, expect, timeout=40):
     vm.clear()
     vm.type(line + "\n")
@@ -41,8 +27,8 @@ def term(vm, line, expect, timeout=40):
 
 def main():
     with BoltVM(name="clip", net=False) as vm:
-        sign_in(vm)
-        open_app(vm, "Terminal")
+        vm.sign_in(LOGIN_USER, LOGIN_PASS)
+        vm.open_app("Terminal")
 
         # Text still behaves exactly as it did; the kind is just named now.
         term(vm, "clip clear", "cleared")
@@ -72,7 +58,7 @@ def main():
         # Back to the Terminal to ask the clipboard what it is holding. This is
         # the assertion that matters: two different apps, one store, and the
         # store knows it has a picture rather than a string.
-        open_app(vm, "Terminal")
+        vm.open_app("Terminal")
         out = term(vm, "clip show", "clipboard:")
         m = re.search(r"clipboard: image (\d+)x(\d+)", out)
         assert m, "the clipboard does not report an image:\n" + out[-500:]
@@ -83,7 +69,7 @@ def main():
         print("  ok: another app sees an image on the clipboard, %dx%d" % (iw, ih))
 
         # And a third app can take it.
-        open_app(vm, "Paint")
+        vm.open_app("Paint", probe=False)
         vm.clear()
         vm.key("v", ctrl=True)
         assert vm.wait_for("Pasted the clipboard image", timeout=30), \
@@ -95,7 +81,7 @@ def main():
         vm.key("c", ctrl=True)
         assert vm.wait_for("Canvas copied", timeout=30), \
             "Paint did not copy its canvas:\n" + vm.serial()[-800:]
-        open_app(vm, "Terminal")
+        vm.open_app("Terminal")
         out = term(vm, "clip show", "clipboard:")
         assert "image 520x340" in out, \
             "the clipboard did not take Paint's canvas:\n" + out[-500:]

@@ -38,12 +38,8 @@ BLIP = dict(path=SOUNDS + "/blip.wav", rate=44100, ch=2, bits=16, secs="0.50", h
 
 
 def sign_in(vm):
-    vm.expect("BoltOS is up. Launching desktop.", timeout=180)
-    time.sleep(4.0)
-    vm.type(LOGIN_USER); vm.key("tab"); vm.type(LOGIN_PASS); vm.key("ret")
-    time.sleep(3.0)
-    vm.key("meta_l"); vm.type("Terminal"); vm.key("ret")
-    time.sleep(2.0)
+    vm.sign_in(LOGIN_USER, LOGIN_PASS, timeout=180)
+    vm.open_app("Terminal")
 
 
 def run(vm, line, wait_for, timeout=90):

@@ -33,24 +33,14 @@ def row_button(row):
 
 
 def sign_in(vm):
-    vm.expect("BoltOS is up. Launching desktop.", timeout=150)
-    time.sleep(4.0)
-    vm.type(LOGIN_USER); vm.key("tab"); vm.type(LOGIN_PASS); vm.key("ret")
-    time.sleep(3.0)
-
-
-def open_app(vm, name):
-    vm.key("meta_l")
-    vm.type(name)
-    vm.key("ret")
-    time.sleep(2.0)
+    vm.sign_in(LOGIN_USER, LOGIN_PASS)
 
 
 def main():
     with BoltVM(name="software", net=False) as vm:
         sign_in(vm)
 
-        open_app(vm, "Software")
+        vm.open_app("Software", probe=False)
         vm.key("up", meta=True)              # maximise: known geometry
         time.sleep(1.5)
         shot = vm.screenshot("software.ppm")
@@ -95,7 +85,7 @@ def main():
         # The real check: the package database itself, read in a Terminal by
         # the command. If the window and the command disagree about what is
         # installed, one of them is lying about having done the work.
-        open_app(vm, "Terminal")
+        vm.open_app("Terminal")
         vm.clear()
         vm.type("pkg info %s\n" % name)
         vm.expect("status:", timeout=60)

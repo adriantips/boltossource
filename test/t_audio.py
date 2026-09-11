@@ -35,17 +35,11 @@ TONE_HZ = 440
 
 
 def sign_in(vm):
-    vm.expect("BoltOS is up. Launching desktop.", timeout=180)
-    time.sleep(4.0)
-    vm.type(LOGIN_USER); vm.key("tab"); vm.type(LOGIN_PASS); vm.key("ret")
-    time.sleep(3.0)
+    vm.sign_in(LOGIN_USER, LOGIN_PASS, timeout=180)
 
 
 def open_terminal(vm):
-    vm.key("meta_l")
-    vm.type("Terminal")
-    vm.key("ret")
-    time.sleep(2.0)
+    vm.open_app("Terminal")
 
 
 def play(vm, ms, device):

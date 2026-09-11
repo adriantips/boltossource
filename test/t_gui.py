@@ -31,13 +31,7 @@ def ppm_is_interesting(path, min_colors=24):
 
 
 def sign_in(vm):
-    vm.expect("BoltOS is up. Launching desktop.", timeout=150)
-    time.sleep(4.0)                    # let the login screen paint
-    vm.type(LOGIN_USER)
-    vm.key("tab")
-    vm.type(LOGIN_PASS)
-    vm.key("ret")
-    time.sleep(3.0)
+    vm.sign_in(LOGIN_USER, LOGIN_PASS)
 
 
 def main():
@@ -50,10 +44,7 @@ def main():
 
         # Open Terminal through Start search. This avoids depending on saved
         # desktop icon positions or double-click timing under software rendering.
-        vm.key("meta_l")
-        vm.type("Terminal")
-        vm.key("ret")
-        time.sleep(2.0)
+        vm.open_app("Terminal")
         shot = vm.screenshot("terminal.ppm")
         assert ppm_is_interesting(shot), "no frame after opening a window"
         print("  ok: an app window opened and drew")

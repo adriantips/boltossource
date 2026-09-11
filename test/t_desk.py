@@ -17,16 +17,6 @@ from boltvm import BoltVM
 LOGIN_USER, LOGIN_PASS = "user", "bolt"
 
 
-def sign_in(vm):
-    vm.expect("BoltOS is up. Launching desktop.", timeout=150)
-    time.sleep(4.0)
-    vm.type(LOGIN_USER)
-    vm.key("tab")
-    vm.type(LOGIN_PASS)
-    vm.key("ret")
-    time.sleep(3.0)
-
-
 def gui_run(vm, line, expect, timeout=30):
     """Type into the GUI Terminal and wait for output on COM1.
 
@@ -41,12 +31,8 @@ def gui_run(vm, line, expect, timeout=30):
 
 def main():
     with BoltVM(name="desk", net=False) as vm:
-        sign_in(vm)
-
-        vm.key("meta_l")
-        vm.type("Terminal")
-        vm.key("ret")
-        time.sleep(2.0)
+        vm.sign_in(LOGIN_USER, LOGIN_PASS)
+        vm.open_app("Terminal")
 
         out = gui_run(vm, "desk", "usage: desk")
         assert "* 1" in out, "should start on desktop 1:\n" + out[-800:]

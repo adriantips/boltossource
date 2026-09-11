@@ -115,10 +115,7 @@ def desktop_leg():
         vm.type(LOGIN_USER); vm.key("tab"); vm.type(LOGIN_PASS); vm.key("ret")
         time.sleep(3.0)
 
-        vm.key("meta_l")
-        vm.type("Terminal")
-        vm.key("ret")
-        time.sleep(2.0)
+        vm.open_app("Terminal")
 
         # Rebind the desktop switcher onto a chord nothing else uses, then use
         # it. desk-2 lives on Win+2 by default; move it to Ctrl+Alt+F2.
