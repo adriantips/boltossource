@@ -179,6 +179,7 @@ const command_t commands[] = {
     { "sshd",     "Network",          "SSH server: sshd [PORT] (sudo for 22)",cmd_sshd },
     { "sshkey",   "Network",          "show the SSH host key fingerprint",   cmd_sshkey },
     { "ping",     "Network",          "connectivity test",                  cmd_ping },
+    { "ping6",    "Network",          "ICMPv6 echo to an IPv6 address",     cmd_ping6 },
     { "trace",    "Network",          "route tracing",                      cmd_trace },
     { "ports",    "Network",          "open port viewer",                   cmd_ports },
     { "download", "Network",          "download a file over HTTP",          cmd_download },

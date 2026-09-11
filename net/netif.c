@@ -49,8 +49,23 @@ int netif_send(struct netif *nif, const void *frame, uint16_t len) {
 }
 
 void netif_poll_all(void) {
+    /* A handler that polls is a handler that can be re-entered by the frame
+     * its own poll delivers, and there is no bound on how deep that goes:
+     * every level is another packet's worth of kernel stack. Neighbour
+     * Discovery found this the moment the NIC started accepting multicast --
+     * a router advertisement ran duplicate detection, which polled, which
+     * delivered the next advertisement, which ran duplicate detection. It cost
+     * a page fault two seconds into the boot, and it would be a remotely
+     * triggered one on a network with a chatty router.
+     *
+     * The work belongs outside the handler, and this makes the mistake a
+     * dropped poll rather than a crash. */
+    static int busy;
+    if (busy) return;
+    busy = 1;
     for (struct netif *n = netifs; n; n = n->next)
         if (n->poll) n->poll(n);
+    busy = 0;
 }
 
 void netif_set_input(netif_input_fn fn) { input_fn = fn; }

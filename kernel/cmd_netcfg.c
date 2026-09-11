@@ -3,6 +3,7 @@
 #include "net.h"
 #include "netif.h"
 #include "netcfg.h"
+#include "net6.h"
 #include "ntp.h"
 #include "dhcp.h"
 #include "hw.h"
@@ -56,6 +57,30 @@ int cmd_ifconfig(int argc, char **argv) {
             kprintf("  inet    "); print_ip(net_ip);
             kprintf("/%d  gw ", mask_prefix(net_mask)); print_ip(net_gw);
             kprintf("  dns "); print_ip(net_dns); kprintf("\n");
+            char txt[46];
+            if (!ip6_is_zero(&net6_link)) {
+                ip6_format(&net6_link, txt);
+                kprintf("  inet6   %s/64  (link-local)\n", txt);
+            }
+            if (net6_have_addr) {
+                ip6_format(&net6_addr, txt);
+                kprintf("  inet6   %s/%d", txt, net6_prefix_len);
+                if (net6_have_gw) {
+                    char g[46]; ip6_format(&net6_gw, g);
+                    kprintf("  via %s", g);
+                }
+                kprintf("\n");
+            } else if (!ip6_is_zero(&net6_link)) {
+                kprintf("  inet6   no router advertisement; link-local only\n");
+            }
+            /* The neighbour cache, which is what `arp` would show on the other
+             * half of the stack. */
+            ip6_addr na; uint8_t nm[6];
+            for (int i = 0; nd6_cache_dump(i, &na, nm); i++) {
+                ip6_format(&na, txt);
+                kprintf("  neigh   %s  %x:%x:%x:%x:%x:%x\n", txt,
+                        nm[0], nm[1], nm[2], nm[3], nm[4], nm[5]);
+            }
             kprintf("  rx      %lu pkts / %lu bytes\n", nif->rx_packets, nif->rx_bytes);
             kprintf("  tx      %lu pkts / %lu bytes\n", nif->tx_packets, nif->tx_bytes);
         }

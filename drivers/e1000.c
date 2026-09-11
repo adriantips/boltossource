@@ -47,6 +47,7 @@
 #define CTRL_RST    0x04000000
 
 #define RCTL_EN     0x00000002
+#define RCTL_MPE    0x00000010      /* accept every multicast address */
 #define RCTL_BAM    0x00008000      /* accept broadcast */
 #define RCTL_SECRC  0x04000000      /* strip Ethernet CRC */
 #define RCTL_BSIZE_2048 0x00000000  /* 2048-byte buffers (BSIZE=00, BSEX=0) */
@@ -146,7 +147,18 @@ static void rx_init(void) {
     ew(REG_RDH, 0);
     ew(REG_RDT, RX_DESCS - 1);
     dev.rx_cur = 0;
-    ew(REG_RCTL, RCTL_EN | RCTL_BAM | RCTL_SECRC | RCTL_BSIZE_2048);
+    /* Multicast has to be accepted, not just broadcast. IPv4 gets away without
+     * it -- ARP and DHCP are broadcast -- but every part of IPv6 that finds
+     * anything is multicast: router advertisements to ff02::1, neighbour
+     * solicitations to a solicited-node group. Without this the NIC discarded
+     * all of them before the stack saw a single one, and the machine sat there
+     * with a link-local address and no idea a router existed.
+     *
+     * The precise way is to hash each joined group into the Multicast Table
+     * Array and reprogram it as groups come and go. Accepting all multicast
+     * costs a few frames the stack then drops in ip6_is_ours(), and is what
+     * the rest of this driver's simplicity is already paying for. */
+    ew(REG_RCTL, RCTL_EN | RCTL_BAM | RCTL_MPE | RCTL_SECRC | RCTL_BSIZE_2048);
 }
 
 static void tx_init(void) {

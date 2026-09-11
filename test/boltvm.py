@@ -94,7 +94,7 @@ class BoltVM:
     def __init__(self, name="vm", uefi=False, disks=True, net=True, snapshot=True,
                  memory="2G", smp=2, extra=None, port=None, workdir=None,
                  boot_img=None, data_disks=None, no_reboot=False, nic="e1000",
-                 hostfwd=None, audio="ac97", wav=None):
+                 hostfwd=None, audio="ac97", wav=None, ipv6=False):
         self.name = name
         self.uefi = uefi
         self.workdir = workdir or os.path.join(ROOT, "test", "out")
@@ -175,6 +175,14 @@ class BoltVM:
             # a test reaches a server running INSIDE the guest -- slirp gives the
             # guest no address the host can dial otherwise.
             nd = "user,id=net0"
+            # slirp does IPv6 too, but only when asked: fec0::/64 with the
+            # gateway at fec0::2, advertised over NDP. That is a real router
+            # advertisement from a real implementation, which is what makes it
+            # worth testing SLAAC against rather than a fixture.
+            # ipv4 has to be asked for as well: naming ipv6 alone turns the
+            # v4 side of slirp off, and the machine then has no DHCP either.
+            if ipv6:
+                nd += ",ipv4=on,ipv6=on"
             for hp, gp in (hostfwd or []):
                 nd += ",hostfwd=tcp::%d-:%d" % (hp, gp)
             a += ["-netdev", nd, "-device", nic + ",netdev=net0"]

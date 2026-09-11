@@ -85,8 +85,19 @@ Status: `[x]` shipped · `[~]` in progress · `[ ]` not started
 - [x] 35. Network configuration persisted across reboots
 - [x] 36. `/etc/hosts` and a DNS cache
 - [x] 37. NTP client, so the clock is right without RTC drift
-- [ ] 38. IPv6 addressing and neighbour discovery
-- [ ] 39. SLAAC autoconfiguration
+- [x] 38. IPv6 addressing and neighbour discovery: link-local from the MAC as
+        a modified EUI-64, solicited-node multicast groups, a neighbour
+        cache, ICMPv6 with the mandatory pseudo-header checksum verified
+        before anything is believed, `ping6`, and duplicate address
+        detection. Needed two fixes underneath it: the e1000 accepted
+        broadcast but not multicast, which is every ND frame there is, and
+        netif_poll_all() could be re-entered from inside a packet handler
+- [x] 39. SLAAC autoconfiguration: router solicitation, the prefix out of the
+        advertisement, and a global address formed and checked before it is
+        used. No server involved, which is the point of it
+- [ ] 39b. TCP and UDP over IPv6. The sockets, the resolver and everything
+        above them take a uint32_t address; until that is widened, IPv6
+        reaches a neighbour and a router but not a web page
 - [x] 40. TCP listen/accept (server sockets)
 - [x] 41. Socket syscalls, so ring-3 programs can use the network
 - [ ] 42. SSH client
