@@ -35,7 +35,8 @@ needs roughly:
 | Display | Anything the firmware can set up a linear framebuffer on |
 | Network | Intel e1000, or virtio-net (most hypervisors) |
 
-There is no Wi-Fi driver yet. On a laptop with no Ethernet port you will be able
+Wi-Fi works, but read the note under **Wi-Fi** below about what radio it is
+talking to. On a laptop with no Ethernet port you will be able
 to do everything except get online.
 
 **Try it first.** The safest way to meet BoltOS is to boot the ISO in a virtual
@@ -197,6 +198,7 @@ Twenty-six of them, all in the Start menu. The ones you are most likely to want:
 - Code — a programming environment; see [DEVELOPING.md](DEVELOPING.md).
 - Settings — themes, resolution, wallpaper, fonts.
 - Security — the lock timer, the firewall, and the account list.
+- Network — the Wi-Fi networks in range, and what it takes to join one.
 - Media — plays sound files. Open a `.wav` from File Explorer, or open the
   app and pick one: the folder it came out of becomes the playlist, and it
   moves on to the next track by itself. It keeps playing while you do something
@@ -256,8 +258,31 @@ once-per-machine job, not a once-per-boot one.
 The clock is set from the network with SNTP, so it stays right even if the
 hardware clock drifts.
 
-**Wi-Fi does not work yet.** There is no radio driver. On a laptop, use a USB
-Ethernet adapter or a dock.
+**Wi-Fi joins networks, but there is still no driver for a real card.** The
+802.11 stack is complete -- scan, WPA2-PSK, the four-way handshake, CCMP, DHCP
+over the air, credentials remembered across reboots -- and `wifi radio on`
+starts a built-in radio it can run against, which is an access point inside the
+kernel bridged to the wired interface. That is enough to use and to test the
+whole stack; it is not a card. Until somebody writes a driver for one, on a
+laptop use a USB Ethernet adapter or a dock.
+
+To join a network, open **Network** from the Start menu (or click the signal
+icon in the tray and then "Wi-Fi and networks"): press Scan, click the network,
+press Connect, type the passphrase, press Enter. From a terminal it is
+
+```
+wifi radio on                   # only needed for the built-in radio
+wifi scan                       # what is in range
+wifi connect MyNetwork hunter2  # join, and remember it
+wifi                            # what it is on, and at what signal
+wifi forget MyNetwork           # stop remembering it
+```
+
+A network you have joined is rejoined at the next boot without being asked.
+The passphrase is kept in `/etc/wifi.conf`, readable only by root. A wrong
+passphrase takes a few seconds to report itself, because there is no "wrong
+password" message in 802.11 -- the access point simply stops answering, and
+what you are waiting out is the timeout.
 
 ---
 
@@ -436,7 +461,10 @@ and hands the screen back.
 
 Being straight about this is more useful than a feature list:
 
-- **No Wi-Fi.** Wired Ethernet only.
+- **No Wi-Fi radio driver.** The 802.11 stack is real and joins WPA2 networks,
+  but the only radio it can bind to today is the built-in one (`wifi radio on`),
+  which has no PHY and bridges the wired interface. A real card needs a driver
+  behind `struct wifi_radio`; nothing above it would change.
 - **No suspend or resume**, and no battery or brightness control. On a laptop it
   runs at full brightness until the battery is flat.
 - **No USB mass storage.** USB keyboards and mice work; USB drives do not appear

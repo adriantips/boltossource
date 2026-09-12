@@ -13,7 +13,7 @@ honest account of what it cannot do yet.
 > Status: **active development.** Custom boot chain (stage1 → stage2 → long mode,
 > or UEFI → long mode) into a 64-bit C kernel. UEFI boot, ACPI, APIC, **SMP
 > (symmetric multiprocessing)**, HPET, a framebuffer compositor and windowed
-> **GUI desktop with 34 apps** (including a playable port of **DOOM**), a
+> **GUI desktop with 35 apps** (including a playable port of **DOOM**), a
 > preemptive **round-robin scheduler** with processes and **ring-3 userland**
 > (ELF64 loader + syscalls), physical and virtual memory management (including
 > **ASLR, SMAP, SMEP** and **swap**), a **persistent filesystem** on real ATA /
@@ -591,9 +591,10 @@ Click links to navigate, type a URL in the address bar, `<` goes back, and the
 scrollbar / Space / `b` / `j` / `k` scroll. The data path rides an e1000 or
 virtio-net NIC over QEMU/VirtualBox NAT, with a from-scratch stack:
 ARP, IPv4, ICMP, UDP, TCP, DNS, HTTP, a firewall (`net/firewall.c`), and TLS
-(`net/*.c`). Wi-Fi association is scaffolded in the kernel but still needs a radio
-driver — see the `wifi` command. The shell also has `browse URL` (render a page as
-text), `download URL` (save to the FS), and `nstest` (exercise NetSurf libraries).
+(`net/*.c`). Wi-Fi is real — scan, WPA2-PSK, CCMP, DHCP over the air; see
+**802.11** below for what the radio underneath it is. The shell also has
+`browse URL` (render a page as text), `download URL` (save to the FS), and
+`nstest` (exercise NetSurf libraries).
 
 ### Adapters: e1000 and virtio-net
 
@@ -641,6 +642,58 @@ poll happens outside the handler.
 `test/host/ip6.c` checks the address text forms with no machine at all (where
 `::` printing as `:::` and `fe80:::1` parsing as `fe80::1` were both found),
 and `test/t_ipv6.py` boots against slirp's own NDP router.
+
+### 802.11: a stack, and an honest answer about the radio
+
+`wifi scan` lists the networks in range with their signal and security,
+`wifi connect SSID PASS` joins one, and the Network app on the desktop is the
+same thing with a list, signal bars and a passphrase box. What happens in
+between is a real station: a probe request on every channel, open
+authentication, an association request carrying an RSN element that offers
+CCMP and PSK, the WPA2 four-way handshake, and then CCMP on every frame after
+it. The address comes by DHCP over the air like any other interface, the
+credentials go to `/etc/wifi.conf` (mode 0600), and the next boot rejoins
+without asking.
+
+**About the radio, plainly.** QEMU emulates no 802.11 device of any kind and
+there is no Wi-Fi card in the machine this was written on. A driver for a real
+chipset could be written from the datasheets and would never once be executed
+— and several thousand lines of register programming that has never run, marked
+done, is worse than no Wi-Fi and a note saying so. So the radio is the part
+that is replaceable, and everything above it is the part that runs.
+
+`include/wifi.h` has the seam: a `struct wifi_radio` with four operations —
+start, tune, transmit, and hand received frames up. There is deliberately no
+scan op, no associate op and no key op, because those are 802.11 and not
+silicon; `net/wifi_sta.c` does them out of management frames, so a new card
+costs a driver rather than a Wi-Fi stack.
+
+`drivers/wifi_sim.c` is a driver behind that seam: an access point inside the
+kernel, bridged to the wired interface, with no PHY. It beacons, answers probes,
+authenticates, associates, runs the authenticator half of the handshake and
+encrypts with CCMP — out of the same frame builders and the same `net/wpa.c` the
+station uses, so the two cannot drift apart. Frames the station sends for
+somewhere else go out the wire; frames arriving for it come back through the
+air. A DHCP lease, a DNS lookup and an HTTPS page fetch all travel the whole
+802.11 path, encrypted, and nothing above notices. This is what `mac80211_hwsim`
+is to Linux, and it is what wpa_supplicant's own test suite runs against. Start
+it with `wifi radio on`; it is off unless asked for, and remembered once it has
+been.
+
+`net/wpa.c` is the key schedule, and it is arithmetic, which means there is no
+excuse for shipping it unchecked: SHA-1, HMAC-SHA1, PBKDF2, the AES inverse
+cipher, RFC 3394 key unwrap, CMAC and CCM, then PMK/PTK, the EAPOL-Key MIC and
+CCMP framing. `test/host/wpa.c` holds every layer up against the vectors its own
+specification publishes — FIPS 180-4, RFC 2202, 6070, 3394, 4493, 3610, the
+802.11i annexes — in about a second with no QEMU, and `test/t_wifi.py` then
+cross-checks the PRF, PMK, PTK and MIC against Python's `hashlib`, because a
+second implementation of SHA-1 is a better oracle than a vector typed in from
+memory. Two of the PSK vectors I typed in were wrong; the code was right.
+
+What is not there: SAE, so a WPA3-only network is listed and refused rather
+than joined on a downgrade; WEP, which is refused because it is not security;
+TKIP; QoS and 802.11n rates; fragmentation; power save; and a second associated
+station in the built-in AP. And a driver for hardware nobody here has.
 
 ### One connection type, two families
 
@@ -1916,12 +1969,13 @@ fs/             Filesystems: BoltFS (in-RAM tree, persisted), EXT2 (read-only), 
 include/        80+ kernel/system headers (blk, dom, layout, js, acpi, apic, smp, ahci, ext2, fat32,
                 ttf, clipboard, users, audio, dhcp, nvme, xhci, rsa, x509, ...)
 kernel/         Core kernel: scheduler, processes, syscalls, ELF + PE loaders, block layer, ACPI, APIC,
-                SMP, HPET, GUI + 34 apps, shell, browser engine (DOM/layout), BoltCC compilers, JS + Python
+                SMP, HPET, GUI + 35 apps, shell, browser engine (DOM/layout), BoltCC compilers, JS + Python
                 interpreters, package manager, multi-user, clipboard, TTF renderer, stack canaries
 libc/           Freestanding C library (string, malloc, printf, scanf, stdlib, math, stdio, time, setjmp)
 mm/             Memory management (PMM, heap, virtual memory, DMA, swap)
 net/            Network stack (ARP, IP, ICMP, UDP, TCP, DNS + cache, DHCP, SNTP, HTTP, TLS 1.2/1.3,
-                crypto, RSA, X.509, inflate, firewall, persistent netcfg, e1000 glue, Wi-Fi)
+                crypto, RSA, X.509, inflate, firewall, persistent netcfg, e1000 glue,
+                802.11 + WPA2-PSK + CCMP)
 netsurf/        Vendored NetSurf libraries (libhubbub HTML parser, libparserutils, libwapcaplet)
 user/           Ring-3 userland program (crt0, ulibc, boltrt) -> static ELF64 + PE32+ runtime stub
 vendor/         Vendored libraries (libcss-0.9.2 CSS parsing/selection)
@@ -1957,7 +2011,7 @@ The interactive OS shell supports a wide range of commands:
 - Process Management: `ps`, `kill`, `top`, `freeze`, `resume`, `services`, `service`, `jobs`, `priority`, `monitor`
 - System (cont.): `winrun` (Windows PE32+ loader), `compile` (BoltRT: compile a source file into a real PE32+ `.exe`), `pkg` (packages: avail/install/remove/run/build/publish, from a directory or an http:// repository), `libctest` (libc validation)
 - Identity & privilege: `whoami`, `id`, `groups`, `users`, `useradd`, `userdel`, `passwd`, `sudo`, `lock`, `logout`
-- Networking: `netinfo`, `ifconfig` (interface config, saved to `/etc`), `ping`, `trace`, `ports`, `download`, `browse`, `webx` (ring-3 web browser), `upload`, `wifi`, `firewall`, `share`, `scan`, `nstest` (NetSurf library test)
+- Networking: `netinfo`, `ifconfig` (interface config, saved to `/etc`), `ping`, `trace`, `ports`, `download`, `browse`, `webx` (ring-3 web browser), `upload`, `wifi` (scan / join / forget 802.11 networks), `firewall`, `share`, `scan`, `nstest` (NetSurf library test)
 - Names & time: `hosts` (local name table), `dns` (resolve / show / flush the cache), `ntp` (clock sync)
 - Serving: `serve` (HTTP file server over real accepted connections), `netget` (fetch a URL from a ring-3 socket program)
 - Remote access: `sshd` (SSH-2 server: real shell, password auth, encrypted), `sshkey` (host key fingerprint)
@@ -2030,7 +2084,8 @@ The interactive OS shell supports a wide range of commands:
 |   +-- dma.c  kheap.c  pmm.c  vmm.c
 +-- net/
 |   +-- arp.c   eth.c    ip.c    icmp.c  udp.c   tcp.c   dns.c   netif.c  dhcp.c
-|   +-- http.c  inflate.c  firewall.c  driver.c  firmware.c  wifi.c  netcfg.c  ntp.c
+|   +-- http.c  inflate.c  firewall.c  driver.c  firmware.c  netcfg.c  ntp.c
+|   +-- wifi.c  wifi_sta.c  wpa.c                            802.11 MAC, station, WPA2
 |   +-- tls.c   crypto.c  rsa.c   x509.c  p256.c  p384.c     TLS 1.2/1.3 + cert verification
 |   +-- ssh.c                                                SSH-2 server (KEX, auth, channels)
 +-- netsurf/              Vendored NetSurf libraries (libhubbub, libparserutils, libwapcaplet)
