@@ -92,6 +92,7 @@ static uint8_t apenc[WIFI_FRAME_MAX];
 /* Wrap an Ethernet frame for the station: FromDS, and under the pairwise key
  * if it is addressed to it or the group key if it is addressed to everyone. */
 static void air_tx_eth(const uint8_t *eth, uint16_t len) {
+    if (len < ETH_HDR_LEN) return;
     int n = ieee80211_eth_to_data(eth, len, AP.bssid, AP.seq++, 0, apbuf, sizeof apbuf);
     if (n < 0) return;
     if (!AP.keyed) { air_tx(apbuf, (uint16_t)n); return; }
@@ -299,7 +300,7 @@ static void ap_mgmt(const uint8_t *frame, uint16_t len) {
  * the station goes over the air instead of up the wired stack. */
 static int uplink_hook(struct netif *nif, const uint8_t *frame, uint16_t len) {
     (void)nif;
-    if (!AP.assoced || !AP.keyed) return 0;
+    if (!AP.assoced || !AP.keyed || len < ETH_HDR_LEN) return 0;
     int group = (frame[0] & 1) != 0;
     if (!group && memcmp(frame, AP.sta, 6) != 0) return 0;
     air_tx_eth(frame, len);

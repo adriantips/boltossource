@@ -356,7 +356,14 @@ void wpa_prf(const uint8_t *key, uint32_t klen, const char *label,
     uint8_t buf[160], digest[20];
     uint32_t llen = 0;
     while (label[llen]) llen++;
-    if (llen + 1 + dlen + 1 > sizeof buf) return;      /* callers here pass ~76 */
+    if (llen + 1 + dlen + 1 > sizeof buf) {
+        /* Returning quietly would leave a key's worth of stack garbage in out,
+         * and the caller would encrypt with it. Callers here pass about 76
+         * bytes, so this is a "cannot happen" -- which is exactly the kind
+         * that does. */
+        memset(out, 0, outlen);
+        return;
+    }
 
     memcpy(buf, label, llen);
     buf[llen] = 0;
