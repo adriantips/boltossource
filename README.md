@@ -1169,6 +1169,67 @@ see it in `status`, see the single added line in `diff`, commit again, walk the
 log, check out the first commit and find the file as it was, branch, and reboot
 the machine to confirm the history is still there.
 
+## The assembler -- `as`
+
+Everything the machine could build until now came back as bytecode with an
+interpreter in front of it. `cc` compiles C and BoltCC's VM runs the result;
+`python` and `js` are interpreters outright. Nothing typed on BoltOS became
+machine code, which meant the only real programs on the disk were the ones the
+host toolchain had cross-compiled and copied in.
+
+`as` (`kernel/asm.c`) closes that. It assembles x86-64 into an ordinary ELF64 --
+the same format `sdk/build.sh` produces on a host, loaded by the same
+`kernel/elf.c` -- so what comes out is a program in exactly the sense every
+other program on the machine is one. `run` executes it and `pkg` can ship it.
+
+```
+as hello.asm            assemble to ./hello
+as hello.asm -o /bin/hi choose the output name
+run hello
+```
+
+NASM syntax, because `boot/` is already written in it. Nothing shrinks between
+passes -- every jump is rel32, every label-valued immediate is a `movabs`,
+every `[label]` a disp32 -- so `.text` is the same length every time round, and
+an address one pass computed stays valid in the next.
+
+Three passes, and the middle one has a reason. A `.data` label sits on the page
+after `.text`, so its address depends on the final length of `.text`, which the
+first pass only knows once it has finished. A file that ends in `.data` is fine;
+one that goes back to `.text` afterwards is not, because those data labels were
+placed above a `.text` that was still half-measured. So the second pass re-runs
+with the real length and lets every symbol settle, and the third emits and has
+to reproduce those addresses exactly. When it cannot, the assembler says so and
+stops rather than writing code built on an address it knows is stale.
+
+Sections `.text` and `.data` become two page-aligned PT_LOAD segments, so the
+loader never maps one page for both. `global` names the entry point, `_start`
+by default. `db`/`dw`/`dd`/`dq`, `resb` and `equ` cover data; `[reg]`,
+`[reg+disp]` and `[label]` address memory, and a `[label]` assembles
+RIP-relative, which is how a program with no relocation table reaches its own
+data.
+
+The instruction set is a working subset rather than an x86 manual: moves, the
+ALU group, `lea`, shifts, `imul`, `inc`/`dec`/`neg`/`not`, `test`, `push`/`pop`,
+`call`/`ret`, `jmp`, the conditional jumps, and `syscall`. That is enough to
+write a program that computes something, loops, calls, and talks to the kernel.
+What is missing is missing because nothing has needed it yet, and an unknown
+mnemonic is named with its line rather than quietly assembled into whatever was
+nearest:
+
+```
+as: /a/bad.asm: line 5: unknown instruction: frobnicate
+```
+
+This is a step toward the self-hosting that the SDK section still lists as
+unfinished, not the end of it -- BoltCC emits bytecode, not assembly, so
+nothing yet feeds one into the other.
+
+`test/t_asm.py` assembles three programs from the shell and runs each: the
+smallest thing that can still be wrong, a `write` through a RIP-relative
+`[label]` into `.data`, and a loop with a backward conditional jump that has to
+come out as 55. A fourth must fail, with its line.
+
 ## The debugger -- `cc -g`
 
 Building a program and running it is half of writing software. The other half is
@@ -1823,7 +1884,7 @@ The interactive OS shell supports a wide range of commands:
 - Language: `cc` (multi-file C/C++/C# via the preprocessor + BoltCC; `-g` runs it under the source-level debugger), `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the Code app compiles C / C++ / C#
 - Bonus / Unique: `focus`, `snapshot`, `timeline`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
 - Shell: `sh`, `source`, `.`, `test`, `[`, `true`, `false`, `set`, `unset`; variables, conditions, loops and functions (see [SHELL.md](SHELL.md))
-- SDK & help: `run` (ELF64 programs with arguments and exit status), `man` (pages/search/coverage), `help [COMMAND]`
+- SDK & help: `run` (ELF64 programs with arguments and exit status), `as` (assemble x86-64 into an ELF64 program, NASM syntax), `man` (pages/search/coverage), `help [COMMAND]`
 - Audio: `play` (a tone, or a WAV file streamed and converted as it goes), `media` (the player's transport: `open`, `play`/`pause`, `next`/`prev`, `track`, `seek`, `vol`, `repeat`, `list`)
 - Desktop: `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window), `keys` (list/rebind/reset global shortcuts), `logs` (the kernel log kept across reboots)
 - Core: `echo`, `clear`, `mem`

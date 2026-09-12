@@ -475,6 +475,19 @@ static const manpage_t MAN[] = {
   "function does not copy it -- changing a field inside changes the caller's\n"
   "struct. That is what passing a pointer does in C and not what passing a\n"
   "struct does, and there are no types here to tell the two apart." },
+{ "as", "as FILE.asm [-o OUT]",
+  "Assemble x86-64 into an ELF64 program `run` can execute and `pkg` can\n"
+  "ship. NASM syntax, and a working subset of the instruction set rather\n"
+  "than all of it -- an instruction it does not know is named rather than\n"
+  "assembled into something else.\n"
+  "\n"
+  "Sections .text and .data, `global` to name the entry point (_start by\n"
+  "default), labels, db/dw/dd/dq, resb and equ. [reg], [reg+disp] and\n"
+  "[label] address memory; a [label] is assembled RIP-relative, which is how\n"
+  "a program with no relocations reaches its own data.\n"
+  "\n"
+  "This is the first thing in the tree that turns text typed on BoltOS into\n"
+  "machine code in a file. `cc` compiles C to bytecode an interpreter runs." },
 { "build", "build [-t TARGET] [-l] [-g] [-o FILE] [DIR]",
   "Build a project rather than a file list: DIR's build.txt names its\n"
   "targets, each with its sources, include directories and macros. -l lists\n"

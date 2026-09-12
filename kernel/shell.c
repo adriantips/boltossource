@@ -232,6 +232,7 @@ const command_t commands[] = {
 
     /* Core */
     { "run",      "Core",             "run an ELF64 program: run PATH [args]", cmd_run },
+    { "as",       "Core",             "assemble x86-64 into an ELF program",  cmd_as },
     { "notify",   "Core",             "post or read notifications",         cmd_notify },
     { "screenshot","Core",            "capture the screen to a PNG",        cmd_screenshot },
     { "desk",     "Core",             "virtual desktops: desk [N|move N]",  cmd_desk },
