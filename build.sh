@@ -190,6 +190,7 @@ SRCS=(
     kernel/app_oldbrowser.c oldbrowser/ob_nsurl.c oldbrowser/ob_llcache.c oldbrowser/ob_content.c oldbrowser/ob_window.c oldbrowser/ob_hotlist.c oldbrowser/ob_fbtk.c oldbrowser/ob_gui.c
     kernel/app_ide.c kernel/app_calc.c kernel/app_clock.c kernel/app_notes.c kernel/app_tasks.c kernel/app_contacts.c kernel/app_sheets.c kernel/app_imgview.c kernel/app_music.c kernel/app_media.c kernel/cmd_media.c kernel/app_calendar.c kernel/app_piano.c kernel/app_paint.c kernel/app_mines.c kernel/app_snake.c kernel/app_2048.c kernel/app_stopwatch.c kernel/app_sysinfo.c kernel/app_life.c kernel/app_ttt.c kernel/app_colorpick.c kernel/app_memory.c kernel/app_matrix.c kernel/app_doom.c kernel/app_installer.c kernel/app_security.c
     kernel/core.c kernel/cmd_core.c kernel/pkgcat.c kernel/settings.c kernel/clipboard.c kernel/stackguard.c kernel/users.c kernel/vault.c kernel/cmd_vault.c kernel/pkg.c kernel/install.c kernel/klog.c
+    kernel/asm.c kernel/cmd_asm.c
     kernel/cpp.c kernel/ccbuild.c kernel/cmd_cc.c kernel/cmd_build.c kernel/cmd_vcs.c kernel/boltpy.c kernel/cmd_python.c kernel/boltcc.c kernel/js.c kernel/cmd_js.c
     fs/ramfs.c fs/fat32.c fs/ext2.c
     drivers/keyboard.c drivers/framebuffer.c drivers/gpu.c drivers/mouse.c drivers/ata.c drivers/ahci.c drivers/nvme.c drivers/xhci.c drivers/pcspk.c drivers/audio.c drivers/ac97.c drivers/hda.c mm/pmm.c mm/vmm.c mm/kheap.c mm/dma.c
