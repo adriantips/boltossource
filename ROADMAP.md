@@ -127,32 +127,46 @@ with the reason given
         idle at a prompt answered nothing at all, because the NIC's interrupt
         line was never opened in the IO-APIC
 - [x] 43. SSH server (remote administration and development)
-- [!] 44. Wi-Fi radio driver -- **blocked, not deferred.** QEMU emulates no
-        802.11 device of any kind, and there is no Wi-Fi hardware on the
-        development machine, so a radio driver could be written but never once
-        executed. Writing several thousand lines of register programming that
-        has never run, and marking it done, would be worse than leaving it
-        undone and saying so. What it needs is either an 802.11 device in the
-        emulator or a real card to test against
-- [!] 45. WPA2 four-way handshake -- blocked behind 44 for the same reason.
-        The key schedule itself (PBKDF2 PSK, PRF-384, the MIC, unwrapping the
-        GTK) is pure arithmetic and could be checked against the published
-        IEEE test vectors without any radio, but it is a large amount of new
-        crypto -- SHA-1, HMAC-SHA1, AES decryption, RFC 3394 key unwrap, and
-        then CCMP to carry a single byte of traffic -- that would sit behind a
-        driver that does not exist
-- [!] 46. Wi-Fi GUI picker -- blocked behind 44. A network picker with no radio
-        is a dialog that lists nothing, and shipping one would say the machine
-        does Wi-Fi when it does not
+- [~] 44. Wi-Fi: the station, and a radio to run it against. The blocker was
+        real -- QEMU emulates no 802.11 device and there is no card in the
+        development machine -- but the answer to it was not to write register
+        programming that could never be executed. It was to make the radio the
+        replaceable part. `include/wifi.h` now has the seam: a
+        `struct wifi_radio` with start, tune, transmit and hand-frames-up, and
+        nothing else, because scanning and associating and keying are 802.11
+        rather than silicon and belong above it. `net/wifi_sta.c` is a real
+        station on top: probe, open authentication, association with an RSN
+        element, the handshake, CCMP both ways, the group key for broadcast,
+        and a packet number that refuses to go backwards.
+        `drivers/wifi_sim.c` is a driver behind that seam -- an access point
+        inside the kernel bridged to the wired interface, no PHY -- so every
+        line above the radio runs on every boot that joins a network. This is
+        mac80211_hwsim's trick, and it is what wpa_supplicant's own tests use.
+        **Still open:** a driver for real hardware. Nothing above it changes
+        when one arrives, which was the point
+- [x] 45. WPA2 four-way handshake, in `net/wpa.c` with the primitives it
+        needed and TLS never did: SHA-1, HMAC-SHA1, PBKDF2, the AES inverse
+        cipher, RFC 3394 key unwrap, CMAC, CCM, then PMK/PTK, the EAPOL-Key
+        MIC and CCMP framing. All arithmetic, so all checked:
+        `test/host/wpa.c` against FIPS 180-4, RFC 2202, 6070, 3394, 4493,
+        3610 and the 802.11i annexes in a second with no QEMU, and
+        `test/t_wifi.py` cross-checks the PRF, PMK, PTK and MIC against
+        Python's hashlib -- a second implementation of SHA-1 beats a vector
+        typed in from memory, which is how two wrong "expected" values got
+        caught with the code being right
+- [x] 46. Wi-Fi GUI picker: a Network window with the networks in range,
+        signal bars, what security each wants, a passphrase field, connect /
+        disconnect / forget, and the radio switch. It drives the same code
+        `wifi` drives. The tray's network button names the network it is on
+        and opens it
 - [x] 47. Wi-Fi credential store, persisted: /etc/wifi.conf, one `ssid psk`
         line per remembered network, mode 0600 because a passphrase is a
-        credential. Already in net/netcfg.c; it was the roadmap that was stale
+        credential. `wifi_autoconnect()` at boot rejoins without being asked
 
-The 802.11 MAC helpers in `net/wifi.c` are real and unit-testable -- beacons
-parse, data frames convert to Ethernet, probe requests build -- and `wifi` says
-plainly that there is no radio bound rather than pretending. The wired path
-satisfies the "connect to a network" bar, which is why the definition of done
-says "wired or Wi-Fi".
+Not implemented and visibly so: SAE, so a WPA3-only network is listed and
+refused rather than joined on a downgrade; WEP, refused because it is not
+security; TKIP; QoS and 802.11n rates; fragmentation; power save. `wifi` says
+which of these it is rather than failing quietly.
 
 ## Phase 4 — Development platform
 

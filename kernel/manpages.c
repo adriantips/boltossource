@@ -386,9 +386,24 @@ static const manpage_t MAN[] = {
   "Parse and lay out a page, printing the box tree with each box's geometry." },
 { "upload", "upload FILE",
   "Placeholder: upload is unavailable. Use share for LAN transfers or serve for HTTP." },
-{ "wifi", "wifi [scan|status]",
-  "Wi-Fi state. The radio driver is not built yet, so this reports what the\n"
-  "hardware layer knows rather than pretending to associate." },
+{ "wifi", "wifi [status|scan|connect SSID [PASS]|disconnect|list|forget SSID|radio on|off]",
+  "Join and manage 802.11 networks. `wifi scan` lists what is in range with\n"
+  "its signal and security; `wifi connect SSID PASS` authenticates,\n"
+  "associates, runs the WPA2 four-way handshake and asks for an address by\n"
+  "DHCP. A network that joins is remembered in /etc/wifi.conf (mode 0600)\n"
+  "and rejoined at the next boot without being asked; `wifi forget` stops\n"
+  "that. The Network app on the desktop is the same thing with a list and a\n"
+  "passphrase box.\n"
+  "\n"
+  "About the radio: no 802.11 device exists in QEMU and there is no card in\n"
+  "the development machine, so `wifi radio on` starts a built-in one --\n"
+  "an access point inside the kernel, bridged to the wired interface, with\n"
+  "no PHY. Everything above it is the real stack: real frames, real\n"
+  "WPA2-PSK, real CCMP. A driver for an actual chipset binds to the same\n"
+  "seam (struct wifi_radio) and nothing above it changes.\n"
+  "\n"
+  "WEP is refused rather than joined, and a WPA3-only network is listed and\n"
+  "refused -- SAE is not implemented." },
 { "firewall", "firewall [on|off|status|stats|clear|add|del|default] ...",
   "Packet filtering rules, with per-rule pass and block counters. The\n"
   "Security app on the desktop is the same rules with buttons." },
