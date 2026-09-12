@@ -37,7 +37,11 @@ void netif_register(struct netif *nif) {
             nif->name, mac_str(nif->mac, buf), nif->link_up ? "up" : "down");
 }
 
-struct netif *netif_default(void) { return netifs; }   /* first registered */
+struct netif *netif_default(void) {
+    for (struct netif *n = netifs; n; n = n->next)
+        if (n->link_up) return n;
+    return netifs;
+}
 struct netif *netif_list(void)    { return netifs; }
 
 int netif_send(struct netif *nif, const void *frame, uint16_t len) {
@@ -73,6 +77,7 @@ void netif_set_input(netif_input_fn fn) { input_fn = fn; }
 void netif_rx(struct netif *nif, const uint8_t *frame, uint16_t len) {
     nif->rx_packets++;
     nif->rx_bytes += len;
+    if (nif->rx_hook && nif->rx_hook(nif, frame, len)) return;
     if (input_fn) input_fn(nif, frame, len);
     else          nif->rx_dropped++;   /* no stack bound yet */
 }

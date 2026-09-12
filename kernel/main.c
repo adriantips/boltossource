@@ -46,6 +46,7 @@
 #include "audio.h"
 #include "dhcp.h"
 #include "netcfg.h"
+#include "wifi.h"
 #include "net6.h"
 #include "ntp.h"
 #include "hw.h"
@@ -423,6 +424,12 @@ void kmain(struct bootinfo *bi) {
          * Without this every boot re-leased and forgot, so a fixed address or a
          * chosen DNS server had to be re-entered by hand every single time. */
         int saved = netcfg_load();
+
+        /* Wi-Fi before the address, not after: if a remembered network comes
+         * up, wlan0 is the interface the lease should be asked for on. */
+        if (g_netcfg.sim_radio) wifi_sim_start(0, 0);
+        wifi_autoconnect();
+
         if (saved && !g_netcfg.use_dhcp)
             kprintf("[ok] network: static configuration from %s\n", NETCFG_PATH);
         else

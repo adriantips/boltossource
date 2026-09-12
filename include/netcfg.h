@@ -29,6 +29,7 @@ typedef struct {
     char     hostname[NETCFG_HOST_MAX];
     int      ntp_enabled;
     uint32_t ntp_server;       /* host order; 0 = use the default pool address    */
+    int      sim_radio;        /* bring up the built-in 802.11 radio at boot      */
 } netcfg_t;
 
 extern netcfg_t g_netcfg;

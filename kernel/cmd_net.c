@@ -17,6 +17,9 @@
 #include "commands.h"
 #include "keyboard.h"
 #include "firewall.h"
+#include "netcfg.h"
+#include "dhcp.h"
+#include "shell.h"
 
 /* ===========================================================================
  *  Networking commands. ping/netinfo/download/browse/share ride the real IPv4
@@ -685,27 +688,156 @@ int cmd_share(int argc, char **argv) {
     return rc;
 }
 
-int cmd_wifi(int argc, char **argv) {
-    (void)argc; (void)argv;
-    kprintf("Wi-Fi (802.11) softMAC: %s\n", wifi_state_name(WIFI_IDLE));
+static const char *sec_str(const struct wifi_bss *b) {
+    if (b->akm == WIFI_AKM_SAE)         return "WPA3-SAE";
+    if (b->rsn && b->ccmp)              return "WPA2-PSK";
+    if (b->rsn)                         return "WPA2-TKIP";
+    if (b->privacy)                     return "WEP";
+    return "open";
+}
 
-    struct pci_dev nic;
-    int have_wl = find_nic(&nic) && nic.class == 0x0D;
-    if (have_wl)
-        kprintf("  radio   : controller %x:%x present, no driver bound\n", nic.vendor, nic.device);
-    else
-        kprintf("  radio   : none (ath9k-htc needs a USB host stack -- not built)\n");
-    kprintf("  scan    : unavailable without a radio driver\n");
+static int wifi_do_scan(void) {
+    kprintf("scanning...\n");
+    int n = wifi_scan(1500);
+    if (n < 0) { kprintf("wifi: %s\n", wifi_err_str(n)); return 1; }
+    if (n == 0) { kprintf("no networks found\n"); return 0; }
 
-    /* the MAC-layer frame helpers are real and used by the stack; the live data
-     * path today is the wired NIC, which the browser and net commands ride. */
-    struct netif *nif = netif_default();
-    if (nif)
-        kprintf("  uplink  : %s (%s) carries all traffic for now\n",
-                nif->name, nif->link_up ? "up" : "down");
-    else
-        kprintf("  uplink  : no interface up\n");
+    kprintf("%-20s %-18s %3s %5s  %s\n", "SSID", "BSSID", "ch", "dBm", "security");
+    for (int i = 0; i < n; i++) {
+        const struct wifi_bss *b = wifi_scan_get(i);
+        kprintf("%-20s ", b->ssid[0] ? b->ssid : "(hidden)");
+        print_mac(b->bssid);
+        kprintf(" %3u %5d  %s\n", (unsigned)b->channel, (int)b->rssi, sec_str(b));
+    }
     return 0;
+}
+
+static int wifi_do_connect(int argc, char **argv) {
+    if (argc < 3) { kprintf("usage: wifi connect SSID [PASSPHRASE]\n"); return 1; }
+    const char *ssid = argv[2];
+    char psk[80];
+    psk[0] = 0;
+
+    if (argc > 3) {
+        strlcpy(psk, argv[3], sizeof psk);
+    } else if (netcfg_wifi_find(ssid, psk, sizeof psk)) {
+        kprintf("using the saved passphrase for '%s'\n", ssid);
+    } else {
+        kprintf("passphrase for '%s' (empty for an open network): ", ssid);
+        sh_readline(psk, sizeof psk);
+    }
+
+    int rc = wifi_connect(ssid, psk, 8000);
+    if (rc != 0) {
+        kprintf("wifi: %s\n", wifi_err_str(rc));
+        memset(psk, 0, sizeof psk);
+        return 1;
+    }
+    /* Remembering it is the whole difference between a network you join and a
+     * network you re-type the passphrase for every boot. */
+    if (psk[0]) netcfg_wifi_save(ssid, psk);
+    memset(psk, 0, sizeof psk);
+
+    const struct wifi_bss *b = wifi_current();
+    kprintf("connected to %s (%s, channel %u)\n", ssid, b ? sec_str(b) : "?",
+            b ? (unsigned)b->channel : 0);
+
+    if (dhcp_configure(3000) == 0) {
+        char ip[16];
+        netcfg_format_ip(net_ip, ip);
+        kprintf("address %s by DHCP\n", ip);
+    } else {
+        kprintf("wifi: associated, but DHCP did not answer -- set an address with ifconfig\n");
+    }
+    return 0;
+}
+
+static void wifi_status(void) {
+    struct wifi_radio *r = wifi_radio_get();
+    kprintf("Wi-Fi: %s\n", wifi_state_name(wifi_get_state()));
+    if (!r) {
+        kprintf("  radio   : none bound\n");
+        struct pci_dev nic;
+        if (find_nic(&nic) && nic.class == 0x0D)
+            kprintf("            (PCI %x:%x looks like a wireless controller, and\n"
+                    "             there is no driver for it -- see `man wifi`)\n",
+                    nic.vendor, nic.device);
+        else
+            kprintf("            `wifi radio on` starts the built-in one\n");
+        return;
+    }
+
+    kprintf("  radio   : %s, %s, channel 1-%d\n", r->name, r->chip, r->max_channel);
+    kprintf("  mac     : "); print_mac(r->mac); kprintf("\n");
+    kprintf("  frames  : %u in, %u out, %u dropped\n",
+            (unsigned)r->rx_frames, (unsigned)r->tx_frames, (unsigned)r->rx_dropped);
+
+    const struct wifi_bss *b = wifi_current();
+    if (!b) { kprintf("  network : not associated\n"); return; }
+    kprintf("  network : %s (%s) on channel %u, %d dBm\n",
+            b->ssid, sec_str(b), (unsigned)b->channel, wifi_signal());
+    kprintf("  bssid   : "); print_mac(b->bssid); kprintf("\n");
+    if (net_ip) { char ip[16]; netcfg_format_ip(net_ip, ip); kprintf("  address : %s\n", ip); }
+}
+
+int cmd_wifi(int argc, char **argv) {
+    if (argc < 2 || !strcmp(argv[1], "status")) { wifi_status(); return 0; }
+
+    if (!strcmp(argv[1], "scan"))       return wifi_do_scan();
+    if (!strcmp(argv[1], "connect"))    return wifi_do_connect(argc, argv);
+
+    if (!strcmp(argv[1], "disconnect")) {
+        if (wifi_get_state() == WIFI_IDLE) { kprintf("wifi: not connected\n"); return 1; }
+        wifi_disconnect();
+        kprintf("disconnected\n");
+        return 0;
+    }
+
+    if (!strcmp(argv[1], "list")) {
+        int n = netcfg_wifi_count();
+        if (!n) { kprintf("no remembered networks\n"); return 0; }
+        for (int i = 0; i < n; i++) kprintf("  %s\n", netcfg_wifi_ssid(i));
+        return 0;
+    }
+
+    if (!strcmp(argv[1], "forget")) {
+        if (argc < 3) { kprintf("usage: wifi forget SSID\n"); return 1; }
+        if (netcfg_wifi_forget(argv[2]) != 1) { kprintf("wifi: '%s' was not remembered\n", argv[2]); return 1; }
+        kprintf("forgot '%s'\n", argv[2]);
+        return 0;
+    }
+
+    if (!strcmp(argv[1], "radio")) {
+        int on = argc > 2 && (!strcmp(argv[2], "on") || !strcmp(argv[2], "start"));
+        int off = argc > 2 && (!strcmp(argv[2], "off") || !strcmp(argv[2], "stop"));
+        if (!on && !off) { kprintf("usage: wifi radio on|off\n"); return 1; }
+        if (off) {
+            wifi_disconnect();
+            wifi_sim_stop();
+            g_netcfg.sim_radio = 0;
+            netcfg_save();
+            kprintf("radio off\n");
+            return 0;
+        }
+        int rc = wifi_sim_start(argc > 3 ? argv[3] : 0, argc > 4 ? argv[4] : 0);
+        if (rc == -1) { kprintf("wifi: a radio is already bound\n"); return 1; }
+        if (rc == -2) { kprintf("wifi: the built-in radio bridges a wired interface, and there is none\n"); return 1; }
+        if (rc != 0)  { kprintf("wifi: the radio would not start\n"); return 1; }
+        g_netcfg.sim_radio = 1;
+        netcfg_save();
+        kprintf("radio on: '%s' is on the air, channel 6, WPA2-PSK\n", wifi_sim_ssid());
+        return 0;
+    }
+
+    kprintf("usage:\n");
+    kprintf("  wifi [status]              what the radio and the association are doing\n");
+    kprintf("  wifi scan                  list the networks in range\n");
+    kprintf("  wifi connect SSID [PASS]   join one, and remember it\n");
+    kprintf("  wifi disconnect            leave the network\n");
+    kprintf("  wifi list                  the networks this machine remembers\n");
+    kprintf("  wifi forget SSID           stop remembering one\n");
+    kprintf("  wifi radio on|off [SSID] [PASS]   the built-in radio (see `man wifi`)\n");
+    return 1;
 }
 
 /* ports: no TCP/UDP listeners (no stack). Show the real hardware I/O port map
