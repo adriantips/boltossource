@@ -463,12 +463,20 @@ static const manpage_t MAN[] = {
 /* ------------------------------------------------------------ languages --- */
 { "python", "python [FILE.py]",
   "The BoltPython interpreter: a REPL, or run a file." },
-{ "cc", "cc [-E] [-g] [-o OUT] [-I DIR] [-D NAME[=VAL]] FILE...",
+{ "cc", "cc [-E] [-g] [-S] [-N] [-o OUT] [-I DIR] [-D NAME[=VAL]] FILE...",
   "Compile and run C, C++ or C#. Several files are preprocessed and combined\n"
   "into one translation unit -- a unity build, since BoltCC has no linker --\n"
   "so a program really can be split across files with headers between them.\n"
   "-E prints the preprocessed text, -g runs it under the debugger, and the\n"
   "dialect comes from the first file's extension.\n"
+  "\n"
+  "Without -N a program runs on BoltCC's bytecode VM, which is the whole\n"
+  "language. -N compiles it through `as` into a native ELF64 the machine runs\n"
+  "directly, and -S prints that x86-64 instead of assembling it. Native is a\n"
+  "subset -- integers, functions, control flow, printf and puts -- because a\n"
+  "native value has nowhere to carry the VM's type tag. Arrays, structs, the\n"
+  "builtin library and strings used as values are named as the reason rather\n"
+  "than compiled into something that would run and be wrong.\n"
   "\n"
   "Structs work: fields, . and ->, arrays of them, and a field that refers to\n"
   "the struct's own type. A struct is a reference, so passing one to a\n"
