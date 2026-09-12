@@ -459,10 +459,21 @@ class BoltVM:
         yet and the test then failed several steps later, looking like whatever
         it tried next. The compositor now logs the sign-in, so this waits for
         that and types again if it does not come.
+
+        Retrying only helps if the retry starts from an empty form. It did not:
+        the first attempt would land half a username in the field, the second
+        would append to it, and by the fourth the machine was being offered
+        "useruseruser" -- so a slow host did not merely fail once, it could
+        never succeed, and every desktop test failed together with "never
+        signed in as 'user'".
         """
         self.expect("BoltOS is up. Launching desktop.", timeout=timeout)
         for attempt in range(4):
             time.sleep(4.0 if attempt == 0 else 2.0)
+            for _ in range(2):                 # clear both fields, whichever has focus
+                for _ in range(48):
+                    self.key("backspace")
+                self.key("tab")
             self.type(user)
             self.key("tab")
             self.type(password)
