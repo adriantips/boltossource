@@ -155,29 +155,52 @@ static int word(AS *a, char *out, uint32_t cap) {
 static void lower(char *s) { for (; *s; s++) if (*s >= 'A' && *s <= 'Z') *s += 32; }
 
 /* ---- registers ----------------------------------------------------------- */
-/* Index is the encoding; the 64-bit and 32-bit spellings share it. */
+/* Index is the encoding; every width's spelling of a register shares it. */
 static const char *r64[16] = { "rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi",
                                "r8","r9","r10","r11","r12","r13","r14","r15" };
 static const char *r32[16] = { "eax","ecx","edx","ebx","esp","ebp","esi","edi",
                                "r8d","r9d","r10d","r11d","r12d","r13d","r14d","r15d" };
+/* The low byte of each. ah/ch/dh/bh are deliberately absent: they cannot be
+ * named in an instruction that carries a REX prefix, and every instruction
+ * here that touches r8-r15 does. Assembling `ah` as `spl` because the table
+ * happened to line up is exactly the kind of silence this assembler avoids. */
+static const char *r8l[16] = { "al","cl","dl","bl","spl","bpl","sil","dil",
+                               "r8b","r9b","r10b","r11b","r12b","r13b","r14b","r15b" };
 
-/* -1 if it is not a register; *wide says 64 or 32 bit. */
-static int reg_of(const char *s, int *wide) {
-    for (int i = 0; i < 16; i++) if (strcmp(s, r64[i]) == 0) { if (wide) *wide = 1; return i; }
-    for (int i = 0; i < 16; i++) if (strcmp(s, r32[i]) == 0) { if (wide) *wide = 0; return i; }
+/* -1 if it is not a register; *size is the operand width in bytes. */
+static int reg_of(const char *s, int *size) {
+    for (int i = 0; i < 16; i++) if (strcmp(s, r64[i]) == 0) { if (size) *size = 8; return i; }
+    for (int i = 0; i < 16; i++) if (strcmp(s, r32[i]) == 0) { if (size) *size = 4; return i; }
+    for (int i = 0; i < 16; i++) if (strcmp(s, r8l[i]) == 0) { if (size) *size = 1; return i; }
     return -1;
 }
+
+/* spl, bpl, sil and dil are only reachable *because* a REX prefix is present:
+ * without one those four encodings mean ah, ch, dh and bh. So a byte operand
+ * naming one of them forces an otherwise-empty 0x40 to be emitted. */
+static int byte_needs_rex(int size, int reg) { return size == 1 && reg >= 4 && reg < 8; }
 
 /* ---- operands ------------------------------------------------------------ */
 enum { O_NONE, O_REG, O_IMM, O_MEM, O_LABELIMM };
 
 typedef struct {
     int kind;
-    int reg;           /* O_REG, or the base of O_MEM (-1 = RIP-relative) */
-    int wide;          /* 64-bit operand                                   */
+    int reg;           /* O_REG, or the base of O_MEM (-1 = RIP-relative)  */
+    int size;          /* operand width in bytes: 8, 4, 1 -- 0 if unstated */
     int64_t imm;       /* O_IMM, or the displacement of O_MEM              */
     char label[32];    /* O_LABELIMM, or an O_MEM whose base is a label    */
 } Opnd;
+
+/* A memory operand carries no width of its own, so `movzx rax, [rsi]` does not
+ * say how much to load. NASM spells that with a size keyword in front of the
+ * bracket and so does this. */
+static int size_keyword(const char *t) {
+    if (!strcmp(t, "byte"))  return 1;
+    if (!strcmp(t, "word"))  return 2;
+    if (!strcmp(t, "dword")) return 4;
+    if (!strcmp(t, "qword")) return 8;
+    return 0;
+}
 
 static int64_t parse_number(AS *a, const char *s, int *ok) {
     *ok = 1;
@@ -225,14 +248,34 @@ static int parse_operand(AS *a, Opnd *o) {
     skip_space(a);
     if (is_eol(*a->p)) { o->kind = O_NONE; return 0; }
 
+    int stated = 0;
+    if (*a->p != '[') {
+        /* Peek for a size keyword without consuming anything else: `byte` is
+         * only a keyword when a memory operand follows it, and is otherwise an
+         * ordinary name someone may have used as a label. */
+        const char *save = a->p;
+        char t[32];
+        if (word(a, t, sizeof t)) {
+            lower(t);
+            int sz = size_keyword(t);
+            skip_space(a);
+            if (sz && *a->p == '[') stated = sz;
+            else a->p = save;
+        } else {
+            a->p = save;
+        }
+    }
+
     if (*a->p == '[') {                       /* [reg], [reg+disp], [label] */
         a->p++;
         char t[32];
         if (!word(a, t, sizeof t)) { fail(a, "empty [ ]", 0); return -1; }
         lower(t);
-        int wide, r = reg_of(t, &wide);
+        int rsz, r = reg_of(t, &rsz);
         o->kind = O_MEM;
+        o->size = stated;
         if (r >= 0) {
+            if (rsz != 8) { fail(a, "an address wants a 64-bit register", t); return -1; }
             o->reg = r;
             skip_space(a);
             if (*a->p == '+' || *a->p == '-') {
@@ -260,8 +303,8 @@ static int parse_operand(AS *a, Opnd *o) {
     char raw[32];
     strlcpy(raw, t, sizeof raw);
     lower(t);
-    int wide, r = reg_of(t, &wide);
-    if (r >= 0) { o->kind = O_REG; o->reg = r; o->wide = wide; return 0; }
+    int rsz, r = reg_of(t, &rsz);
+    if (r >= 0) { o->kind = O_REG; o->reg = r; o->size = rsz; return 0; }
 
     int ok;
     int64_t v = parse_number(a, raw, &ok);
@@ -287,10 +330,29 @@ static uint64_t here(AS *a) {
     return a->in_data ? data_va(a) + a->dlen : text_va(a) + a->tlen;
 }
 
-static void rex(AS *a, int w, int r, int x, int b) {
+static void rex_f(AS *a, int w, int r, int x, int b, int force) {
     uint8_t v = (uint8_t)(0x40 | (w ? 8 : 0) | ((r >> 3) & 1) << 2 |
                           ((x >> 3) & 1) << 1 | ((b >> 3) & 1));
-    if (v != 0x40 || w) emit(a, v);
+    if (v != 0x40 || w || force) emit(a, v);
+}
+static void rex(AS *a, int w, int r, int x, int b) { rex_f(a, w, r, x, b, 0); }
+
+/* The REX for an instruction whose operands are `size` bytes wide, where `r` is
+ * the ModRM.reg operand and `b` the r/m one. Either may be -1 for "not a
+ * register here". */
+static void rex_sz(AS *a, int size, int r, int b) {
+    int force = (r >= 0 && byte_needs_rex(size, r)) ||
+                (b >= 0 && byte_needs_rex(size, b));
+    rex_f(a, size == 8, r < 0 ? 0 : r, 0, b < 0 ? 0 : b, force);
+}
+
+/* The same, but `base` addresses memory rather than holding an operand. Its
+ * width is not the instruction's, so it never forces a prefix: `mov [rdi], al`
+ * needs no REX, and emitting one because rdi's number happens to fall in the
+ * range that means dil for a byte operand would be reading the wrong field. */
+static void rex_mem(AS *a, int size, int r, int base) {
+    rex_f(a, size == 8, r < 0 ? 0 : r, 0, base < 0 ? 0 : base,
+          r >= 0 && byte_needs_rex(size, r));
 }
 static void modrm(AS *a, int mod, int reg, int rm) {
     emit(a, (uint8_t)((mod << 6) | ((reg & 7) << 3) | (rm & 7)));
@@ -373,18 +435,64 @@ static int encode(AS *a, const char *op) {
         return 0;
     }
 
-    if (!strcmp(op, "inc") || !strcmp(op, "dec") ||
-        !strcmp(op, "neg") || !strcmp(op, "not")) {
+    /* The one-operand groups. inc/dec live in FF, the rest in F7, and the two
+     * disagree about which /digit means what; the byte form of each is the
+     * opcode one lower. mul/div are unsigned and imul/idiv signed, and they
+     * are the only instructions here with implicit operands: all four take
+     * rdx:rax apart, which is why anything dividing has to `cqo` first. */
+    {
+        static const struct { const char *name; uint8_t op; int digit; } un[] = {
+            { "inc", 0xFF, 0 }, { "dec", 0xFF, 1 },
+            { "not", 0xF7, 2 }, { "neg", 0xF7, 3 },
+            { "mul", 0xF7, 4 }, { "div", 0xF7, 6 }, { "idiv", 0xF7, 7 },
+        };
+        for (unsigned i = 0; i < sizeof un / sizeof un[0]; i++) {
+            if (strcmp(op, un[i].name)) continue;
+            if (parse_operand(a, &d) != 0) return 0;
+            if (d.kind != O_REG) { fail(a, "wants a register", op); return 0; }
+            rex_sz(a, d.size, -1, d.reg);
+            emit(a, (uint8_t)(d.size == 1 ? un[i].op - 1 : un[i].op));
+            modrm(a, 3, un[i].digit, d.reg);
+            return 0;
+        }
+    }
+
+    /* setcc writes one byte, so it only ever takes an 8-bit register. */
+    if (op[0] == 's' && op[1] == 'e' && op[2] == 't') {
+        for (unsigned i = 0; i < sizeof jccs / sizeof jccs[0]; i++) {
+            if (strcmp(op + 3, jccs[i].name + 1)) continue;
+            if (parse_operand(a, &d) != 0) return 0;
+            if (d.kind != O_REG || d.size != 1) {
+                fail(a, "setcc wants an 8-bit register such as al", op); return 0;
+            }
+            rex_sz(a, 1, -1, d.reg);
+            emit(a, 0x0F);
+            emit(a, (uint8_t)(0x90 | jccs[i].cc));
+            modrm(a, 3, 0, d.reg);
+            return 0;
+        }
+    }
+
+    /* movzx/movsx: the destination's width comes from the register named, the
+     * source's from the register or the size keyword in front of the bracket.
+     * Without the latter `movzx rax, [rsi]` would not say how much to load, so
+     * it is an error rather than a guess. */
+    if (!strcmp(op, "movzx") || !strcmp(op, "movsx")) {
         if (parse_operand(a, &d) != 0) return 0;
-        if (d.kind != O_REG) { fail(a, "wants a register", op); return 0; }
-        /* inc/dec live in the FF group, neg/not in F7, and they disagree about
-         * which /digit means what. */
-        uint8_t opcode = (!strcmp(op, "inc") || !strcmp(op, "dec")) ? 0xFF : 0xF7;
-        int digit = !strcmp(op, "inc") ? 0 : !strcmp(op, "dec") ? 1 :
-                    !strcmp(op, "not") ? 2 : 3;
-        rex(a, d.wide, 0, 0, d.reg);
-        emit(a, opcode);
-        modrm(a, 3, digit, d.reg);
+        skip_space(a); if (*a->p == ',') a->p++;
+        if (parse_operand(a, &s) != 0) return 0;
+        if (d.kind != O_REG || d.size == 1) { fail(a, "wants a wider destination register", op); return 0; }
+        int ssz = (s.kind == O_REG) ? s.size : s.size;
+        if (s.kind != O_REG && s.kind != O_MEM) { fail(a, "wants a register or [mem] source", op); return 0; }
+        if (ssz != 1 && ssz != 2) { fail(a, "source must be byte or word", op); return 0; }
+        uint8_t base = !strcmp(op, "movzx") ? 0xB6 : 0xBE;
+        int srcreg = (s.kind == O_REG) ? s.reg : (s.reg < 0 ? 0 : s.reg);
+        int force = (s.kind == O_REG) && byte_needs_rex(ssz, s.reg);
+        rex_f(a, d.size == 8, d.reg, 0, srcreg, force);
+        emit(a, 0x0F);
+        emit(a, (uint8_t)(ssz == 1 ? base : base + 1));
+        if (s.kind == O_REG) modrm(a, 3, d.reg, s.reg);
+        else                 mem_operand(a, d.reg, &s, 0);
         return 0;
     }
 
@@ -393,7 +501,7 @@ static int encode(AS *a, const char *op) {
         skip_space(a); if (*a->p == ',') a->p++;
         if (parse_operand(a, &s) != 0) return 0;
         if (d.kind != O_REG || s.kind != O_REG) { fail(a, "imul wants two registers", 0); return 0; }
-        rex(a, d.wide, d.reg, 0, s.reg);
+        rex_sz(a, d.size, d.reg, s.reg);
         emit(a, 0x0F); emit(a, 0xAF);
         modrm(a, 3, d.reg, s.reg);
         return 0;
@@ -403,11 +511,19 @@ static int encode(AS *a, const char *op) {
         if (parse_operand(a, &d) != 0) return 0;
         skip_space(a); if (*a->p == ',') a->p++;
         if (parse_operand(a, &s) != 0) return 0;
-        if (d.kind != O_REG || s.kind != O_IMM) { fail(a, "wants a register and a count", op); return 0; }
-        rex(a, d.wide, 0, 0, d.reg);
-        emit(a, 0xC1);
-        modrm(a, 3, !strcmp(op, "shl") ? 4 : !strcmp(op, "shr") ? 5 : 7, d.reg);
-        emit(a, (uint8_t)s.imm);
+        if (d.kind != O_REG) { fail(a, "wants a register to shift", op); return 0; }
+        int digit = !strcmp(op, "shl") ? 4 : !strcmp(op, "shr") ? 5 : 7;
+        /* A count is either a constant or cl, and cl is not a choice: it is the
+         * only register the instruction can take one from. */
+        int by_cl = (s.kind == O_REG && s.reg == 1 && s.size == 1);
+        if (!by_cl && s.kind != O_IMM) {
+            fail(a, "wants a constant count or cl", op); return 0;
+        }
+        rex_sz(a, d.size, -1, d.reg);
+        emit(a, (uint8_t)(by_cl ? (d.size == 1 ? 0xD2 : 0xD3)
+                                : (d.size == 1 ? 0xC0 : 0xC1)));
+        modrm(a, 3, digit, d.reg);
+        if (!by_cl) emit(a, (uint8_t)s.imm);
         return 0;
     }
 
@@ -416,8 +532,8 @@ static int encode(AS *a, const char *op) {
         skip_space(a); if (*a->p == ',') a->p++;
         if (parse_operand(a, &s) != 0) return 0;
         if (d.kind != O_REG || s.kind != O_REG) { fail(a, "test wants two registers", 0); return 0; }
-        rex(a, d.wide, s.reg, 0, d.reg);
-        emit(a, 0x85);
+        rex_sz(a, d.size, s.reg, d.reg);
+        emit(a, (uint8_t)(d.size == 1 ? 0x84 : 0x85));
         modrm(a, 3, s.reg, d.reg);
         return 0;
     }
@@ -439,31 +555,49 @@ static int encode(AS *a, const char *op) {
         if (parse_operand(a, &s) != 0) return 0;
 
         if (d.kind == O_REG && s.kind == O_REG) {
-            rex(a, d.wide, s.reg, 0, d.reg);
-            emit(a, 0x89);
+            if (d.size != s.size) { fail(a, "mov between two widths", 0); return 0; }
+            rex_sz(a, d.size, s.reg, d.reg);
+            emit(a, (uint8_t)(d.size == 1 ? 0x88 : 0x89));
             modrm(a, 3, s.reg, d.reg);
             return 0;
         }
         if (d.kind == O_REG && s.kind == O_MEM) {
-            rex(a, d.wide, d.reg, 0, s.reg < 0 ? 0 : s.reg);
-            emit(a, 0x8B);
+            rex_mem(a, d.size, d.reg, s.reg);
+            emit(a, (uint8_t)(d.size == 1 ? 0x8A : 0x8B));
             mem_operand(a, d.reg, &s, 0);
             return 0;
         }
         if (d.kind == O_MEM && s.kind == O_REG) {
-            rex(a, s.wide, s.reg, 0, d.reg < 0 ? 0 : d.reg);
-            emit(a, 0x89);
+            rex_mem(a, s.size, s.reg, d.reg);
+            emit(a, (uint8_t)(s.size == 1 ? 0x88 : 0x89));
             mem_operand(a, s.reg, &d, 0);
             return 0;
         }
-        if (d.kind == O_REG && s.kind == O_IMM && d.wide && fits32(s.imm)) {
+        if (d.kind == O_REG && s.kind == O_IMM && d.size == 1) {
+            rex_sz(a, 1, -1, d.reg);
+            emit(a, (uint8_t)(0xB0 + (d.reg & 7)));
+            emit(a, (uint8_t)s.imm);
+            return 0;
+        }
+        if (d.kind == O_MEM && s.kind == O_IMM) {
+            /* `mov byte [rdi], 10` -- the bracket says nothing about width, so
+             * the size keyword is the only thing that can. */
+            if (d.size != 1 && d.size != 8) { fail(a, "say byte or qword for a store of a constant", 0); return 0; }
+            rex_mem(a, d.size, -1, d.reg);
+            emit(a, (uint8_t)(d.size == 1 ? 0xC6 : 0xC7));
+            mem_operand(a, 0, &d, d.size == 1 ? 1 : 4);
+            if (d.size == 1) emit(a, (uint8_t)s.imm);
+            else             emit32(a, (uint32_t)(int32_t)s.imm);
+            return 0;
+        }
+        if (d.kind == O_REG && s.kind == O_IMM && d.size == 8 && fits32(s.imm)) {
             rex(a, 1, 0, 0, d.reg);
             emit(a, 0xC7);
             modrm(a, 3, 0, d.reg);
             emit32(a, (uint32_t)(int32_t)s.imm);
             return 0;
         }
-        if (d.kind == O_REG && s.kind == O_IMM && !d.wide) {
+        if (d.kind == O_REG && s.kind == O_IMM && d.size == 4) {
             if (d.reg >= 8) emit(a, 0x41);
             emit(a, (uint8_t)(0xB8 + (d.reg & 7)));
             emit32(a, (uint32_t)s.imm);
@@ -489,17 +623,32 @@ static int encode(AS *a, const char *op) {
         skip_space(a); if (*a->p == ',') a->p++;
         if (parse_operand(a, &s) != 0) return 0;
         if (d.kind == O_REG && s.kind == O_REG) {
-            rex(a, d.wide, s.reg, 0, d.reg);
-            emit(a, alus[i].op_rm_r);
+            if (d.size != s.size) { fail(a, "two widths in one operation", op); return 0; }
+            rex_sz(a, d.size, s.reg, d.reg);
+            /* The byte form of each of these is the opcode one lower. */
+            emit(a, (uint8_t)(d.size == 1 ? alus[i].op_rm_r - 1 : alus[i].op_rm_r));
             modrm(a, 3, s.reg, d.reg);
+            return 0;
+        }
+        if (d.kind == O_REG && s.kind == O_MEM) {
+            rex_mem(a, d.size, d.reg, s.reg);
+            emit(a, (uint8_t)(d.size == 1 ? alus[i].op_rm_r + 1 : alus[i].op_rm_r + 2));
+            mem_operand(a, d.reg, &s, 0);
+            return 0;
+        }
+        if (d.kind == O_MEM && s.kind == O_REG) {
+            rex_mem(a, s.size, s.reg, d.reg);
+            emit(a, (uint8_t)(s.size == 1 ? alus[i].op_rm_r - 1 : alus[i].op_rm_r));
+            mem_operand(a, s.reg, &d, 0);
             return 0;
         }
         if (d.kind == O_REG && (s.kind == O_IMM || s.kind == O_LABELIMM)) {
             int64_t v = (s.kind == O_IMM) ? s.imm : value_of(a, s.label);
-            rex(a, d.wide, 0, 0, d.reg);
-            emit(a, 0x81);
+            rex_sz(a, d.size, -1, d.reg);
+            emit(a, (uint8_t)(d.size == 1 ? 0x80 : 0x81));
             modrm(a, 3, alus[i].digit, d.reg);
-            emit32(a, (uint32_t)(int32_t)v);
+            if (d.size == 1) emit(a, (uint8_t)v);
+            else             emit32(a, (uint32_t)(int32_t)v);
             return 0;
         }
         fail(a, "unsupported operands for", op);

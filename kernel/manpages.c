@@ -484,7 +484,10 @@ static const manpage_t MAN[] = {
   "Sections .text and .data, `global` to name the entry point (_start by\n"
   "default), labels, db/dw/dd/dq, resb and equ. [reg], [reg+disp] and\n"
   "[label] address memory; a [label] is assembled RIP-relative, which is how\n"
-  "a program with no relocations reaches its own data.\n"
+  "a program with no relocations reaches its own data. Registers may be named\n"
+  "64-bit, 32-bit or by their low byte (rax, eax, al); a byte or qword in\n"
+  "front of a bracket says how wide a memory operand is where nothing else\n"
+  "does.\n"
   "\n"
   "This is the first thing in the tree that turns text typed on BoltOS into\n"
   "machine code in a file. `cc` compiles C to bytecode an interpreter runs." },
