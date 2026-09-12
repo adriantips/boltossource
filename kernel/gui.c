@@ -29,6 +29,7 @@
 #include "vault.h"
 #include "audio.h"
 #include "netif.h"
+#include "wifi.h"
 #include "net.h"
 #include "notify.h"
 #include "screenshot.h"
@@ -928,6 +929,14 @@ static void draw_icon(int id, int x, int y, int s, uint32_t c) {
         }
         break;
     }
+    case ICON_NETWORK: {                        /* the signal arcs, again */
+        uint32_t c = 0x4FC3F7;
+        g_fill(x + 7 * s, y + 11 * s, 2 * s, 2 * s, c);
+        g_fill(x + 4 * s, y + 8 * s, 8 * s, 2 * s, c);
+        g_fill(x + 2 * s, y + 5 * s, 12 * s, 2 * s, c);
+        g_fill(x, y + 2 * s, 16 * s, 2 * s, c);
+        break;
+    }
     case ICON_SECURITY: {                       /* padlock */
         uint32_t body = 0xE8C24A, shackle = 0xB0B6C2;
         /* shackle: a squared-off arch above the body */
@@ -1150,6 +1159,24 @@ static void ipv4_str(uint32_t ip, char *out) {               /* host order -> "a
     }
     out[n] = 0;
 }
+/* Laid out once, so the draw and the click cannot disagree about where the
+ * button is -- which they did, briefly, and a button you can see and cannot
+ * press is a special kind of annoying. */
+static void tray_net_panel(int *px, int *py, int *pw, int *ph) {
+    int bx, by; tray_net_rect(&bx, &by);
+    *pw = 230; *ph = 94;
+    *px = bx + 14 - *pw / 2;
+    if (*px + *pw > W - 6) *px = W - 6 - *pw;
+    if (*px < 6) *px = 6;
+    *py = H - TASKBAR_H - *ph - 8;
+}
+
+static void tray_net_button(int px, int py, int pw, int ph,
+                            int *bx, int *by, int *bw, int *bh) {
+    *bw = pw - 20; *bh = 26;
+    *bx = px + 10; *by = py + ph - *bh - 10;
+}
+
 static void draw_net_tray(void) {
     int bx, by; tray_net_rect(&bx, &by);
     int mxp = mlx(), myp = mly();
@@ -1159,19 +1186,32 @@ static void draw_net_tray(void) {
     draw_net_glyph(bx + 4, by + 5, up, COL_ACCENT);
 
     if (!net_open) return;
-    int pw = 200, ph = 56, px = bx + 14 - pw / 2, py = H - TASKBAR_H - ph - 8;
-    if (px + pw > W - 6) px = W - 6 - pw;
-    if (px < 6) px = 6;
+    int px, py, pw, ph;
+    tray_net_panel(&px, &py, &pw, &ph);
     g_round(px - 2, py - 2, pw + 4, ph + 4, 12, 0x000000, 70);
     g_round(px, py, pw, ph, 10, 0x16161E, 250);
-    draw_net_glyph(px + 10, py + ph / 2 - 9, up, COL_ACCENT);
+    draw_net_glyph(px + 10, py + 20, up, COL_ACCENT);
+
+    const struct wifi_bss *w = wifi_current();
     if (up) {
         char ip[16]; ipv4_str(net_ip, ip);
-        g_text(px + 40, py + 12, "Connected", COL_GOOD, 1);
+        g_text(px + 40, py + 12, w ? w->ssid : "Connected", COL_GOOD, 1);
         g_text(px + 40, py + 30, ip, COL_TEXT_DIM, 1);
+        if (w) {
+            char sig[24];
+            snprintf(sig, sizeof sig, "%d dBm", wifi_signal());
+            g_text(px + pw - g_text_width(sig, 1) - 12, py + 30, sig, COL_TEXT_DIM, 1);
+        }
     } else {
-        g_text(px + 40, py + ph / 2 - 4, "No network", COL_TEXT_DIM, 1);
+        g_text(px + 40, py + 20, "No network", COL_TEXT_DIM, 1);
     }
+
+    int bx2, by2, bw2, bh2;
+    tray_net_button(px, py, pw, ph, &bx2, &by2, &bw2, &bh2);
+    int mxp2 = mlx(), myp2 = mly();
+    int bhot = mxp2 >= bx2 && mxp2 < bx2 + bw2 && myp2 >= by2 && myp2 < by2 + bh2;
+    g_round(bx2, by2, bw2, bh2, 7, bhot ? 0x33334A : 0x24242F, 255);
+    g_text(bx2 + 10, by2 + 7, "Wi-Fi and networks", bhot ? 0xFFFFFF : COL_TEXT, 1);
 }
 
 /* ---- notifications: toasts and the centre ------------------------------- */
@@ -2122,7 +2162,17 @@ static void on_left_down(int x, int y) {
     /* tray network: button toggles an info popup */
     { int nbx, nby; tray_net_rect(&nbx, &nby);
       if (x >= nbx && x < nbx + 28 && y >= nby && y < nby + 28) { net_open = !net_open; vol_open = 0; clock_open = 0; dirty = 1; return; } }
-    if (net_open) { net_open = 0; dirty = 1; }    /* click elsewhere dismisses it */
+    if (net_open) {
+        int px, py, pw, ph, nbx, nby, nbw, nbh;
+        tray_net_panel(&px, &py, &pw, &ph);
+        tray_net_button(px, py, pw, ph, &nbx, &nby, &nbw, &nbh);
+        net_open = 0; dirty = 1;
+        if (x >= nbx && x < nbx + nbw && y >= nby && y < nby + nbh) {
+            network_app_open();
+            return;
+        }
+        return;                                  /* click elsewhere dismisses it */
+    }
 
     /* tray clock: toggles a calendar flyout */
     { int qbx, qby, qbw, qbh; clock_rect(&qbx, &qby, &qbw, &qbh);
@@ -2739,6 +2789,7 @@ void gui_run(void) {
     software_app_init();
     logs_app_init();
     security_app_init();
+    network_app_init();
     settings_app_init();
     /* Every app gets a launcher icon on the desktop; double-click opens it. The
      * taskbar starts empty and only fills with apps as they are opened (or that
