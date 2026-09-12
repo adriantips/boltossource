@@ -36,6 +36,7 @@ static struct {
     int  job;
     int  sel;                 /* the highlighted scan row, -1 for none      */
     int  rows, cw, ch;
+    int  saved[WIFI_MAX_BSS]; /* is this scan row a remembered network?     */
     int  asking;              /* the passphrase field has the keyboard      */
     char pass[64];
     int  passlen;
@@ -53,7 +54,7 @@ static const char *sec_name(const struct wifi_bss *b) {
     return "open";
 }
 
-/* Four bars, filled by signal. -50 dBm and better is full; below -85 is one
+/* Four bars, filled by signal: -55 dBm and better is full, below -78 is one
  * bar, because a network you cannot actually use should not look like one you
  * can. */
 static void bars(int x, int y, int rssi, uint32_t col) {
@@ -115,7 +116,7 @@ static void draw_rows(int cx, int cy, int cw, int ch) {
 
         if (joined)
             g_text(sx - 90, y + 8, "connected", COL_GOOD, 1);
-        else if (netcfg_wifi_find(b->ssid, 0, 0))
+        else if (st.saved[r])
             g_text(sx - 90, y + 8, "saved", COL_TEXT_DIM, 1);
     }
 }
@@ -179,6 +180,17 @@ static void net_draw(window_t *w, int cx, int cy, int cw, int ch) {
 }
 
 /* ----------------------------------------------------------------- input -- */
+
+/* Which rows are remembered, worked out once rather than by reading
+ * /etc/wifi.conf for every row of every frame -- six frames a second times
+ * sixteen rows is a hundred filesystem lookups a second to draw one word. */
+static void refresh_saved(void) {
+    int n = wifi_scan_count();
+    for (int i = 0; i < WIFI_MAX_BSS; i++) {
+        const struct wifi_bss *b = i < n ? wifi_scan_get(i) : 0;
+        st.saved[i] = b ? netcfg_wifi_find(b->ssid, 0, 0) : 0;
+    }
+}
 
 static void queue(int job, const char *ssid, const char *saying) {
     st.job = job;
@@ -321,19 +333,22 @@ static void net_tick(window_t *w) {
         int n = wifi_scan(1500);
         if (n < 0) n = 0;
         if (st.sel >= n) st.sel = n ? 0 : -1;
-        snprintf(st.status, sizeof st.status, n == 1 ? "1 network in range"
-                                                     : "%d networks in range", n);
+        refresh_saved();
+        if (n == 1) snprintf(st.status, sizeof st.status, "1 network in range");
+        else        snprintf(st.status, sizeof st.status, "%d networks in range", n);
     } else if (job == JOB_DISCONNECT) {
         wifi_disconnect();
         snprintf(st.status, sizeof st.status, "Disconnected");
         gui_notify(NOTE_INFO, "Network", "Wi-Fi disconnected");
     } else if (job == JOB_FORGET) {
         netcfg_wifi_forget(ssid);
+        refresh_saved();
         snprintf(st.status, sizeof st.status, "Forgot %s", ssid);
     } else if (job == JOB_CONNECT) {
         int rc = wifi_connect(ssid, st.pass, 8000);
         if (rc == 0) {
             if (st.pass[0]) netcfg_wifi_save(ssid, st.pass);
+            refresh_saved();
             char msg[NOTE_TEXT_MAX];
             if (dhcp_configure(3000) == 0) {
                 char ip[16];
@@ -347,8 +362,10 @@ static void net_tick(window_t *w) {
         } else {
             snprintf(st.status, sizeof st.status, "%s: %s", ssid, wifi_err_str(rc));
             gui_notify(NOTE_ERROR, "Network", st.status);
-            /* A passphrase that did not work is not one to keep offering. */
-            if (rc == WIFI_EKEY) netcfg_wifi_forget(ssid);
+            /* The saved passphrase is left alone. A join can fail for reasons
+             * that are not the passphrase, and throwing away a working
+             * credential because of one bad moment is worse than making
+             * somebody press Forget when they actually changed it. */
         }
         memset(st.pass, 0, sizeof st.pass);
         st.passlen = 0;
@@ -374,6 +391,7 @@ void network_app_init(void) {
 void network_app_open(void) {
     if (!win) return;
     gui_open(win);
+    refresh_saved();
     if (wifi_radio_get() && wifi_scan_count() == 0)
         queue(JOB_SCAN, 0, "Scanning...");
 }

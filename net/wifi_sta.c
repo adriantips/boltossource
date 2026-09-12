@@ -65,18 +65,22 @@ static void poll_once(void) {
     if (radio && radio->ops->poll) radio->ops->poll(radio);
 }
 
-/* Poll until *flag changes or the deadline passes. Returns 1 if the flag came
- * up in time. Everything that waits for a management frame goes through here,
- * so there is one place where a hung radio turns into a timeout. */
-static int wait_for(volatile int *flag, int want, int ms) {
+/* Poll until *flag is set either way, or the deadline passes. Returns 1 if an
+ * answer arrived in time -- including a refusal, which the caller then reads
+ * off the flag's sign. Waiting only for a positive answer meant an AP that
+ * said no was reported as a timeout, which sends somebody looking at their
+ * aerial when the answer is on the screen. Everything that waits for a
+ * management frame goes through here, so there is one place where a radio that
+ * says nothing at all turns into a timeout. */
+static int wait_for(volatile int *flag, int ms) {
     uint64_t deadline = pit_ticks() + (uint64_t)ms;
     while (pit_ticks() < deadline) {
         poll_once();
-        if (*flag >= want) return 1;
+        if (*flag) return 1;
         __asm__ volatile("hlt");
     }
     poll_once();
-    return *flag >= want;
+    return *flag != 0;
 }
 
 static void link_down(void) {
@@ -451,10 +455,10 @@ int wifi_connect(const char *ssid, const char *psk, int timeout_ms) {
     S.state     = WIFI_AUTH;
     n = ieee80211_build_auth(mgmt, radio->mac, S.bss.bssid, 1);
     radio_tx(mgmt, (uint16_t)n);
-    if (!wait_for(&S.auth_seen, 1, 800)) {
+    if (!wait_for(&S.auth_seen, 800)) {
         n = ieee80211_build_auth(mgmt, radio->mac, S.bss.bssid, 1);
-        radio_tx(mgmt, (uint16_t)n);                 /* one retry; beacons get lost */
-        if (!wait_for(&S.auth_seen, 1, 800)) { link_down(); return WIFI_ETIMEOUT; }
+        radio_tx(mgmt, (uint16_t)n);                 /* one retry; frames get lost */
+        if (!wait_for(&S.auth_seen, 800)) { link_down(); return WIFI_ETIMEOUT; }
     }
     if (S.auth_seen < 0) { link_down(); return WIFI_EAUTH; }
 
@@ -462,7 +466,7 @@ int wifi_connect(const char *ssid, const char *psk, int timeout_ms) {
     S.state      = WIFI_ASSOC;
     n = ieee80211_build_assoc_req(mgmt, radio->mac, S.bss.bssid, ssid, need_key);
     radio_tx(mgmt, (uint16_t)n);
-    if (!wait_for(&S.assoc_seen, 1, 1000)) { link_down(); return WIFI_ETIMEOUT; }
+    if (!wait_for(&S.assoc_seen, 1000)) { link_down(); return WIFI_ETIMEOUT; }
     if (S.assoc_status != 0) {
         kprintf("[wifi] association refused, status %u\n", (unsigned)S.assoc_status);
         link_down();
