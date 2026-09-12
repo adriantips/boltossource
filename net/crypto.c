@@ -134,7 +134,10 @@ void pbkdf2_sha256(const void *pw, uint32_t pwlen,
 }
 
 /* =========================== AES-128 ==================================== */
-static const uint8_t sbox[256] = {
+/* Shared with net/wpa.c, which needs the inverse: deriving that from this
+ * table is one loop, and a second hand-written table that has to agree with
+ * this one forever is a bug waiting for a quiet afternoon. */
+const uint8_t aes_sbox[256] = {
 0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
 0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
 0xb7,0xfd,0x93,0x26,0x36,0x3f,0xf7,0xcc,0x34,0xa5,0xe5,0xf1,0x71,0xd8,0x31,0x15,
@@ -161,7 +164,7 @@ void aes128_init(aes128_ctx *c, const uint8_t key[16]) {
     for (int i = 1; i <= 10; i++) {
         uint8_t *prev = rk + (i-1)*16, *cur = rk + i*16;
         uint8_t t[4] = { prev[13], prev[14], prev[15], prev[12] };   /* rotword */
-        for (int j = 0; j < 4; j++) t[j] = sbox[t[j]];
+        for (int j = 0; j < 4; j++) t[j] = aes_sbox[t[j]];
         t[0] ^= rcon[i-1];
         for (int j = 0; j < 4; j++) cur[j] = prev[j] ^ t[j];
         for (int j = 4; j < 16; j++) cur[j] = cur[j-4] ^ prev[j];
@@ -173,7 +176,7 @@ void aes128_encrypt(const aes128_ctx *c, const uint8_t in[16], uint8_t out[16]) 
     const uint8_t *rk = c->rk;
     for (int i = 0; i < 16; i++) s[i] = in[i] ^ rk[i];
     for (int round = 1; round <= 10; round++) {
-        for (int i = 0; i < 16; i++) s[i] = sbox[s[i]];           /* SubBytes */
+        for (int i = 0; i < 16; i++) s[i] = aes_sbox[s[i]];       /* SubBytes */
         uint8_t t[16];                                            /* ShiftRows */
         static const uint8_t sr[16] = {0,5,10,15,4,9,14,3,8,13,2,7,12,1,6,11};
         for (int i = 0; i < 16; i++) t[i] = s[sr[i]];
@@ -206,10 +209,10 @@ void aes256_init(aes256_ctx *c, const uint8_t key[32]) {
         uint8_t *w = rk + i*4, *wp = rk + (i-1)*4, *wk = rk + (i-8)*4;
         t[0]=wp[0]; t[1]=wp[1]; t[2]=wp[2]; t[3]=wp[3];
         if (i % 8 == 0) {
-            uint8_t tmp = t[0]; t[0]=sbox[t[1]]; t[1]=sbox[t[2]]; t[2]=sbox[t[3]]; t[3]=sbox[tmp];
+            uint8_t tmp = t[0]; t[0]=aes_sbox[t[1]]; t[1]=aes_sbox[t[2]]; t[2]=aes_sbox[t[3]]; t[3]=aes_sbox[tmp];
             t[0] ^= rcon[i/8 - 1];
         } else if (i % 8 == 4) {
-            t[0]=sbox[t[0]]; t[1]=sbox[t[1]]; t[2]=sbox[t[2]]; t[3]=sbox[t[3]];
+            t[0]=aes_sbox[t[0]]; t[1]=aes_sbox[t[1]]; t[2]=aes_sbox[t[2]]; t[3]=aes_sbox[t[3]];
         }
         for (int j = 0; j < 4; j++) w[j] = wk[j] ^ t[j];
     }
@@ -220,7 +223,7 @@ void aes256_encrypt(const aes256_ctx *c, const uint8_t in[16], uint8_t out[16]) 
     const uint8_t *rk = c->rk;
     for (int i = 0; i < 16; i++) s[i] = in[i] ^ rk[i];
     for (int round = 1; round <= 14; round++) {
-        for (int i = 0; i < 16; i++) s[i] = sbox[s[i]];
+        for (int i = 0; i < 16; i++) s[i] = aes_sbox[s[i]];
         uint8_t t[16];
         static const uint8_t sr[16] = {0,5,10,15,4,9,14,3,8,13,2,7,12,1,6,11};
         for (int i = 0; i < 16; i++) t[i] = s[sr[i]];

@@ -46,6 +46,10 @@ void pbkdf2_sha256(const void *pw, uint32_t pwlen,
                    const uint8_t *salt, uint32_t saltlen,
                    uint32_t rounds, uint8_t *out, uint32_t outlen);
 
+/* The forward S-box, shared with net/wpa.c so the inverse cipher there can
+ * be derived from this table rather than written out a second time. */
+extern const uint8_t aes_sbox[256];
+
 /* ---- AES-128 (encrypt only; GCM needs the forward cipher both ways) ---- */
 typedef struct { uint8_t rk[176]; } aes128_ctx;   /* 11 * 16-byte round keys */
 void aes128_init(aes128_ctx *c, const uint8_t key[16]);

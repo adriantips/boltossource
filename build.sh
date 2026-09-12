@@ -182,7 +182,7 @@ SRCS=(
     net/netif.c net/driver.c net/eth.c net/arp.c net/ip.c net/icmp.c net/udp.c net/netaddr.c
     net/tcp.c net/dns.c net/crypto.c net/tls.c net/p256.c net/p384.c net/rsa.c net/x509.c net/inflate.c net/http.c
     net/ip6.c net/icmp6.c net/nd6.c
-    net/wifi.c net/firmware.c net/firewall.c net/dhcp.c net/netcfg.c net/ntp.c
+    net/wifi.c net/wpa.c net/firmware.c net/firewall.c net/dhcp.c net/netcfg.c net/ntp.c
     drivers/e1000.c drivers/virtio_net.c
     kernel/socket.c net/ssh.c kernel/cmd_ssh.c kernel/cmd_edit.c kernel/cmd_netcfg.c kernel/cmd_serve.c kernel/cmd_fs.c kernel/cmd_sys.c kernel/cmd_proc.c kernel/cmd_net.c kernel/cmd_extra.c kernel/cmd_hw.c kernel/cmd_user.c
     kernel/html.c kernel/dom.c kernel/layout.c kernel/image.c kernel/ttf.c
