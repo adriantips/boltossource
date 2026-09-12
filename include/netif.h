@@ -21,12 +21,22 @@ struct netif {
     int    (*send)(struct netif *nif, const void *frame, uint16_t len);
     void   (*poll)(struct netif *nif);                     /* optional RX poll  */
 
+    /* Claim a frame before the protocol stack sees it. Returns 1 if the frame
+     * was taken. An access point bridging this interface to another one uses
+     * it (drivers/wifi_sim.c); nothing else does, and if nothing is installed
+     * the frame goes straight up as before. */
+    int    (*rx_hook)(struct netif *nif, const uint8_t *frame, uint16_t len);
+
     uint64_t rx_packets, tx_packets, rx_bytes, tx_bytes, rx_dropped, tx_errors;
     struct netif *next;
 };
 
 void          net_init(void);                 /* init core, then probe drivers */
 void          netif_register(struct netif *nif);
+/* The interface traffic leaves by: the most recently registered one whose link
+ * is up, or simply the most recent if none of them are. Registration order
+ * alone used to decide it, which put a Wi-Fi interface with no association in
+ * front of the wired one that was working. */
 struct netif *netif_default(void);
 struct netif *netif_list(void);
 int           netif_send(struct netif *nif, const void *frame, uint16_t len);

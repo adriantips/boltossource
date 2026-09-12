@@ -105,6 +105,7 @@ static void cfg_line(char *k, char *v, void *ctx) {
                                        g_netcfg.hostname[NETCFG_HOST_MAX - 1] = 0; }
     else if (!strcmp(k, "ntp"))      g_netcfg.ntp_enabled = (v[0] == '1' || v[0] == 'y' || v[0] == 't');
     else if (!strcmp(k, "ntpserver"))netcfg_parse_ip(v, &g_netcfg.ntp_server);
+    else if (!strcmp(k, "simradio")) g_netcfg.sim_radio = (v[0] == '1' || v[0] == 'y' || v[0] == 't');
 }
 
 int netcfg_load(void) {
@@ -138,6 +139,10 @@ int netcfg_save(void) {
         EMIT_KEY("hostname"); { const char *s = g_netcfg.hostname; while (*s) *o++ = *s++; } *o++ = '\n';
     }
     EMIT_KEY("ntp"); *o++ = g_netcfg.ntp_enabled ? '1' : '0'; *o++ = '\n';
+    /* The built-in radio is off unless somebody turned it on, and stays on
+     * once they have -- a remembered network is no use if the thing that
+     * receives its beacons has to be started by hand every boot. */
+    if (g_netcfg.sim_radio) { EMIT_KEY("simradio"); *o++ = '1'; *o++ = '\n'; }
     if (g_netcfg.ntp_server) {
         char ipbuf[16];
         EMIT_KEY("ntpserver"); netcfg_format_ip(g_netcfg.ntp_server, ipbuf); { const char *s = ipbuf; while (*s) *o++ = *s++; } *o++ = '\n';
