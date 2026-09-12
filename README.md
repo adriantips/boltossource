@@ -1209,10 +1209,16 @@ by default. `db`/`dw`/`dd`/`dq`, `resb` and `equ` cover data; `[reg]`,
 RIP-relative, which is how a program with no relocation table reaches its own
 data.
 
-The instruction set is a working subset rather than an x86 manual: moves, the
-ALU group, `lea`, shifts, `imul`, `inc`/`dec`/`neg`/`not`, `test`, `push`/`pop`,
-`call`/`ret`, `jmp`, the conditional jumps, and `syscall`. That is enough to
-write a program that computes something, loops, calls, and talks to the kernel.
+The instruction set is a working subset rather than an x86 manual: moves in
+all three widths, the ALU group against registers, memory and immediates,
+`lea`, shifts by a constant or by `cl`, `imul`, `mul`/`div`/`idiv`,
+`inc`/`dec`/`neg`/`not`, `test`, `movzx`/`movsx`, the `setcc` family,
+`push`/`pop`, `call`/`ret`, `jmp`, the conditional jumps, and `syscall`.
+Registers can be named 64-bit, 32-bit or by their low byte (`rax`, `eax`, `al`);
+`ah` and its three siblings are deliberately absent, because no instruction
+carrying a REX prefix can reach them and assembling `ah` as `spl` because the
+table lined up is the kind of silence this assembler is trying not to have.
+
 What is missing is missing because nothing has needed it yet, and an unknown
 mnemonic is named with its line rather than quietly assembled into whatever was
 nearest:
@@ -1225,10 +1231,22 @@ This is a step toward the self-hosting that the SDK section still lists as
 unfinished, not the end of it -- BoltCC emits bytecode, not assembly, so
 nothing yet feeds one into the other.
 
-`test/t_asm.py` assembles three programs from the shell and runs each: the
-smallest thing that can still be wrong, a `write` through a RIP-relative
-`[label]` into `.data`, and a loop with a backward conditional jump that has to
-come out as 55. A fourth must fail, with its line.
+`test/t_asm.py` has two halves. The QEMU half assembles five programs from the
+shell and runs each: the smallest thing that can still be wrong, a `write`
+through a RIP-relative `[label]` into `.data`, a loop with a backward
+conditional jump that has to come out as 55, and `.text`/`.data`/`.text` for the
+pass the middle one exists for. A sixth must fail, with its line.
+
+Running a program only proves the instructions it happened to execute, though,
+and an assembler that emits the wrong bytes looks exactly like one that emits
+the right ones until something jumps into the wrong place. So the host half
+(`test/host/asm.c`, `python test/t_asm.py --host-only`) hands the same
+instruction to BoltAS and to NASM and compares the bytes, across 86 operand
+shapes -- which is what caught a REX prefix being emitted because a *memory
+base* register happened to be numbered like a byte register that needs one.
+Eight more forms are where BoltAS declines NASM's shorter encoding on purpose,
+and the test pins those to the long encoding of the same instruction rather
+than excusing them.
 
 ## The debugger -- `cc -g`
 
