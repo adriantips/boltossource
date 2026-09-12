@@ -19,7 +19,7 @@
  *  for two of them. The entry point is `_start`, or whatever `global` names.
  * ===========================================================================*/
 
-#define MAX_SYMS   512
+#define MAX_SYMS   4096
 #define TEXT_OFF   0x1000
 #define PAGE       0x1000
 
@@ -270,6 +270,10 @@ static int parse_operand(AS *a, Opnd *o) {
         a->p++;
         char t[32];
         if (!word(a, t, sizeof t)) { fail(a, "empty [ ]", 0); return -1; }
+        /* A register is spelled in any case; a label is spelled exactly once,
+         * and lowercasing it here would leave `[Msg]` unable to find `Msg:`. */
+        char raw_mem[32];
+        strlcpy(raw_mem, t, sizeof raw_mem);
         lower(t);
         int rsz, r = reg_of(t, &rsz);
         o->kind = O_MEM;
@@ -290,7 +294,7 @@ static int parse_operand(AS *a, Opnd *o) {
             /* [label] -- RIP-relative, which is how a flat, non-relocatable
              * program reaches its own data without a fixup table. */
             o->reg = -1;
-            strlcpy(o->label, t, sizeof o->label);
+            strlcpy(o->label, raw_mem, sizeof o->label);
         }
         skip_space(a);
         if (*a->p != ']') { fail(a, "expected ]", 0); return -1; }

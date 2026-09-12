@@ -281,7 +281,8 @@ with `chmod 755`, then use `run /path/to/myapp [args...]` (or `run myapp` for
 `/bin/myapp`). The shell reports the exit status and exposes it as `$?`.
 Malformed ELF headers, out-of-bounds segments and kernel-address destinations
 are rejected before loading; failed loads release their allocated pages.
-Native BoltCC code generation and self-hosting remain unfinished.
+`cc -N` compiles BoltCC's integer subset to a native ELF64 through the
+assembler, on the machine itself; full self-hosting remains unfinished.
 
 ## ACPI / APIC / SMP
 
@@ -1227,9 +1228,7 @@ nearest:
 as: /a/bad.asm: line 5: unknown instruction: frobnicate
 ```
 
-This is a step toward the self-hosting that the SDK section still lists as
-unfinished, not the end of it -- BoltCC emits bytecode, not assembly, so
-nothing yet feeds one into the other.
+It is also what BoltCC's native backend compiles through; see `cc -N` below.
 
 `test/t_asm.py` has two halves. The QEMU half assembles five programs from the
 shell and runs each: the smallest thing that can still be wrong, a `write`
@@ -1247,6 +1246,70 @@ base* register happened to be numbered like a byte register that needs one.
 Eight more forms are where BoltAS declines NASM's shorter encoding on purpose,
 and the test pins those to the long encoding of the same instruction rather
 than excusing them.
+
+## Native code -- `cc -N` and `cc -S`
+
+`cc` compiles C and BoltCC's VM runs the bytecode. That is a real compiler and
+it is not a native one, and the difference showed everywhere: nothing a person
+wrote on this machine could become a program the machine executed. The only
+native code on the disk arrived cross-compiled from a host.
+
+The same front end now has a second backend. `kernel/ccnative.c` walks the same
+bytecode `vm_run()` interprets and emits x86-64; `as` assembles it; `kernel/elf.c`
+loads the result like any other ring-3 program. Nothing leaves the machine.
+
+```
+cc prog.c              compile and run on the VM      (the whole language)
+cc -N prog.c           compile to a native ELF64      (the integer subset)
+cc -N prog.c -o hello  choose the output name
+cc -S prog.c           print the x86-64 it would emit
+run ./prog
+```
+
+It emits assembly text rather than machine code, which is slower and right
+twice over: the assembler becomes a component with a real consumer instead of a
+demonstration, and `cc -S` falls out for free. When native code does the wrong
+thing you can read what it was asked to do, which is the difference between a
+backend you can fix and one you can only distrust.
+
+The translation is deliberately literal. The bytecode is a stack machine, so
+the machine stack *is* the operand stack: every opcode pops its operands, pushes
+its result, and keeps nothing in a register across an opcode boundary. No
+register allocator, no liveness, and no class of bug where two values both
+believe they own rcx. The code is several times longer than it needs to be and
+it is code you can check one opcode at a time.
+
+**What it will not compile, and says so.** Native values are plain 64-bit
+integers, and the VM's values carry a type tag this backend has nowhere to put.
+So everything the tag exists for — arrays, structs, the builtin library,
+strings used as values — is refused *by name*, because "cannot compile this"
+tells you to give up and "arrays" tells you what to take out:
+
+```
+BoltCC: -N cannot compile: arrays
+```
+
+String *literals* work, as pointers into `.data`, because a literal handed
+straight to `printf` or `puts` never has to be told apart from an integer at
+runtime — the format string already says which it is. `printf` itself is real:
+the emitted runtime is a few hundred bytes of assembly implementing `%d`, `%i`,
+`%u`, `%x`, `%c`, `%s` and `%%`, including the decimal conversion, because there
+is no library on this machine to link against and a program that prints a number
+has to carry the code that turns one into digits.
+
+This is a step toward the self-hosting the SDK section still lists as
+unfinished, not the end of it. BoltCC's C is not the C the kernel is written in.
+
+`test/t_ccnative.py` does not check the native output against a string someone
+typed into the test — it checks it against the VM. One source file, compiled
+both ways, has to print the same bytes and exit with the same status; an
+interpreter that has been right about backward jumps and frame slots since long
+before this existed is a better oracle than an expectation. That comparison is
+what caught the one bug worth naming here: a function whose body opens with a
+loop has its entry and that loop's back edge on the same instruction, and a
+single label serving both meant every iteration re-ran the prologue, building a
+fresh frame out of arguments read from an `rbp` that had just moved. Call
+targets and jump targets are separate labels now.
 
 ## The debugger -- `cc -g`
 
@@ -1899,7 +1962,7 @@ The interactive OS shell supports a wide range of commands:
 - Serving: `serve` (HTTP file server over real accepted connections), `netget` (fetch a URL from a ring-3 socket program)
 - Remote access: `sshd` (SSH-2 server: real shell, password auth, encrypted), `sshkey` (host key fingerprint)
 - Development: `build` (build a project's target from its `build.txt`), `vcs` (local version control: init / add / commit / log / diff / checkout / branch)
-- Language: `cc` (multi-file C/C++/C# via the preprocessor + BoltCC; `-g` runs it under the source-level debugger), `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the Code app compiles C / C++ / C#
+- Language: `cc` (multi-file C/C++/C# via the preprocessor + BoltCC; `-g` runs it under the source-level debugger, `-N` compiles to a native ELF64 through the assembler, `-S` prints the x86-64), `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the Code app compiles C / C++ / C#
 - Bonus / Unique: `focus`, `snapshot`, `timeline`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
 - Shell: `sh`, `source`, `.`, `test`, `[`, `true`, `false`, `set`, `unset`; variables, conditions, loops and functions (see [SHELL.md](SHELL.md))
 - SDK & help: `run` (ELF64 programs with arguments and exit status), `as` (assemble x86-64 into an ELF64 program, NASM syntax), `man` (pages/search/coverage), `help [COMMAND]`

@@ -40,3 +40,11 @@ int  boltcc_run(int lang, const char *src);
  * `src` is also what `list` displays, so it should be the preprocessed unit the
  * line numbers refer to. */
 int  boltcc_debug(int lang, const char *src);
+
+/* Compile src and return NASM-syntax x86-64 for it instead of running it: the
+ * same front end and the same bytecode, handed to kernel/ccnative.c rather than
+ * to the VM. Returns 0 with *asm_out set to a kmalloc'd string the caller
+ * kfree()s, or nonzero having already printed why -- usually because the
+ * program uses something the native backend does not implement, which it names.
+ */
+int  boltcc_native(int lang, const char *src, char **asm_out);

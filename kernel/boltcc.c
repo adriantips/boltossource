@@ -11,6 +11,7 @@
  * ===========================================================================*/
 #include <stdint.h>
 #include "boltcc.h"
+#include "ccir.h"
 #include "string.h"
 #include "kprintf.h"
 #include "kheap.h"
@@ -66,26 +67,11 @@ typedef struct {
 } Func;
 
 /* --------------------------------------------------------------- bytecode --- */
-enum {
-    OP_PUSHI, OP_PUSHS, OP_LOADL, OP_STOREL, OP_LOADG, OP_STOREG,
-    OP_POP, OP_DUP,
-    OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MOD, OP_NEG,
-    OP_BAND, OP_BOR, OP_BXOR, OP_SHL, OP_SHR,
-    OP_EQ, OP_NE, OP_LT, OP_LE, OP_GT, OP_GE, OP_NOT,
-    OP_JMP, OP_JZ, OP_JNZ,
-    OP_CALL, OP_RET,
-    OP_PRINT, OP_PRINTLN, OP_PRINTF, OP_CSPRINT, OP_PUTC,
-    OP_BUILTIN, OP_INDEX, OP_HALT,
-    OP_NEWARR, OP_ASTORE,
-    OP_NEWSTRUCT, OP_NEWSTRUCTARR, OP_FIELD, OP_FIELDSET, OP_REF,
-};
+/* The opcodes and Instr live in include/ccir.h now, because kernel/ccnative.c
+ * compiles the same bytecode to x86-64 rather than interpreting it, and two
+ * backends over one IR have to agree about what an instruction is. */
 enum { B_LEN, B_STR, B_INT, B_ABS, B_MIN, B_MAX, B_CHR, B_ORD,
        B_POW, B_SQRT, B_GCD, B_UPPER, B_LOWER, B_SUBSTR };
-
-/* `line` is what turns a runtime error from "something went wrong" into a
- * place in the source. It costs four bytes an instruction and is the difference
- * between a language you can debug and one you can only re-read. */
-typedef struct { int op; long a, b; const char *s; int line; } Instr;
 
 /* --------------------------------------------------------------- structs --- *
  *  A struct type is a name and an ordered list of field names, and that is all
@@ -1602,9 +1588,11 @@ const char *boltcc_lang_name(int lang) {
 }
 const char *boltcc_version(void) { return "BoltCC 1.0  -  C / C++ / C# -> bytecode"; }
 
-/* Both public entry points run the same pipeline; `debug` only decides whether
- * the VM stops on the first line and takes commands. */
-static int boltcc_exec(int lang, const char *src, int debug) {
+/* Every public entry point runs the same pipeline. `debug` decides whether the
+ * VM stops on the first line and takes commands; `native_out`, when it is not
+ * null, says to hand the bytecode to the other backend and never start the VM
+ * at all. */
+static int boltcc_exec(int lang, const char *src, int debug, char **native_out) {
     CC ctx; memset(&ctx, 0, sizeof(ctx));
     C = &ctx;
     C->lang = lang;
@@ -1661,6 +1649,33 @@ static int boltcc_exec(int lang, const char *src, int debug) {
     emit(OP_POP, 0, 0, 0);
     emit(OP_HALT, 0, 0, 0);
 
+    if (native_out) {
+        /* The bytecode is finished and nothing about the VM has been touched.
+         * Hand it to the other backend and stop here. */
+        CCFunc *nf = (CCFunc *)kmalloc((uint32_t)(C->nfunc ? C->nfunc : 1) * sizeof(CCFunc));
+        if (!nf) cc_error("out of memory", 0);
+        for (int i = 0; i < C->nfunc; i++) {
+            nf[i].name    = C->funcs[i].name;
+            nf[i].nparams = C->funcs[i].nparams;
+            nf[i].nlocals = C->funcs[i].nlocnames;   /* every slot the body used */
+            nf[i].entry   = C->funcs[i].entry;
+        }
+        CCProgram prog;
+        prog.code = C->code; prog.ncode = C->ncode;
+        prog.funcs = nf;     prog.nfunc = C->nfunc;
+        prog.nglob = C->nglob;
+        prog.start = start;
+
+        char nerr[128] = "";
+        *native_out = ccnative_emit(&prog, nerr, sizeof nerr);
+        kfree(nf);
+        if (!*native_out) {
+            kprintf("BoltCC: %s\n", nerr[0] ? nerr : "native code generation failed");
+            rc = 1;
+        }
+        goto cleanup;
+    }
+
     /* runtime string scratch + global store reset */
     for (int i = 0; i < MAX_GLOBALS; i++) g_globstore[i] = (Val){0,0,0};
     g_rtcap = 1024 * 1024; g_rtpos = 0; g_rt = (char *)kmalloc(g_rtcap);
@@ -1694,5 +1709,9 @@ cleanup:
     return rc;
 }
 
-int boltcc_run(int lang, const char *src)   { return boltcc_exec(lang, src, 0); }
-int boltcc_debug(int lang, const char *src) { return boltcc_exec(lang, src, 1); }
+int boltcc_run(int lang, const char *src)   { return boltcc_exec(lang, src, 0, 0); }
+int boltcc_debug(int lang, const char *src) { return boltcc_exec(lang, src, 1, 0); }
+int boltcc_native(int lang, const char *src, char **asm_out) {
+    *asm_out = 0;
+    return boltcc_exec(lang, src, 0, asm_out);
+}
