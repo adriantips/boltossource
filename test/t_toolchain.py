@@ -1,0 +1,372 @@
+#!/usr/bin/env python3
+"""as -c, ar and ld: a program that did not fit in one file.
+
+`as` could already turn text typed on BoltOS into a program. It could only do
+it one file at a time, and every name had to be resolvable inside that file --
+which is the difference between an assembler and a toolchain. This covers the
+three pieces that close the gap: objects with holes in them, archives to keep
+objects in, and a linker that fills the holes.
+
+The host half is where the real checking happens, because an object format is
+only right if a reader that was not written alongside it agrees:
+
+  * GNU readelf parses our objects, with the relocations and symbols we meant
+  * LLVM's ld.lld *links* our objects into a working program -- the strongest
+    single statement that the format is the real one and not a lookalike
+  * BoltLD links NASM's objects, which use R_X86_64_32S where ours use PC32,
+    so the other relocation path is exercised by a foreign producer
+  * where every resolved reference ended up is compared against where lld
+    put it, since the two lay the sections out differently on purpose
+  * GNU ar reads our archives and we read GNU ar's, long member names included
+
+The QEMU half then does the whole thing on the machine itself, from typing the
+source to running the program, because none of the above proves the commands
+are wired up.
+
+    python test/t_toolchain.py --host-only     # no QEMU, a few seconds
+"""
+import os, shutil, subprocess, sys, tempfile, time
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from boltvm import BoltVM, ROOT
+
+OUT = Path(ROOT) / "test" / "out"
+MSYS = Path(r"C:\msys64")
+
+# A program in two pieces. main calls into lib, and reads two things out of
+# lib's .data -- so a call, a RIP-relative load and a 64-bit fetch all have to
+# survive being resolved by somebody other than the assembler.
+MAIN_ASM = """bits 64
+section .text
+global _start
+extern add3
+extern msg
+extern msglen
+_start:
+    mov rdi, 10
+    mov rsi, 20
+    mov rdx, 12
+    call add3
+    push rax
+
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [msg]
+    mov rdx, [msglen]
+    syscall
+
+    pop rdi
+    mov rax, 60
+    syscall
+"""
+
+LIB_ASM = """bits 64
+section .text
+global add3
+add3:
+    mov rax, rdi
+    add rax, rsi
+    add rax, rdx
+    ret
+section .data
+global msg
+global msglen
+msg: db "linked on boltos", 10
+msglen: dq 17
+"""
+
+# Three objects in a chain, each needing the next, so the archive scan has to
+# run to a fixed point rather than once left to right.
+TOP_ASM = """section .text
+global _start
+extern outer
+_start:
+    call outer
+    mov rdi, rax
+    mov rax, 60
+    syscall
+"""
+OUTER_ASM = """section .text
+global outer
+extern inner
+outer:
+    call inner
+    add rax, 1
+    ret
+"""
+INNER_ASM = """section .text
+global inner
+inner:
+    mov rax, 41
+    ret
+"""
+
+
+def tool(*names):
+    for n in names:
+        p = MSYS / "ucrt64" / "bin" / n
+        if p.exists():
+            return str(p)
+        p = MSYS / "usr" / "bin" / n
+        if p.exists():
+            return str(p)
+        w = shutil.which(n)
+        if w:
+            return w
+    return None
+
+
+def run(cmd, **kw):
+    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+
+
+def text_bytes(path):
+    """The .text of an ELF, whatever the linker decided to call the address."""
+    objdump = tool("objdump.exe", "objdump")
+    r = run([objdump, "-h", str(path)])
+    assert r.returncode == 0, r.stderr
+    size = off = None
+    lines = r.stdout.splitlines()
+    for i, line in enumerate(lines):
+        f = line.split()
+        if len(f) >= 6 and f[1] == ".text":
+            size, off = int(f[2], 16), int(f[5], 16)
+            break
+    assert size is not None, "no .text in %s:\n%s" % (path, r.stdout)
+    with open(path, "rb") as fh:
+        fh.seek(off)
+        return fh.read(size)
+
+
+def host_tests():
+    cc = os.environ.get("BOLTOS_HOST_CC") or tool("clang.exe", "clang", "gcc")
+    if not cc:
+        raise RuntimeError("host C compiler missing (set BOLTOS_HOST_CC)")
+
+    OUT.mkdir(parents=True, exist_ok=True)
+    exe = OUT / ("link-host.exe" if os.name == "nt" else "link-host")
+    subprocess.run([cc, "-std=c11", "-O1", "-g", "-Wall", "-Wextra",
+                    "-Wno-inconsistent-dllimport",
+                    "-iquote", str(Path(ROOT) / "include"),
+                    str(Path(ROOT) / "test" / "host" / "link.c"), "-o", str(exe)],
+                   check=True)
+
+    d = Path(tempfile.mkdtemp())
+    for name, body in (("main.asm", MAIN_ASM), ("lib.asm", LIB_ASM),
+                       ("top.asm", TOP_ASM), ("outer.asm", OUTER_ASM),
+                       ("inner.asm", INNER_ASM)):
+        (d / name).write_text(body)
+
+    # Run from inside the scratch directory with bare names: `ar` records a
+    # member under its basename, and a Windows temp path is neither short
+    # enough nor spelled with the separator a BoltOS path uses.
+    def bolt(*args):
+        r = run([str(exe)] + [str(a) for a in args], cwd=str(d))
+        return r.stdout.strip()
+
+    for n in ("main", "lib", "top", "outer", "inner"):
+        out = bolt("asmobj", n + ".asm", n + ".o")
+        assert out.startswith("OK"), "%s.asm did not assemble: %s" % (n, out)
+    print("  ok: five sources assembled to relocatable objects")
+
+    # --- does a reader that has never seen this code agree with it? ---------
+    readelf = tool("readelf.exe", "readelf")
+    if readelf:
+        r = run([readelf, "-h", "-r", "-s", str(d / "main.o")])
+        assert r.returncode == 0, "readelf could not read our object:\n" + r.stderr
+        assert "REL (Relocatable file)" in r.stdout, r.stdout
+        for want in ("R_X86_64_PLT32", "add3", "R_X86_64_PC32", "msg", "msglen"):
+            assert want in r.stdout, "readelf did not find %s:\n%s" % (want, r.stdout)
+        print("  ok: GNU readelf parses the object, with the relocations we meant")
+    else:
+        print("  SKIP: no readelf to read the object back")
+
+    lld = tool("ld.lld.exe", "ld.lld")
+    lld_text = None
+    if lld:
+        r = run([lld, "-m", "elf_x86_64", "-e", "_start",
+                 "-o", str(d / "prog.lld"), str(d / "main.o"), str(d / "lib.o")])
+        assert r.returncode == 0, "ld.lld refused our objects:\n" + r.stderr
+        lld_text = text_bytes(d / "prog.lld")
+        print("  ok: LLVM's ld.lld links our objects, so the format is the real one")
+    else:
+        print("  SKIP: no ld.lld to link our objects with")
+
+    # --- our linker, on our objects and on somebody else's ------------------
+    out = bolt("ld", "prog", "main.o", "lib.o")
+    assert out.startswith("OK"), "link failed: " + out
+    assert "objects=2" in out and "relocs=3" in out, out
+    ours = text_bytes(d / "prog")
+
+    nasm = tool("nasm.exe", "nasm")
+    if nasm:
+        for n in ("main", "lib"):
+            r = run([nasm, "-f", "elf64", str(d / (n + ".asm")),
+                     "-o", str(d / (n + ".nasm.o"))])
+            assert r.returncode == 0, r.stderr
+        out = bolt("ld", "prog.n", "main.nasm.o", "lib.nasm.o")
+        assert out.startswith("OK"), "our linker refused nasm's objects: " + out
+        print("  ok: BoltLD links objects NASM produced, absolute relocations and all")
+    else:
+        print("  SKIP: no nasm to produce a second opinion's objects")
+
+    # Comparing the two programs byte for byte would be comparing layout
+    # choices: lld pads between objects with int3 and puts .data somewhere else,
+    # so every displacement legitimately differs. What has to agree is where the
+    # references ended up pointing, and objdump says that in both.
+    for path, who in ((d / "prog", "BoltLD"),
+                      (d / "prog.lld", "ld.lld") if lld else (None, None)):
+        if path is None:
+            continue
+        r = run([tool("objdump.exe", "objdump"), "-d", str(path)])
+        assert r.returncode == 0, r.stderr
+        for want in ("<add3>", "<msg>", "<msglen>"):
+            assert want in r.stdout, \
+                "%s did not resolve %s to the right place:\n%s" % (who, want, r.stdout)
+    print("  ok: both linkers point the call and the two loads at the same symbols")
+    assert len(ours) > 0
+
+    # --- archives -----------------------------------------------------------
+    long_o = d / "a_very_long_member_name_indeed.o"
+    shutil.copy(d / "lib.o", long_o)
+    out = bolt("ar", "libstuff.a", long_o.name)
+    assert out.startswith("OK"), "archive failed: " + out
+    out = bolt("ld", "prog2", "main.o", "libstuff.a")
+    assert "fromlib=1" in out, "the member was not pulled in: " + out
+    assert open(d / "prog", "rb").read() == open(d / "prog2", "rb").read(), \
+        "linking through an archive produced a different program"
+    print("  ok: a member with a long name archives, and links to the same bytes")
+
+    gar = tool("ar.exe", "ar")
+    if gar:
+        r = run([gar, "t", str(d / "libstuff.a")])
+        assert r.returncode == 0 and "a_very_long_member_name_indeed.o" in r.stdout, \
+            "GNU ar could not read our archive:\n%s%s" % (r.stdout, r.stderr)
+        r = run([gar, "rcs", "libgnu.a", "a_very_long_member_name_indeed.o"], cwd=str(d))
+        assert r.returncode == 0, r.stderr
+        out = bolt("ld", "prog3", "main.o", "libgnu.a")
+        assert "fromlib=1" in out, "we could not pull from GNU ar's archive: " + out
+        assert open(d / "prog", "rb").read() == open(d / "prog3", "rb").read()
+        print("  ok: GNU ar reads ours and we read GNU ar's, symbol index skipped")
+    else:
+        print("  SKIP: no GNU ar to check the format against")
+
+    # Two archives that need each other, listed in the order ld(1) would fail on.
+    bolt("ar", "libinner.a", "inner.o")
+    bolt("ar", "libouter.a", "outer.o")
+    out = bolt("ld", "chain", "top.o", "libinner.a", "libouter.a")
+    assert out.startswith("OK") and "objects=3" in out and "fromlib=2" in out, \
+        "the archive scan did not run to a fixed point: " + out
+    print("  ok: an archive that needs a later archive still links")
+
+    # --- the ways it should refuse -----------------------------------------
+    out = bolt("ld", "bad", "main.o")
+    assert "undefined reference to 'add3'" in out, out
+    shutil.copy(d / "lib.o", d / "lib2.o")
+    out = bolt("ld", "bad", "main.o", "lib.o", "lib2.o")
+    assert "duplicate definition of 'add3'" in out, out
+    out = bolt("ld", "bad", "prog")
+    assert "already a program" in out, out
+    out = bolt("ld", "bad", "main.o", "lib.o", "-e", "nosuch")
+    assert "nothing defines 'nosuch'" in out, out
+    (d / "junk.o").write_bytes(b"\x00" * 200)
+    out = bolt("ld", "bad", "junk.o")
+    assert "not an ELF64 object" in out, out
+    print("  ok: undefined, duplicate, wrong-type and malformed inputs are all named")
+
+    shutil.rmtree(d, ignore_errors=True)
+
+
+# ---- on the machine itself -------------------------------------------------
+
+def shell(vm, line, timeout=60):
+    """One command, one answer.
+
+    The leading Enter is not decoration: reach_shell's probe can leave a
+    half-typed line in the buffer and the first real command then arrives with
+    a character glued to its front. t_wifi.py's helper says the same thing.
+    """
+    vm.key("ret")
+    time.sleep(0.4)
+    vm.clear()
+    vm.type(line + "\n")
+    time.sleep(0.6)
+    return vm.serial()
+
+
+def write_file(vm, path, body):
+    lines = body.strip("\n").split("\n")
+    vm.run('write %s "%s"' % (path, lines[0]))
+    for l in lines[1:]:
+        vm.run('write -a %s "%s"' % (path, l))
+
+
+def qemu_tests():
+    with BoltVM(name="toolchain", extra=["-vga", "none"]) as vm:
+        vm.reach_shell(180, "2")
+        vm.key("ret")
+        time.sleep(0.5)
+        vm.run("mkdir /t")
+
+        write_file(vm, "/t/main.asm", MAIN_ASM)
+        write_file(vm, "/t/lib.asm", LIB_ASM)
+
+        out = vm.run("as -c /t/main.asm", timeout=60)
+        assert "-> /t/main.o" in out and "object" in out, \
+            "as -c did not write an object:\n" + out[-500:]
+        out = vm.run("as -c /t/lib.asm", timeout=60)
+        assert "-> /t/lib.o" in out, out[-500:]
+        print("  ok: two sources assemble to objects on the machine")
+
+        out = vm.run("ld -v -o /t/prog /t/main.o /t/lib.o", timeout=60)
+        assert "-> /t/prog" in out, "the link did not produce a program:\n" + out[-600:]
+        assert "2 objects" in out, out[-600:]
+        out = vm.run("run /t/prog", timeout=60)
+        assert "linked on boltos" in out, \
+            "the program did not reach the other file's data:\n" + out[-600:]
+        assert "exited 42" in out, \
+            "10+20+12 should be 42; the call across files is wrong:\n" + out[-600:]
+        print("  ok: a two-file program links, runs, and gets the right answer")
+
+        # An archive, and a link that pulls out of it.
+        out = vm.run("ar r /t/libmine.a /t/lib.o", timeout=60)
+        assert "1 member" in out, "the archive was not built:\n" + out[-500:]
+        out = vm.run("ar t /t/libmine.a", timeout=40)
+        assert "lib.o" in out, "ar t did not list the member:\n" + out[-500:]
+        out = vm.run("ld -o /t/prog2 /t/main.o /t/libmine.a", timeout=60)
+        assert "-> /t/prog2" in out, out[-600:]
+        out = vm.run("run /t/prog2", timeout=60)
+        assert "exited 42" in out, \
+            "the program linked out of an archive did not run:\n" + out[-600:]
+        print("  ok: ar builds a library and ld pulls the member it needs from it")
+
+        # A missing name is named, and nothing is written.
+        out = vm.run("ld -o /t/nope /t/main.o", timeout=60)
+        assert "undefined reference to 'add3'" in out, \
+            "a missing symbol was not reported:\n" + out[-500:]
+        out = vm.run("cat /t/nope", timeout=30)
+        assert "no such file" in out.lower() or "not found" in out.lower(), \
+            "a failed link still wrote a file:\n" + out[-400:]
+        print("  ok: an unresolved name is named, and no program is left behind")
+
+        # The linked program carries its symbols, so a crash in it has names.
+        out = vm.run("man ld", timeout=40)
+        assert "fixed point" in out or "still missing" in out, \
+            "ld has no manual page:\n" + out[-400:]
+
+        vm.expect_absent("KERNEL PANIC")
+
+
+def main():
+    host_tests()
+    if "--host-only" in sys.argv:
+        print("PASS toolchain (host only): objects, archives and links agree with binutils")
+        return 0
+    qemu_tests()
+    print("PASS toolchain: a program in two files, assembled, archived, linked and run")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

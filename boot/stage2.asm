@@ -59,9 +59,14 @@ stage2_start:
     mov     si, msg_stage2
     call    rm_print
 
-    in      al, 0x92                 ; enable A20 (fast gate)
-    or      al, 2
-    out     0x92, al
+    call    enable_a20               ; BIOS, then fast gate, then i8042 -- verified
+    jnc     .a20_done
+    mov     si, msg_a20fail
+    call    rm_print
+    cli
+    hlt
+    jmp     $
+.a20_done:
 
     call    boot_menu                ; normal / safe / recovery -> [boot_flags]
     call    read_bhdr                ; kernel LBA + sector count from LBA 33
@@ -110,6 +115,123 @@ rm_print:
     int     0x10
     jmp     .l
 .d: ret
+
+; ---- A20 -------------------------------------------------------------------
+; QEMU always honours the port-0x92 "fast gate", but real chipsets don't all
+; agree, and a dead A20 line wraps the kernel copy at 1 MiB back to address 0,
+; corrupting the IVT and turning "jmp KERNEL_PHYS" into a jump into garbage --
+; the exact hang this guards against. Try the BIOS call, then the fast gate,
+; then the i8042 keyboard-controller method, testing after each; only give up
+; (CF=1) once all three have failed to actually flip the line.
+enable_a20:
+    call    test_a20
+    jnc     .done
+
+    mov     ax, 0x2401              ; BIOS: enable A20
+    int     0x15
+    call    test_a20
+    jnc     .done
+
+    in      al, 0x92                ; fast gate
+    or      al, 2
+    and     al, 0xFE                ; don't touch bit 0 (fast reset)
+    out     0x92, al
+    call    test_a20
+    jnc     .done
+
+    call    a20_kbc                 ; i8042 keyboard-controller method
+    call    test_a20
+.done:
+    ret
+
+; CF=0 if A20 is enabled, CF=1 if still wrapping. Writes+restores two bytes
+; that straddle the 1 MiB wrap point (0000:0500 vs FFFF:0510) rather than
+; trusting whatever happens to already be there.
+test_a20:
+    push    ds
+    push    es
+    push    di
+    push    si
+    push    ax
+    push    bx
+    cli
+
+    xor     ax, ax
+    mov     es, ax
+    mov     di, 0x0500
+    mov     ax, 0xFFFF
+    mov     ds, ax
+    mov     si, 0x0510
+
+    mov     al, [es:di]
+    mov     bl, [ds:si]
+    push    ax
+    push    bx
+
+    mov     byte [es:di], 0x00
+    mov     byte [ds:si], 0xFF
+    cmp     byte [es:di], 0xFF       ; wrapped -> still equals the byte we
+
+    pop     bx
+    mov     [ds:si], bl
+    pop     ax
+    mov     [es:di], al
+
+    jne     .enabled
+    stc
+    jmp     .out
+.enabled:
+    clc
+.out:
+    sti
+    pop     bx
+    pop     ax
+    pop     si
+    pop     di
+    pop     es
+    pop     ds
+    ret
+
+a20_kbc:
+    cli
+    call    .wait_in
+    mov     al, 0xAD                ; disable keyboard
+    out     0x64, al
+
+    call    .wait_in
+    mov     al, 0xD0                ; read controller output port
+    out     0x64, al
+
+    call    .wait_out
+    in      al, 0x60
+    push    ax
+
+    call    .wait_in
+    mov     al, 0xD1                ; write controller output port
+    out     0x64, al
+
+    call    .wait_in
+    pop     ax
+    or      al, 2                   ; set A20
+    out     0x60, al
+
+    call    .wait_in
+    mov     al, 0xAE                ; re-enable keyboard
+    out     0x64, al
+
+    call    .wait_in
+    sti
+    ret
+.wait_in:
+    in      al, 0x64
+    test    al, 2
+    jnz     .wait_in
+    ret
+.wait_out:
+    in      al, 0x64
+    test    al, 1
+    jz      .wait_out
+    ret
 
 ; ---- boot menu -------------------------------------------------------------
 ; Draws the entry list and waits BOOT_MENU_SECS for a digit, counting down off
@@ -548,7 +670,8 @@ gdt64:
     dw  .ptr - gdt64 - 1
     dd  gdt64
 
-msg_stage2:  db "BoltOS S2: A20 ok.", 13, 10, 0
+msg_stage2:  db "BoltOS S2: stage 2 loaded.", 13, 10, 0
+msg_a20fail: db "BoltOS S2: A20 line would not enable, stopping here.", 13, 10, 0
 msg_loaded:  db "BoltOS S2: kernel at 1MiB, going long mode.", 13, 10, 0
 msg_diskerr: db "BoltOS S2 disk error", 13, 10, 0
 msg_hdr:     db "  boot header found", 13, 10, 0
