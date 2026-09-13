@@ -297,7 +297,11 @@ static int64_t value_of(AS *a, const char *t) {
     int64_t v = parse_number(a, t, &ok);
     if (ok) return v;
     Sym *s = sym_find(a, t);
-    if (s) return (int64_t)s->value;
+    /* `defined`, not merely present. `global` and `extern` both make an entry
+     * before anything defines it, so matching on existence alone let a program
+     * say `extern foo` and assemble `call foo` into a call to address zero --
+     * which the old code, ignoring extern entirely, would have refused. */
+    if (s && s->defined) return (int64_t)s->value;
     /* An object may name what it cannot resolve; that is what a relocation is
      * for, and an unresolved name becomes the linker's complaint rather than
      * this file's. A program has nobody else to ask. */
