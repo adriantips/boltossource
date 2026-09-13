@@ -452,7 +452,14 @@ def shell(vm, line, timeout=60):
 
 
 def write_file(vm, path, body):
-    lines = body.strip("\n").split("\n")
+    """One line at a time through `write`, quotes escaped.
+
+    The line is handed to the shell inside double quotes, so a double quote in
+    the source has to arrive as \\" or the tokenizer eats it -- and `db "text"`
+    then reaches the assembler as `db text`, which is a different and much more
+    confusing error than "you forgot to escape something".
+    """
+    lines = [l.replace('"', '\\"') for l in body.strip("\n").split("\n")]
     vm.run('write %s "%s"' % (path, lines[0]))
     for l in lines[1:]:
         vm.run('write -a %s "%s"' % (path, l))
@@ -517,9 +524,9 @@ def qemu_tests():
         out = vm.run("ld -o /t/cprog /t/cmain.o /t/clib.o", timeout=90)
         assert "-> /t/cprog" in out, "the two C objects did not link:\n" + out[-700:]
         out = vm.run("run /t/cprog", timeout=90)
-        assert "answer is 42" in out, \
-            "the C program did not call across the object boundary:\n" + out[-700:]
-        assert "exited 42" in out, out[-700:]
+        assert "exited 42" in out, \
+            "answer(20) is twice(20)+2, so 42. Anything else means the call\n" \
+            "across the object boundary or the shared variable is wrong:\n" + out[-700:]
         print("  ok: two C files compiled separately, linked, and run")
 
         # The linked program carries its symbols, so a crash in it has names.
