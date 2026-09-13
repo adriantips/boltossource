@@ -105,6 +105,18 @@ inner:
     ret
 """
 
+# A name nothing defines. As an object that is a relocation and the linker's
+# problem; as a program it has to be an error, and `extern` must not make it
+# look otherwise.
+EXTERN_ASM = """section .text
+global _start
+extern nowhere
+_start:
+    call nowhere
+    mov rax, 60
+    syscall
+"""
+
 # The same split, in C. main.c names `answer` without defining it, shares a
 # file-scope variable, and is the only unit with main() -- so it is the only
 # one that may carry _start.
@@ -357,6 +369,16 @@ def host_tests():
           "nothing defines are each refused")
 
     # --- the ways it should refuse -----------------------------------------
+    (d / "ext.asm").write_text(EXTERN_ASM)
+    out = bolt("asmexe", "ext.asm", "ext.out")
+    assert "undefined symbol: nowhere" in out, \
+        "a program assembled a call to a name nothing defines:\n" + out
+    out = bolt("asmobj", "ext.asm", "ext.o")
+    assert out.startswith("OK"), "the same file as an object should assemble: " + out
+    out = bolt("ld", "bad", "ext.o")
+    assert "undefined reference to 'nowhere'" in out, out
+    print("  ok: `extern` is a relocation in an object and an error in a program")
+
     out = bolt("ld", "bad", "main.o")
     assert "undefined reference to 'add3'" in out, out
     shutil.copy(d / "lib.o", d / "lib2.o")
