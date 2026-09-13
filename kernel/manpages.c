@@ -280,7 +280,7 @@ static const manpage_t MAN[] = {
   "duration is measured rather than assumed, so the result plays back at the\n"
   "speed the machine managed. Recording stops itself at 8 MB or 1800 frames and\n"
   "saves what it has." },
-{ "display", "display | display scale NAME | display res NAME",
+{ "display", "display | display scale NAME | display res NAME | display brightness PCT",
   "The panel, the desktop drawn on it, and the scale between them. With no\n"
   "argument it prints all three plus the modes and scales available, marking\n"
   "the current one with a star.\n"
@@ -293,7 +293,14 @@ static const manpage_t MAN[] = {
   "no monitor reports its physical size, so there is no real DPI to read.\n"
   "\n"
   "A scale that would leave a desktop smaller than 640x480 is declined and said\n"
-  "to be declined. `display res 1080p' reprograms the GPU to a real mode." },
+  "to be declined. `display res 1080p' reprograms the GPU to a real mode.\n"
+  "\n"
+  "`display brightness 40' dims the screen, and 10 is as dark as it goes -- a\n"
+  "black screen nobody can read the way back out of is a brick. Today that is a\n"
+  "software dimmer: every pixel is scaled on its way to the panel, because\n"
+  "reaching a real backlight means GPU registers or an ACPI method and neither\n"
+  "exists on a machine with no panel. Screenshots undo it, so a capture taken at\n"
+  "30%% is not a black rectangle. The tray's quick settings has the same slider." },
 { "snap", "snap [ZONE]",
   "Tile the focused window. ZONE is left, right, top-left, top-right,\n"
   "bottom-left, bottom-right, max or restore; with no argument it prints the\n"
@@ -460,8 +467,16 @@ static const manpage_t MAN[] = {
   "system can also read." },
 { "ext2", "ext2 ls|cat PATH",
   "Read an EXT2 volume." },
-{ "power", "power off|reboot",
-  "The same as `poweroff` and `reboot`." },
+{ "power", "power status | power off | power reboot",
+  "`power off` and `power reboot` are the same as `poweroff` and `reboot`.\n"
+  "\n"
+  "`power status` says where the machine's power is coming from, and is honest\n"
+  "about how little that is. A battery on a PC is an ACPI control-method device\n"
+  "-- its charge is read by executing the firmware's AML bytecode, and BoltOS\n"
+  "has no AML interpreter. What can be read without one is the FADT's power\n"
+  "management profile, which distinguishes \"there is no battery here\" from\n"
+  "\"there is one and I cannot read it\". It also prints the brightness level\n"
+  "and what is applying it -- see `display brightness`." },
 { "cpus", "cpus",
   "Every logical CPU the firmware reported and which ones came up under SMP." },
 { "acpiinfo", "acpiinfo",

@@ -34,6 +34,8 @@
 #include "notify.h"
 #include "screenshot.h"
 #include "record.h"
+#include "backlight.h"
+#include "power.h"
 #include "keymap.h"
 
 extern const unsigned char font8x8_basic[128][8];   /* 8x8 retro face   */
@@ -1075,17 +1077,70 @@ static void draw_clock(void) {
 }
 
 /* ---- tray volume control ------------------------------------------------ */
+/* ---- tray network indicator --------------------------------------------- */
+static int net_is_up(void) {
+    struct netif *n = netif_default();
+    return (n && n->link_up && net_ip != 0);
+}
+static void draw_net_glyph(int x, int y, int up, uint32_t col) {
+    uint32_t c = up ? col : COL_TEXT_DIM;
+    g_fill(x + 8, y + 13, 3, 3, c);                          /* base dot */
+    g_fill(x + 4, y + 9, 11, 2, c);                          /* arc 1 */
+    g_fill(x + 2, y + 5, 15, 2, c);                          /* arc 2 */
+    if (!up) { g_fill(x + 3, y + 3, 13, 2, 0xFF6B6B); }      /* offline slash */
+}
 static void tray_vol_rect(int *bx, int *by) {
     *bx = W - 96;                                /* just left of the clock */
     *by = H - TASKBAR_H + (TASKBAR_H - 28) / 2;
 }
+/* Quick settings: the flyout the speaker button opens. It used to be a volume
+ * slider on its own, which meant the one panel a person reaches for in a hurry
+ * had one of the four things they were reaching for. */
+#define QS_W    252
+#define QS_H    186
+#define QS_ROW  34          /* a slider row */
+#define QS_TOP  34          /* below the title */
+
 static void vol_popup_rect(int *x, int *y, int *w, int *h) {
-    *w = 188; *h = 56;
+    *w = QS_W; *h = QS_H;
     int bx, by; tray_vol_rect(&bx, &by);
     *x = bx + 14 - *w / 2;
     if (*x + *w > W - 6) *x = W - 6 - *w;
     if (*x < 6) *x = 6;
     *y = H - TASKBAR_H - *h - 8;
+}
+
+/* The track of slider row r (0 volume, 1 brightness). Drawing and hit-testing
+ * both come through here; when they were two copies the knob and the value you
+ * got by clicking it were a few pixels apart. */
+static void qs_slider(int r, int px, int py, int *tx, int *ty, int *tw) {
+    *tx = px + 44;
+    *tw = QS_W - 44 - 46;
+    *ty = py + QS_TOP + r * QS_ROW + 12;
+}
+
+/* row rectangles for the two informational lines at the bottom */
+static void qs_info(int r, int px, int py, int *ix, int *iy, int *iw, int *ih) {
+    *ix = px + 8; *iw = QS_W - 16; *ih = 26;
+    *iy = py + QS_TOP + 2 * QS_ROW + 12 + r * 28;
+}
+
+/* a sun, for the brightness row */
+static void draw_sun(int x, int y, uint32_t col) {
+    g_round(x + 5, y + 5, 8, 8, 4, col, 255);
+    for (int i = 0; i < 4; i++) {
+        g_fill(x + 8, y + (i == 0 ? 0 : 15), 2, 3, col);       /* up / down   */
+        g_fill(x + (i == 0 ? 0 : 15), y + 8, 3, 2, col);       /* left / right */
+    }
+}
+
+/* a battery outline, filled to `pct` (-1 = nothing to report) */
+static void draw_battery(int x, int y, int pct, uint32_t col) {
+    g_rect(x, y + 4, 18, 10, col);
+    g_fill(x + 18, y + 7, 2, 4, col);
+    if (pct < 0) { g_fill(x + 3, y + 8, 12, 2, col); return; }   /* a dash */
+    int w = 14 * pct / 100; if (w < 1) w = 1;
+    g_fill(x + 2, y + 6, w, 6, pct <= 15 ? COL_BAD : COL_GOOD);
 }
 /* speaker glyph + sound waves scaled by the current volume */
 static void draw_speaker(int x, int y, int vol, uint32_t col) {
@@ -1108,49 +1163,78 @@ static void draw_volume_tray(void) {
     int px, py, pw, ph; vol_popup_rect(&px, &py, &pw, &ph);
     g_round(px - 2, py - 2, pw + 4, ph + 4, 12, 0x000000, 70);
     g_round(px, py, pw, ph, 10, 0x16161E, 250);
-    int vol = audio_volume();
-    draw_speaker(px + 12, py + ph / 2 - 8, vol, COL_TEXT);
-    /* slider track */
-    int tx = px + 38, tw = pw - 38 - 44, ty = py + ph / 2 - 3;
-    g_round(tx, ty, tw, 6, 3, 0x33333F, 255);
-    g_round(tx, ty, tw * vol / 100, 6, 3, COL_ACCENT, 255);
-    g_round(tx + tw * vol / 100 - 4, ty - 4, 9, 14, 4, COL_TEXT, 255);  /* knob */
-    char pct[5]; int n = 0;                       /* "NN%" */
-    if (vol >= 100) { pct[n++]='1'; pct[n++]='0'; pct[n++]='0'; }
-    else { if (vol >= 10) pct[n++] = '0' + vol / 10; pct[n++] = '0' + vol % 10; }
-    pct[n++] = '%'; pct[n] = 0;
-    g_text(px + pw - 38, py + ph / 2 - 4, pct, COL_TEXT, 1);
+    g_text(px + 14, py + 12, "Quick settings", COL_TEXT_DIM, 1);
+
+    int vol = audio_volume(), bri = backlight_get();
+    for (int r = 0; r < 2; r++) {
+        int v = r == 0 ? vol : bri;
+        int tx, ty, tw; qs_slider(r, px, py, &tx, &ty, &tw);
+        if (r == 0) draw_speaker(px + 14, ty - 8, vol, COL_TEXT);
+        else        draw_sun(px + 14, ty - 8, COL_TEXT);
+        g_round(tx, ty, tw, 6, 3, 0x33333F, 255);
+        g_round(tx, ty, tw * v / 100, 6, 3, COL_ACCENT, 255);
+        g_round(tx + tw * v / 100 - 4, ty - 4, 9, 14, 4, COL_TEXT, 255);
+        char pct[5]; snprintf(pct, sizeof pct, "%d%%", v);
+        g_text(px + QS_W - 42, ty - 4, pct, COL_TEXT, 1);
+    }
+
+    g_hline(px + 10, py + QS_TOP + 2 * QS_ROW + 6, QS_W - 20, 0x2A2A3A);
+
+    for (int r = 0; r < 2; r++) {
+        int ix, iy, iw, ih; qs_info(r, px, py, &ix, &iy, &iw, &ih);
+        int over = mxp >= ix && mxp < ix + iw && myp >= iy && myp < iy + ih;
+        if (r == 0 && over) g_round(ix, iy, iw, ih, 6, 0x2A2A3A, 255);
+        if (r == 0) {
+            int up = net_is_up();
+            draw_net_glyph(ix + 8, iy + 6, up, up ? COL_ACCENT : COL_TEXT_DIM);
+            const struct wifi_bss *bss = wifi_current();
+            g_text(ix + 34, iy + 7,
+                   bss ? bss->ssid : (up ? "Connected" : "No network"),
+                   up ? COL_TEXT : COL_TEXT_DIM, 1);
+        } else {
+            battery_t b;
+            int pct = power_battery(&b) && b.present ? b.percent : -1;
+            draw_battery(ix + 6, iy + 5, pct, COL_TEXT_DIM);
+            g_text(ix + 34, iy + 7, power_summary(), COL_TEXT_DIM, 1);
+        }
+    }
 }
-/* click inside the volume popup -> set level from the slider, or toggle mute on
- * the speaker. Returns 1 if the click was consumed by the popup. */
+/* A click inside quick settings. Returns 1 if the panel consumed it -- which
+ * it does for anything inside its own rectangle, so a near-miss on a slider
+ * does not also close the panel. */
 static int volume_popup_click(int x, int y) {
     int px, py, pw, ph; vol_popup_rect(&px, &py, &pw, &ph);
     if (x < px || x >= px + pw || y < py || y >= py + ph) return 0;
-    if (x < px + 32) { audio_set_volume(audio_volume() > 0 ? 0 : 80); return 1; }  /* mute toggle */
-    int tx = px + 38, tw = pw - 38 - 44;
-    int v = (x - tx) * 100 / (tw > 0 ? tw : 1);
-    if (v < 0) v = 0; if (v > 100) v = 100;
-    audio_set_volume(v);
-    return 1;
+
+    for (int r = 0; r < 2; r++) {
+        int tx, ty, tw; qs_slider(r, px, py, &tx, &ty, &tw);
+        if (y < ty - 12 || y >= ty + 14) continue;
+        if (x < px + 38) {                           /* the glyph is a toggle */
+            if (r == 0) audio_set_volume(audio_volume() > 0 ? 0 : 80);
+            else        backlight_set(backlight_get() > 40 ? 40 : 100);
+            return 1;
+        }
+        int v = (x - tx) * 100 / (tw > 0 ? tw : 1);
+        if (v < 0) v = 0; if (v > 100) v = 100;
+        if (r == 0) audio_set_volume(v);
+        else        backlight_set(v);
+        return 1;
+    }
+
+    int ix, iy, iw, ih; qs_info(0, px, py, &ix, &iy, &iw, &ih);
+    if (x >= ix && x < ix + iw && y >= iy && y < iy + ih) {
+        vol_open = 0;
+        network_app_open();
+        return 1;
+    }
+    return 1;                      /* anywhere else in the panel: absorbed */
 }
 
-/* ---- tray network indicator --------------------------------------------- */
-static int net_is_up(void) {
-    struct netif *n = netif_default();
-    return (n && n->link_up && net_ip != 0);
-}
 static void tray_net_rect(int *bx, int *by) {
     *bx = W - 132;                               /* left of the volume button */
     *by = H - TASKBAR_H + (TASKBAR_H - 28) / 2;
 }
 /* wifi-style arcs; bright when connected, dim+slash when not */
-static void draw_net_glyph(int x, int y, int up, uint32_t col) {
-    uint32_t c = up ? col : COL_TEXT_DIM;
-    g_fill(x + 8, y + 13, 3, 3, c);                          /* base dot */
-    g_fill(x + 4, y + 9, 11, 2, c);                          /* arc 1 */
-    g_fill(x + 2, y + 5, 15, 2, c);                          /* arc 2 */
-    if (!up) { g_fill(x + 3, y + 3, 13, 2, 0xFF6B6B); }      /* offline slash */
-}
 static void ipv4_str(uint32_t ip, char *out) {               /* host order -> "a.b.c.d" */
     int n = 0;
     for (int s = 24; s >= 0; s -= 8) {
@@ -2595,6 +2679,16 @@ static void handle_wheel(int dz) {
         over_tray = (x >= px && x < px + pw && y >= py && y < py + ph);
     }
     if (over_tray) {
+        /* over the brightness row, the wheel means brightness -- a wheel that
+         * changes the volume while the pointer is on a brightness slider is
+         * the sort of thing that only gets noticed at night */
+        if (vol_open) {
+            int px, py, pw, ph; vol_popup_rect(&px, &py, &pw, &ph);
+            int tx, ty, tw; qs_slider(1, px, py, &tx, &ty, &tw);
+            if (y >= ty - 12 && y < ty + 14) {
+                backlight_set(backlight_get() + dz * 5); dirty = 1; return;
+            }
+        }
         int v = audio_volume() + dz * 5;
         if (v < 0) v = 0; if (v > 100) v = 100;
         audio_set_volume(v); dirty = 1; return;

@@ -4,6 +4,8 @@
 #include "proc.h"
 #include "pit.h"
 #include "kprintf.h"
+#include "power.h"
+#include "backlight.h"
 #include "string.h"
 #include "fat32.h"
 #include "acpi.h"
@@ -73,14 +75,28 @@ int cmd_fat(int argc, char **argv) {
 /* `power` predates poweroff/reboot and stays as an alias for them. It used to
  * jump straight at ACPI without flushing, which meant every shutdown through
  * this path left the filesystem dirty and cost the next boot a full fsck. */
+/* What the machine can say about its power source, which is not much and says
+ * so. See include/power.h: a battery is an AML control method and there is no
+ * AML interpreter here, so the honest answers are "on AC", "this is a laptop
+ * and I cannot read its battery", and whatever a real driver reports once one
+ * exists. */
+static void power_status(void) {
+    kprintf("power: %s\n", power_summary());
+    kprintf("       firmware profile: %s\n",
+            power_is_mobile() ? "portable" : "not portable");
+    kprintf("       brightness %d%% via the %s\n", backlight_get(), backlight_name());
+}
+
 int cmd_power(int argc, char **argv) {
     const char *sub = argc > 1 ? argv[1] : "";
     if (strcmp(sub, "off") == 0 || strcmp(sub, "shutdown") == 0)
         return cmd_poweroff(argc, argv);
     if (strcmp(sub, "reboot") == 0 || strcmp(sub, "restart") == 0)
         return cmd_reboot(argc, argv);
-    kprintf("usage: power off | reboot   (same as the poweroff / reboot commands)\n");
-    return 1;
+    if (strcmp(sub, "status") == 0) { power_status(); return 0; }
+    power_status();
+    kprintf("usage: power status | off | reboot\n");
+    return argc > 1 ? 1 : 0;
 }
 
 int cmd_cpus(int argc, char **argv) {
