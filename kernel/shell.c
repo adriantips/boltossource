@@ -235,6 +235,7 @@ const command_t commands[] = {
     { "as",       "Core",             "assemble x86-64: as [-c] FILE.asm",   cmd_as },
     { "ld",       "Core",             "link objects: ld [-o OUT] FILE.o...",  cmd_ld },
     { "ar",       "Core",             "static library: ar r LIB.a FILE.o...", cmd_ar },
+    { "make",     "Core",             "build by rules: make [-f FILE] [TGT]", cmd_make },
     { "notify",   "Core",             "post or read notifications",         cmd_notify },
     { "screenshot","Core",            "capture the screen to a PNG",        cmd_screenshot },
     { "desk",     "Core",             "virtual desktops: desk [N|move N]",  cmd_desk },
