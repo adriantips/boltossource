@@ -139,6 +139,7 @@ const command_t commands[] = {
     { "meminfo",  "System",           "memory usage",                       cmd_meminfo },
     { "mem",      "System",           "memory usage (alias)",               cmd_mem },
     { "diskinfo", "System",           "disk/storage status",                cmd_diskinfo },
+    { "usb",      "System",           "USB storage: list, mount, umount",   cmd_usb },
     { "sync",     "System",           "commit the filesystem to disk",      cmd_sync },
     { "fsck",     "System",           "check the filesystem ([-r] repair)",  cmd_fsck },
     { "poweroff", "System",           "sync, then power off (ACPI S5)",     cmd_poweroff },

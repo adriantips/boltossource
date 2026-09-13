@@ -95,7 +95,7 @@ class BoltVM:
                  memory="2G", smp=2, extra=None, port=None, workdir=None,
                  boot_img=None, data_disks=None, no_reboot=False, nic="e1000",
                  hostfwd=None, audio="ac97", wav=None, ipv6=False,
-                 netdev=None, mac=None):
+                 netdev=None, mac=None, usb=None):
         self.name = name
         self.uefi = uefi
         self.workdir = workdir or os.path.join(ROOT, "test", "out")
@@ -139,6 +139,22 @@ class BoltVM:
             p = fname if os.path.isabs(fname) else os.path.join(ROOT, "iso", fname)
             if os.path.exists(p):
                 a += ["-drive", _drive(tag, p, snapshot), "-device", dev]
+
+        # `usb` attaches an xHCI controller and whatever should hang off it.
+        # Nothing here had one before, so the USB stack shipped untested against
+        # an emulator that can model it perfectly well. Pass a list of device
+        # strings; "disk:PATH" is expanded into a drive plus a usb-storage, and
+        # anything else is handed to -device as written (usb-kbd, usb-mouse).
+        if usb:
+            a += ["-device", "qemu-xhci,id=xhci"]
+            for n, spec in enumerate(usb):
+                if spec.startswith("disk:"):
+                    path = spec[5:]
+                    tag = "usbdisk%d" % n
+                    a += ["-drive", _drive(tag, path, snapshot),
+                          "-device", "usb-storage,bus=xhci.0,drive=%s" % tag]
+                else:
+                    a += ["-device", "%s,bus=xhci.0" % spec]
 
         # `wav` points QEMU's audio backend at a file instead of a null sink, so
         # a test can assert on the samples that actually left the guest rather

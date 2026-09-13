@@ -379,9 +379,19 @@ void kmain(struct bootinfo *bi) {
      * on the disk BoltFS has already attached. */
     for (int i = 0; i < blk_count(); i++) {
         blkdev_t *d = blk_get(i);
-        if (d->is_boot || d == fs_persist_disk() ||
-            d->name[0] != 's' || d->name[1] != 'd') continue;
+        if (d->is_boot || d == fs_persist_disk()) continue;
+        int sd  = d->name[0] == 's' && d->name[1] == 'd';
+        int usb = d->name[0] == 'u' && d->name[1] == 's' && d->name[2] == 'b';
+        if (!sd && !usb) continue;
         if (fat32_mount(d) != 0) {
+            /* A USB stick that will not mount is somebody's disk with
+             * something on it we do not read -- exFAT, NTFS, an APFS
+             * container, a partition table we skipped. Formatting it because
+             * we could not read it is the worst thing an operating system can
+             * do to a person, and `blk_is_blank_scratch` reading it as empty
+             * would not make it any less their disk. `usb mount` reads one,
+             * and `usb format NAME --yes` is how you say you meant it. */
+            if (usb) continue;
             if (!boot_is_recovery() && blk_is_blank_scratch(d) &&
                 fat32_format(d, "BOLTFAT") == 0) {
                 const char *welcome =
