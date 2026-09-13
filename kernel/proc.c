@@ -156,11 +156,24 @@ int proc_exec_vec(const char *path, int argc, const char **argv) {
     p->fds[1] = vfs_open("/dev/console", O_WRONLY);
     p->fds[2] = vfs_open("/dev/console", O_WRONLY);
 
-    if (!p->fds[0] || !p->fds[1] || !p->fds[2] ||
-        sched_add_user(entry, ustack, cr3, p, p->name) < 0) {
+    if (!p->fds[0] || !p->fds[1] || !p->fds[2]) {
         proc_release(p); kfree(p); vmm_free_address_space(cr3); return -1;
     }
+
+    /* Before it is runnable, not after. sched_add_user() can have the process
+     * picked up by another CPU and writing to the console before this line
+     * finishes, and kprintf has no lock -- so the banner and the program's own
+     * first output interleave character by character:
+     *
+     *   [esum=55 fact=720 ... band=8xec] /n/p pid=2 entry=0x401000
+     *
+     * which reads as a miscompiled program rather than as a race in the order
+     * of two statements. Cost two runs of t_ccnative to believe. */
     kprintf("[exec] %s pid=%d entry=0x%lx brk=0x%lx\n", path, p->pid, entry, brk_end);
+
+    if (sched_add_user(entry, ustack, cr3, p, p->name) < 0) {
+        proc_release(p); kfree(p); vmm_free_address_space(cr3); return -1;
+    }
     return p->pid;
 }
 

@@ -200,7 +200,10 @@ clean:
 
 
 def write_file(vm, path, body):
-    lines = body.strip("\n").split("\n")
+    """One line at a time through `write`, quotes escaped -- the line is handed
+    to the shell inside double quotes, so an unescaped one in the source is
+    eaten by the tokenizer."""
+    lines = [l.replace('"', '\\"') for l in body.strip("\n").split("\n")]
     vm.run('write %s "%s"' % (path, lines[0]))
     for l in lines[1:]:
         vm.run('write -a %s "%s"' % (path, l))
