@@ -326,6 +326,18 @@ static const manpage_t MAN[] = {
   "away from every program. F-keys need no modifier. Two actions cannot share\n"
   "a chord -- unbind one with `keys ACTION none` first. Changes are written to\n"
   "/etc/keys.conf and reloaded at boot." },
+{ "mixer", "mixer | mixer CHANNEL PERCENT | mixer CHANNEL mute|unmute|toggle",
+  "The volume mixer. Channels are master, media, system, app and capture:\n"
+  "master scales the four below it, media is anything playing a file, system\n"
+  "is chimes and `play`, app is games and ring-3 programs, and capture is the\n"
+  "microphone's input gain (which master does not touch).\n"
+  "Mute remembers the level, which is the difference between this and setting\n"
+  "a channel to 0 -- unmute puts you back where you were.\n"
+  "One honest limit: this machine plays one stream at a time, so a channel's\n"
+  "level is applied as the codec's gain while that channel owns the device.\n"
+  "The knobs do what you expect; two of them at once is not something the\n"
+  "audio path can do. Levels live in /etc/mixer.conf and are loaded at boot.\n"
+  "The Mixer window is the same model with faders and meters." },
 { "logs", "logs [-n LINES] | logs -a | logs save | logs clear",
   "The kernel log that outlives the boot it was written in. `dmesg` shows this\n"
   "boot's ring, which is in RAM; this shows /var/log/kernel.log, which is\n"

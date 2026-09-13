@@ -13,6 +13,7 @@
 #include "smp.h"
 #include "hpet.h"
 #include "audio.h"
+#include "mixer.h"
 #include "wav.h"
 #include "kheap.h"
 #include "dhcp.h"
@@ -163,7 +164,7 @@ static int play_file(const char *path) {
     for (;;) {
         uint32_t got = wav_read(&w, pcm, chunk);
         if (!got) break;
-        audio_play_pcm(pcm, got);
+        audio_play_pcm_ch(MIX_MEDIA, pcm, got);
     }
     uint64_t us = (hpet_present() ? hpet_us() : pit_ticks() * 1000) - t0;
     kprintf("play: %lu ms elapsed on %s\n", us / 1000, audio_name());

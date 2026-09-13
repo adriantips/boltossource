@@ -306,7 +306,16 @@ which of these it is rather than failing quietly.
         mixers and selectors, and gain on that route as the volume knob.
         Both drivers now sit behind one interface, and a controller with
         no codec on its link is declined rather than claimed and silent
-- [ ] 86. Volume mixer
+- [x] 86. Volume mixer: named channels (master, media, system, app, capture)
+        with a level and a real mute each -- one that remembers where you had
+        it, instead of the `set_volume(vol ? 0 : 80)` that was written out
+        four times and lost your level every round trip. Kept in
+        /etc/mixer.conf. The window is five faders with meters measured from
+        the PCM on its way past; `mixer` is the same model from a prompt.
+        Stated rather than hidden: one DMA engine means one stream at a time,
+        so a channel's level is the codec's gain while that channel owns the
+        device -- not a software sum of simultaneous streams, which this audio
+        path cannot do
 - [ ] 87. Microphone capture path
 - [x] 88. WAV playback: a RIFF/WAVE decoder that is also the converter --
         resampling, mono to stereo and 8-bit unsigned to signed, decoded
