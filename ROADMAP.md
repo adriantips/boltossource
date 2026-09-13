@@ -366,7 +366,28 @@ which of these it is rather than failing quietly.
         provides -- include/backlight.h is the seam one arrives through, in the
         same shape as the Wi-Fi radio's
 - [ ] 93. Suspend (S3) and resume
-- [ ] 94. USB mass storage, so USB drives appear in File Explorer
+- [x] 94. USB mass storage: bulk-only transport carrying SCSI, registered as
+        a blkdev_t like any other disk, so diskinfo lists it and the
+        filesystems, the installer and fsck reach it without knowing what a
+        TRB is. include/usb.h is the seam -- xhci.c knows rings and doorbells,
+        usbstor.c knows command blocks, and a configured pair of bulk
+        endpoints is all that passes between them.
+        Three things that bite: a device that dislikes a command HALTS the
+        pipe rather than answering, and the halt has to be cleared on the
+        controller and the device both before anything works again; READ
+        CAPACITY(10) reports the LAST block rather than the count, and the
+        off-by-one hides the final sector of every USB disk; and a stick is
+        often not ready for a second after it appears, so asking once reports
+        half the drives in the world as empty.
+        A second consumer of the event ring also forced a real fix underneath:
+        transfer events are matched to the ring that owns them now, where
+        before any transfer event re-armed every HID endpoint.
+        Never formats a disk it cannot read -- `usb format NAME --yes` is how
+        you say you meant it. `usb mount` switches volumes, because fat32.c
+        holds one at a time. No hot-plug yet: enumeration is at boot.
+        t_usbstor.py writes a file from the shell and reads the image back on
+        the *host* with an independent FAT reader, which is the only way to
+        tell a driver that reaches the device from one that writes to a buffer
 - [ ] 95. Additional keyboard layouts
 
 ## Phase 7 — Observability, testing, docs

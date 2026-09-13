@@ -338,6 +338,21 @@ static const manpage_t MAN[] = {
   "The knobs do what you expect; two of them at once is not something the\n"
   "audio path can do. Levels live in /etc/mixer.conf and are loaded at boot.\n"
   "The Mixer window is the same model with faders and meters." },
+{ "usb", "usb | usb mount [NAME] | usb umount | usb format NAME --yes [LABEL]",
+  "USB storage: what is attached, how big it is, and which volume is mounted.\n"
+  "A stick is enumerated at boot, appears in the block layer as usb0, usb1 and\n"
+  "so on, and `diskinfo` lists it alongside the ATA, AHCI and NVMe disks.\n"
+  "There is no hot-plug: a stick put in after boot is not noticed yet.\n"
+  "`usb mount` exists because the FAT32 driver holds one volume at a time, so\n"
+  "a machine with a FAT partition inside and a stick in the front can only\n"
+  "reach one of them, and which one was decided by driver probe order. This\n"
+  "flushes whatever is mounted and switches.\n"
+  "A stick that will not mount is never formatted at boot -- that is somebody's\n"
+  "disk. `usb format NAME --yes` is how you say you meant it, and the --yes has\n"
+  "to be spelled out because there is no undo. It refuses anything that is not\n"
+  "removable; a fixed disk is the installer's business.\n"
+  "An ext2 stick is mounted read-only at boot by the ext2 driver and read with\n"
+  "`ext2`." },
 { "mic", "mic | mic test [SECONDS] | mic rec FILE [SECONDS] | mic gain PERCENT",
   "The input side of the sound card. With no argument, names the jack the\n"
   "codec routed to (Mic, Line in) and whether the ring is open.\n"

@@ -743,6 +743,66 @@ audio arriving at the sound card over the whole run is far more than the system
 sounds hold, at both of their pitches — so it was fed continuously, by something
 other than the shell, across the end of a track.
 
+## USB mass storage
+
+A USB stick is a SCSI disk behind two bulk endpoints, and `drivers/usbstor.c`
+speaks the transport that connects them: **bulk-only transport**, which is three
+transfers and no state — a 31-byte command wrapper out, the data, a 13-byte
+status wrapper back. On top of that sits as much SCSI as a block device needs:
+INQUIRY, TEST UNIT READY, READ CAPACITY(10), READ(10) and WRITE(10). The result
+registers as a `blkdev_t` like any other disk, so `diskinfo` lists it beside the
+ATA, AHCI and NVMe devices and everything above the block layer reaches it
+without knowing what a TRB is.
+
+The parts that are not obvious, and that a driver reads one sector and then
+declares the disk gone without:
+
+- **A device that dislikes a command does not answer it — it halts the pipe.**
+  Every transfer after that fails until the halt is cleared on *both* the
+  controller (Reset Endpoint, then Set TR Dequeue) and the device
+  (CLEAR_FEATURE). So a failed data stage clears the halt and still goes on to
+  read the status, because the status is what says why.
+- **READ CAPACITY(10) reports the last addressable block, not the count.** Off
+  by one and the final sector of every USB disk is unreachable, which surfaces
+  months later as a filesystem that breaks when it is nearly full.
+- **A freshly attached device is often not ready for a second or so.** The spec's
+  answer is to ask repeatedly; a driver that asks once reports half the drives in
+  the world as empty.
+
+`include/usb.h` is the seam: `drivers/xhci.c` knows about rings and doorbells,
+`drivers/usbstor.c` knows about command blocks and logical blocks, and the whole
+of what passes between them is a configured pair of bulk endpoints. Same shape
+as the Wi-Fi radio's seam and for the same reason — the day somebody writes an
+EHCI driver for a machine too old to have xHCI, nothing above the line changes.
+Adding a second consumer of the event ring also forced a real fix underneath:
+transfer events are now matched to the ring that owns them, where before *any*
+transfer event re-armed *every* HID endpoint, which worked exactly as long as
+nothing but HID used a transfer ring.
+
+**A stick this OS cannot read is never formatted.** The boot-time FAT32 mount
+will initialise a blank scratch disk of its own; it will not touch a USB device,
+because an unreadable filesystem is far more likely to be exFAT or NTFS or a
+partition table we skipped than an empty disk, and erasing somebody's stick
+because we could not read it is the worst thing an operating system can do to a
+person. `usb format NAME --yes` is how you say you meant it, with the `--yes`
+spelled out — a y/n prompt is a command that hangs over SSH or in a script.
+
+`usb` also exists because of a limit worth naming: `fs/fat32.c` holds **one
+volume at a time**, so a machine with a FAT partition inside and a stick in the
+front can only reach one of them, and which one was decided by driver probe
+order. `usb mount` flushes what is mounted and switches. A real multi-volume VFS
+mount table is the right answer and a bigger job than a USB driver.
+
+There is no hot-plug: devices are enumerated at boot, and a stick put in
+afterwards is not noticed yet.
+
+`test/t_usbstor.py` formats a stick, writes a file to it from the shell, shuts
+QEMU down, and then reads the image back **here**, with a Python FAT reader that
+shares no code with the guest. Anything less — reading the file back through the
+same driver that wrote it — passes just as happily when the driver is writing to
+a buffer that never reaches the device. It also puts garbage on a second stick
+and checks that booting leaves it byte-for-byte unchanged.
+
 ## Web browser & network stack
 
 The windowed **Browser** is no longer an HTML flattener — it is a small but real
@@ -2415,6 +2475,7 @@ The interactive OS shell supports a wide range of commands:
 - Shell: `sh`, `source`, `.`, `test`, `[`, `true`, `false`, `set`, `unset`; variables, conditions, loops and functions (see [SHELL.md](SHELL.md))
 - SDK & help: `run` (ELF64 programs with arguments and exit status), `man` (pages/search/coverage), `help [COMMAND]`
 - Audio: `play` (a tone, or a WAV file streamed and converted as it goes), `media` (the player's transport: `open`, `play`/`pause`, `next`/`prev`, `track`, `seek`, `vol`, `repeat`, `list`), `mixer` (per-channel levels and real mutes, kept in `/etc/mixer.conf`), `mic` (the input: status, `test`, `rec FILE`, `gain`)
+- Storage: `diskinfo` (controllers, block devices, what is mounted), `usb` (USB storage: list, `mount`, `umount`, `format NAME --yes`)
 - Desktop: `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window), `snap` (tile the focused window to a half, a quarter or full screen), `display` (panel size, desktop size, display scaling, video mode), `rec` (record the screen to an animated PNG), `power status` (power source, firmware profile and brightness), `keys` (list/rebind/reset global shortcuts), `logs` (the kernel log kept across reboots)
 - Core: `echo`, `clear`, `mem`
 
@@ -2437,6 +2498,7 @@ The interactive OS shell supports a wide range of commands:
 +-- doom/                  Full doomgeneric port (~150 files, includes libc shim)
 +-- drivers/
 |   +-- ac97.c     hda.c     audio.c   ahci.c    ata.c     e1000.c   virtio_net.c
+|   +-- usbstor.c  USB mass storage: bulk-only transport + SCSI over xhci.c
 |   +-- framebuffer.c  gpu.c  keyboard.c  mouse.c
 |   +-- nvme.c     pcspk.c   xhci.c
 +-- fs/

@@ -6,6 +6,7 @@
 #include "string.h"
 #include "kprintf.h"
 #include "xhci.h"
+#include "usb.h"
 #include "keyboard.h"
 #include "mouse.h"
 #include "interrupts.h"
@@ -81,11 +82,14 @@
 #define TRB_ENABLE_SLOT 9
 #define TRB_ADDRESS_DEV 11
 #define TRB_CONFIG_EP   12
+#define TRB_RESET_EP    14
+#define TRB_SET_TR_DEQ  16
 #define TRB_TR_EVENT    32
 #define TRB_CMD_EVENT   33
 #define TRB_PORTSC_EVENT 34
 
 #define CC_SUCCESS      1
+#define CC_STALL        6
 #define CC_SHORT_PACKET 13
 
 #define RING_SZ   16     /* TRBs per ring (incl. link)            */
@@ -105,7 +109,7 @@ struct usbdev {
     int      used;
     uint8_t  slot, port, speed;
     uint16_t vendor, product;
-    uint8_t  dev_class, if_class, if_proto;
+    uint8_t  dev_class, if_class, if_sub, if_proto;
 };
 
 #define MAX_DEV 8
@@ -287,6 +291,7 @@ static int port_reset(uint32_t p) {
 }
 
 static void hid_setup(struct usbdev *d, struct ring *ep0, const uint8_t *cfg, uint16_t total);
+static void bulk_setup(struct usbdev *d, struct ring *ep0, const uint8_t *cfg, uint16_t total);
 
 /* Build the input context for Address Device and enumerate one device. */
 static void enumerate_port(uint32_t p) {
@@ -362,7 +367,12 @@ static void enumerate_port(uint32_t p) {
             while (i + 1 < total) {
                 uint8_t blen = cfg[i], btype = cfg[i + 1];
                 if (blen == 0) break;
-                if (btype == 4 && i + 7 < total) { d->if_class = cfg[i + 5]; d->if_proto = cfg[i + 7]; break; }
+                if (btype == 4 && i + 7 < total) {
+                    d->if_class = cfg[i + 5];
+                    d->if_sub   = cfg[i + 6];
+                    d->if_proto = cfg[i + 7];
+                    break;
+                }
                 i += blen;
             }
         }
@@ -381,6 +391,14 @@ static void enumerate_port(uint32_t p) {
     /* boot-protocol keyboard (proto 1) or mouse (proto 2): drive it */
     if (kc == 3 && (d->if_proto == 1 || d->if_proto == 2))
         hid_setup(d, tr, cfg, (uint16_t)sizeof cfg);
+    /* SCSI transparent command set (6) over bulk-only transport (0x50) is what
+     * every USB stick made in the last twenty years is. Anything else calling
+     * itself class 8 is left alone rather than guessed at. */
+    else if (kc == 8 && d->if_sub == 6 && d->if_proto == 0x50)
+        bulk_setup(d, tr, cfg, (uint16_t)sizeof cfg);
+    else if (kc == 8)
+        kprintf("[xhci] slot %u: mass storage subclass %x proto %x is not "
+                "bulk-only SCSI; left alone\n", d->slot, d->if_sub, d->if_proto);
 }
 
 /* ===========================================================================
@@ -498,30 +516,75 @@ static void hid_setup(struct usbdev *d, struct ring *ep0, const uint8_t *cfg, ui
             d->if_proto == 2 ? "mouse" : "keyboard", d->slot, dci);
 }
 
-/* Non-blocking peek of the event ring; returns 1 and fills *type / *ptr if an
- * event is pending, else 0. Used by the HID poll so it never spins. */
-static int evt_try(uint32_t *type, uint64_t *ptr) {
+/* Non-blocking peek of the event ring; returns 1 and fills the out-params if
+ * an event is pending, else 0. `resid` is the TRB Transfer Length field, which
+ * on a completion means the bytes that did NOT move -- the thing you need to
+ * know how much of a short read actually arrived. */
+static int evt_try(uint32_t *type, uint32_t *cc, uint32_t *resid, uint64_t *ptr) {
     volatile uint32_t *e = xh.evt.trb + xh.evt_deq * 4;
     uint32_t d3 = e[3];
     if ((d3 & 1u) != xh.evt_cycle) return 0;
-    if (type) *type = (d3 >> 10) & 0x3F;
-    if (ptr)  *ptr  = (uint64_t)e[0] | ((uint64_t)e[1] << 32);
+    if (type)  *type  = (d3 >> 10) & 0x3F;
+    if (cc)    *cc    = (e[2] >> 24) & 0xFF;
+    if (resid) *resid = e[2] & 0x00FFFFFFu;
+    if (ptr)   *ptr   = (uint64_t)e[0] | ((uint64_t)e[1] << 32);
     xh.evt_deq++;
     if (xh.evt_deq == RING_SZ) { xh.evt_deq = 0; xh.evt_cycle ^= 1; }
     rt_wr64(IR0_ERDP, (xh.evt.phys + xh.evt_deq * 16) | (1u << 3));
     return 1;
 }
 
+/* Does this event point at a TRB inside this ring? Every consumer of the event
+ * ring is identified this way now. It used to be that HID was the only one, so
+ * any transfer event re-armed every HID endpoint there was -- which worked
+ * exactly as long as nothing else used a transfer ring, and stopped working
+ * the moment a USB disk did. */
+static int ring_owns(const struct ring *r, uint64_t ptr) {
+    return ptr >= r->phys && ptr < r->phys + (uint64_t)RING_SZ * 16;
+}
+
+/* --- bulk pipes -----------------------------------------------------------
+ *  What a mass-storage class driver gets: two endpoints and a way to push
+ *  bytes through them. See include/usb.h for why this is a seam at all.
+ * ------------------------------------------------------------------------*/
+#define BULK_BOUNCE  (64u * 1024)     /* one transfer's worth of DMA-able memory */
+
+struct bulkpipe {
+    int      used;
+    uint8_t  slot, dci_in, dci_out;
+    struct ring in, out;
+    struct ring *ep0;                 /* for the class control requests       */
+    struct dma_buf bounce;
+    /* filled in by the drain when one of this pipe's TRBs completes */
+    volatile int      done;
+    volatile uint32_t cc, resid;
+};
+static struct bulkpipe bulk[MAX_DEV];
+static int nbulk;
+
+/* 1 if the event belonged to a bulk pipe (and has been recorded). */
+static int bulk_complete(uint64_t ptr, uint32_t cc, uint32_t resid) {
+    for (int i = 0; i < nbulk; i++) {
+        struct bulkpipe *b = &bulk[i];
+        if (!b->used) continue;
+        if (!ring_owns(&b->in, ptr) && !ring_owns(&b->out, ptr)) continue;
+        b->cc = cc; b->resid = resid; b->done = 1;
+        return 1;
+    }
+    return 0;
+}
+
 /* Drain every pending event-ring entry: decode HID boot reports, inject keys /
  * mouse deltas, and re-arm each interrupt transfer. Shared by the IRQ handler
  * (xhci_irq) and the polled fallback (xhci_poll). */
 static void xhci_drain(void) {
-    uint32_t type; uint64_t ptr;
-    while (evt_try(&type, &ptr)) {
+    uint32_t type, cc, resid; uint64_t ptr;
+    while (evt_try(&type, &cc, &resid, &ptr)) {
         if (type != TRB_TR_EVENT) continue;
+        if (bulk_complete(ptr, cc, resid)) continue;
         for (int k = 0; k < nhid; k++) {
             struct hidkbd *h = &hidk[k];
-            if (!h->used) continue;
+            if (!h->used || !ring_owns(&h->tr, ptr)) continue;
             uint8_t *r = (uint8_t *)h->rpt.virt;
             if (h->proto == 2) {                   /* boot mouse: btn, dx, dy, wheel */
                 int dx = (int)(int8_t)r[1], dy = (int)(int8_t)r[2];
@@ -566,6 +629,189 @@ static void xhci_irq(struct registers *r) {
 void xhci_poll(void) {
     if (!xh.present || nhid == 0 || xh.irq_ok) return;
     xhci_drain();
+}
+
+/* ===========================================================================
+ *  Bulk transfers, for the mass-storage class driver.
+ *
+ *  These are synchronous, and they have to share the event ring with an
+ *  interrupt handler that is also draining it. The arrangement is: mask
+ *  interrupter 0 for the duration, drain the ring ourselves in the wait loop,
+ *  then put the mask back. Nothing is lost -- HID events that arrive while we
+ *  hold the ring are processed by our own drain, keystrokes included, so the
+ *  keyboard keeps working through a disk read.
+ *
+ *  The one gap, stated because it is real: an MSI already in flight when we
+ *  mask can still deliver, and then the handler and this loop are both in
+ *  xhci_drain(). The window is a few instructions wide and the consequence is
+ *  one event consumed by the wrong one of two functions that both know how to
+ *  handle it. Closing it properly wants a lock around the event ring, which is
+ *  worth doing the day anything else here runs concurrently.
+ * ===========================================================================*/
+
+static void bulk_irq_mask(int off) {
+    if (!xh.irq_ok) return;
+    rt_wr(IR0_IMAN, off ? 0x0 : 0x2);
+}
+
+/* Wait for a TRB on this pipe to complete. Returns the completion code, or -1
+ * if nothing came back at all -- which is a wedged controller, not a failed
+ * command, and the caller should say so differently. */
+static int bulk_wait(struct bulkpipe *b) {
+    for (uint64_t t = 0; t < POLL_MAX; t++) {
+        xhci_drain();
+        if (b->done) return (int)b->cc;
+        __asm__ volatile("pause");
+    }
+    return -1;
+}
+
+/* Recover a halted endpoint: Reset Endpoint, then point its transfer ring at a
+ * known-good TRB, then tell the device to clear its own halt. All three, in
+ * that order -- the controller and the device each hold half of the stall, and
+ * clearing one without the other leaves the pipe dead in a way that looks like
+ * a broken cable. */
+static int bulk_unstall(struct bulkpipe *b, int dir_in) {
+    struct ring *r = dir_in ? &b->in : &b->out;
+    uint8_t dci = dir_in ? b->dci_in : b->dci_out;
+
+    cmd_exec(0, 0, 0, (TRB_RESET_EP << 10) | ((uint32_t)dci << 16) |
+                      ((uint32_t)b->slot << 24), NULL);
+    /* Restart the ring from the top with a fresh cycle bit; anything queued on
+     * it died with the stall. */
+    r->enq = 0; r->cycle = 1;
+    volatile uint32_t *l = r->trb + (RING_SZ - 1) * 4;
+    l[3] = (TRB_LINK << 10) | (1u << 1);
+    cmd_exec((uint32_t)(r->phys | 1u), (uint32_t)(r->phys >> 32), 0,
+             (TRB_SET_TR_DEQ << 10) | ((uint32_t)dci << 16) |
+             ((uint32_t)b->slot << 24), NULL);
+
+    /* CLEAR_FEATURE(ENDPOINT_HALT) on the endpoint address, not the DCI. */
+    uint8_t epaddr = (uint8_t)((dci / 2) | (dir_in ? 0x80 : 0x00));
+    return control_xfer(b->ep0, b->slot, 0x02, 1, 0, epaddr, NULL, 0);
+}
+
+int usb_bulk_clear_halt(usb_bulk_t *p, int dir_in) {
+    struct bulkpipe *b = (struct bulkpipe *)p->hc;
+    if (!b || !b->used) return -1;
+    bulk_irq_mask(1);
+    int rc = bulk_unstall(b, dir_in);
+    bulk_irq_mask(0);
+    return rc;
+}
+
+int usb_bulk_xfer(usb_bulk_t *p, int dir_in, void *buf, uint32_t len) {
+    struct bulkpipe *b = (struct bulkpipe *)p->hc;
+    if (!b || !b->used || len > BULK_BOUNCE) return -1;
+
+    struct ring *r = dir_in ? &b->in : &b->out;
+    if (!dir_in && len) memcpy(b->bounce.virt, buf, len);
+
+    bulk_irq_mask(1);
+    b->done = 0; b->cc = 0; b->resid = 0;
+    ring_push(r, (uint32_t)b->bounce.phys, (uint32_t)(b->bounce.phys >> 32),
+              len, (TRB_NORMAL << 10) | (1u << 5));      /* IOC */
+    __asm__ volatile("" ::: "memory");
+    xh.db[b->slot] = dir_in ? b->dci_in : b->dci_out;
+
+    int cc = bulk_wait(b);
+    uint32_t moved = (b->resid <= len) ? len - b->resid : 0;
+    bulk_irq_mask(0);
+
+    if (cc == CC_STALL) { usb_bulk_clear_halt(p, dir_in); return -1; }
+    if (cc != CC_SUCCESS && cc != CC_SHORT_PACKET) return -1;
+    if (dir_in && moved) memcpy(buf, b->bounce.virt, moved);
+    return (int)moved;
+}
+
+int usb_control(usb_bulk_t *p, uint8_t bmReqType, uint8_t bReq,
+                uint16_t wValue, uint16_t wIndex, void *buf, uint16_t len) {
+    struct bulkpipe *b = (struct bulkpipe *)p->hc;
+    if (!b || !b->used) return -1;
+    bulk_irq_mask(1);
+    int rc = control_xfer(b->ep0, b->slot, bmReqType, bReq, wValue, wIndex, buf, len);
+    bulk_irq_mask(0);
+    return rc;
+}
+
+/* Configure a bulk-only mass-storage interface's two endpoints and hand the
+ * pipe to the class driver. Called during enumeration, interrupts still off. */
+static void bulk_setup(struct usbdev *d, struct ring *ep0,
+                       const uint8_t *cfg, uint16_t total) {
+    if (nbulk >= MAX_DEV) return;
+
+    uint8_t iface = 0, in_addr = 0, out_addr = 0;
+    uint16_t in_mps = 512, out_mps = 512;
+    for (uint32_t i = 0; i + 1 < total; ) {
+        uint8_t blen = cfg[i], btype = cfg[i + 1];
+        if (blen == 0) break;
+        if (btype == 4) iface = cfg[i + 2];
+        else if (btype == 5 && i + 5 < total) {
+            uint8_t addr = cfg[i + 2], attr = cfg[i + 3];
+            uint16_t mps = (uint16_t)cfg[i + 4] | ((uint16_t)cfg[i + 5] << 8);
+            if ((attr & 3) == 2) {                       /* bulk */
+                if (addr & 0x80) { in_addr = addr;  in_mps = mps; }
+                else             { out_addr = addr; out_mps = mps; }
+            }
+        }
+        i += blen;
+    }
+    if (!in_addr || !out_addr) {
+        kprintf("[xhci] slot %u: mass storage with no bulk pair\n", d->slot);
+        return;
+    }
+
+    struct bulkpipe *b = &bulk[nbulk];
+    uint8_t dci_in  = (uint8_t)((in_addr  & 0x0F) * 2 + 1);
+    uint8_t dci_out = (uint8_t)((out_addr & 0x0F) * 2);
+    uint8_t maxdci  = dci_in > dci_out ? dci_in : dci_out;
+
+    if (control_xfer(ep0, d->slot, 0x00, 9, cfg[5], 0, NULL, 0) != 0) return;
+    if (ring_init(&b->in) != 0) return;
+    if (ring_init(&b->out) != 0) return;
+    if (dma_alloc(BULK_BOUNCE, &b->bounce) != 0) return;
+
+    struct dma_buf inctx;
+    if (dma_alloc(ctxsz() * (maxdci + 2), &inctx) != 0) return;
+    memset(inctx.virt, 0, ctxsz() * (maxdci + 2));
+    volatile uint32_t *icc  = (volatile uint32_t *)inctx.virt;
+    volatile uint32_t *sctx = (volatile uint32_t *)((uint8_t *)inctx.virt + ctxsz());
+    volatile uint32_t *epi  = (volatile uint32_t *)((uint8_t *)inctx.virt + ctxsz() * (dci_in + 1));
+    volatile uint32_t *epo  = (volatile uint32_t *)((uint8_t *)inctx.virt + ctxsz() * (dci_out + 1));
+
+    icc[1] = 1u | (1u << dci_in) | (1u << dci_out);
+    sctx[0] = ((uint32_t)d->speed << 20) | ((uint32_t)maxdci << 27);
+    sctx[1] = ((uint32_t)d->port) << 16;
+
+    /* EP Type in the endpoint context: the spec numbers Bulk OUT 2 and Bulk IN
+     * 6, which are not adjacent and are easy to transpose. CErr=3 both ways. */
+    epi[1] = (6u << 3) | (3u << 1) | ((uint32_t)in_mps << 16);
+    epi[2] = (uint32_t)(b->in.phys) | 1u;
+    epi[3] = (uint32_t)(b->in.phys >> 32);
+    epi[4] = in_mps;
+    epo[1] = (2u << 3) | (3u << 1) | ((uint32_t)out_mps << 16);
+    epo[2] = (uint32_t)(b->out.phys) | 1u;
+    epo[3] = (uint32_t)(b->out.phys >> 32);
+    epo[4] = out_mps;
+
+    int cc = cmd_exec((uint32_t)inctx.phys, (uint32_t)(inctx.phys >> 32), 0,
+                      (TRB_CONFIG_EP << 10) | ((uint32_t)d->slot << 24), NULL);
+    dma_free(&inctx);
+    if (cc != CC_SUCCESS) {
+        kprintf("[xhci] slot %u: configure endpoint failed (cc=%d)\n", d->slot, cc);
+        return;
+    }
+
+    b->used = 1; b->slot = d->slot; b->dci_in = dci_in; b->dci_out = dci_out;
+    b->ep0 = ep0;
+    nbulk++;
+
+    usb_bulk_t p;
+    memset(&p, 0, sizeof p);
+    p.hc = b; p.vendor = d->vendor; p.product = d->product; p.iface = iface;
+    p.port[0] = 'u'; p.port[1] = 's'; p.port[2] = 'b';
+    p.port[3] = (char)('0' + (d->port % 10)); p.port[4] = 0;
+    usbstor_attach(&p);
 }
 
 void xhci_init(void) {
