@@ -352,20 +352,47 @@ uint8_t *ld_link(const ld_input_t *in, int nin, const char *entry,
         if (any_unresolved(l, &missing)) { lfail(l, "undefined reference to", missing); goto done; }
     }
 
-    /* 3. lay the allocatable sections out end to end, .text then .data. */
-    uint32_t tsize = 0, dsize = 0;
+    /* 3. lay the allocatable sections out end to end, .text then .data.
+     *
+     * Data goes in two rounds: everything with contents first, then every
+     * SHT_NOBITS (.bss) after it. That ordering is what lets the data segment
+     * declare a p_memsz larger than its p_filesz, so a megabyte of .bss costs a
+     * megabyte of address space and nothing at all in the file. Interleaving
+     * them would force every zero byte to be written out, which is what the
+     * first version of this did. */
+    uint32_t tsize = 0, dsize = 0, dfile = 0;
     for (int i = 0; i < l->nunit; i++) {
         Unit *u = &l->units[i];
         for (uint16_t s = 0; s < u->nsh; s++) {
-            if (u->cls[s] == CLS_NONE) continue;
+            if (u->cls[s] != CLS_TEXT) continue;
             uint32_t a = (uint32_t)(u->sh[s].sh_addralign ? u->sh[s].sh_addralign : 1);
             if (a > PAGE) a = PAGE;
-            uint32_t sz = (uint32_t)u->sh[s].sh_size;
-            if (u->cls[s] == CLS_TEXT) { tsize = align_up(tsize, a); u->off[s] = tsize; tsize += sz; }
-            else                       { dsize = align_up(dsize, a); u->off[s] = dsize; dsize += sz; }
-            if (tsize > MAX_IMAGE || dsize > MAX_IMAGE) {
+            tsize = align_up(tsize, a);
+            u->off[s] = tsize;
+            tsize += (uint32_t)u->sh[s].sh_size;
+            if (tsize > MAX_IMAGE) {
                 lfail(l, "the linked image is larger than this linker will build", 0);
                 goto done;
+            }
+        }
+    }
+    for (int round = 0; round < 2; round++) {
+        if (round == 1) dfile = dsize;
+        for (int i = 0; i < l->nunit; i++) {
+            Unit *u = &l->units[i];
+            for (uint16_t s = 0; s < u->nsh; s++) {
+                if (u->cls[s] != CLS_DATA) continue;
+                int nobits = (u->sh[s].sh_type == SHT_NOBITS);
+                if (nobits != round) continue;
+                uint32_t a = (uint32_t)(u->sh[s].sh_addralign ? u->sh[s].sh_addralign : 1);
+                if (a > PAGE) a = PAGE;
+                dsize = align_up(dsize, a);
+                u->off[s] = dsize;
+                dsize += (uint32_t)u->sh[s].sh_size;
+                if (dsize > MAX_IMAGE) {
+                    lfail(l, "the linked image is larger than this linker will build", 0);
+                    goto done;
+                }
             }
         }
     }
@@ -535,7 +562,7 @@ uint8_t *ld_link(const ld_input_t *in, int nin, const char *entry,
         const uint32_t shsbytes = sizeof SHSTR;
 
         #define A8(x) (((x) + 7u) & ~7u)
-        uint32_t o_sym = A8(doff + dsize);
+        uint32_t o_sym = A8(doff + dfile);
         uint32_t o_str = o_sym + symbytes;
         uint32_t o_shs = o_str + strbytes;
         uint32_t o_sh  = A8(o_shs + shsbytes);
@@ -562,9 +589,13 @@ uint8_t *ld_link(const ld_input_t *in, int nin, const char *entry,
         h[60] = 6;                                   /* e_shnum     */
         h[62] = 5;                                   /* e_shstrndx  */
 
-        struct { uint32_t type, flags; uint64_t off, va, filesz; } ph[2] = {
-            { PT_LOAD, PF_R | PF_X, 0,    ASM_LOAD_BASE,      TEXT_OFF + tsize },
-            { PT_LOAD, PF_R | PF_W, doff, ASM_LOAD_BASE+doff, dsize },
+        /* The data segment is the only one where memsz and filesz differ: the
+         * .bss sections were laid out after everything with contents, so the
+         * tail of it is address space the loader zeroes rather than bytes the
+         * file carries. */
+        struct { uint32_t type, flags; uint64_t off, va, filesz, memsz; } ph[2] = {
+            { PT_LOAD, PF_R | PF_X, 0,    ASM_LOAD_BASE,      TEXT_OFF + tsize, TEXT_OFF + tsize },
+            { PT_LOAD, PF_R | PF_W, doff, ASM_LOAD_BASE+doff, dfile,            dsize },
         };
         for (int i = 0; i < 2; i++) {
             uint8_t *p = out + 64 + i * 56;
@@ -574,12 +605,12 @@ uint8_t *ld_link(const ld_input_t *in, int nin, const char *entry,
             for (int b = 0; b < 8; b++) p[16 + b] = (uint8_t)(ph[i].va >> (b * 8));
             for (int b = 0; b < 8; b++) p[24 + b] = (uint8_t)(ph[i].va >> (b * 8));
             for (int b = 0; b < 8; b++) p[32 + b] = (uint8_t)(ph[i].filesz >> (b * 8));
-            for (int b = 0; b < 8; b++) p[40 + b] = (uint8_t)(ph[i].filesz >> (b * 8));
+            for (int b = 0; b < 8; b++) p[40 + b] = (uint8_t)(ph[i].memsz >> (b * 8));
             for (int b = 0; b < 8; b++) p[48 + b] = (uint8_t)(((uint64_t)PAGE) >> (b * 8));
         }
 
         if (tsize) memcpy(out + TEXT_OFF, text, tsize);
-        if (dsize) memcpy(out + doff, data, dsize);
+        if (dfile) memcpy(out + doff, data, dfile);
 
         uint32_t so = o_sym + 24, to = o_str + 1;
         for (int i = 0; i < l->nunit; i++) {
@@ -614,7 +645,7 @@ uint8_t *ld_link(const ld_input_t *in, int nin, const char *entry,
                  uint32_t link, info; uint64_t align, ent; } sh[6] = {
             { 0,      0,            0,                         0,         0,        0,        0, 0, 0,  0 },
             { n_text, SHT_PROGBITS, SHF_ALLOC|SHF_EXECINSTR,   text_base, TEXT_OFF, tsize,    0, 0, 16, 0 },
-            { n_data, SHT_PROGBITS, SHF_ALLOC|SHF_WRITE,       data_base, doff,     dsize,    0, 0, 16, 0 },
+            { n_data, SHT_PROGBITS, SHF_ALLOC|SHF_WRITE,       data_base, doff,     dfile,    0, 0, 16, 0 },
             { n_sym,  SHT_SYMTAB,   0,                         0,         o_sym,    symbytes, 4, 1, 8,  24 },
             { n_str,  SHT_STRTAB,   0,                         0,         o_str,    strbytes, 0, 0, 1,  0 },
             { n_shs,  SHT_STRTAB,   0,                         0,         o_shs,    shsbytes, 0, 0, 1,  0 },
@@ -641,7 +672,8 @@ uint8_t *ld_link(const ld_input_t *in, int nin, const char *entry,
                 if (l->units[i].from_archive) stats->from_archives++;
             stats->relocs = nrel;
             stats->text   = tsize;
-            stats->data   = dsize;
+            stats->data   = dfile;
+            stats->bss    = dsize - dfile;
             stats->entry  = ge->value;
         }
     }
