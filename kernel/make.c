@@ -59,6 +59,7 @@ typedef struct {
     char *pre[MK_MAX_PRE]; int npre;
     char *cmd[MK_MAX_CMDS]; int ncmd;
     int   phony, pattern, done;
+    int   share_from;                   /* `a b: dep` -- whose recipe is mine */
 } Rule;
 
 typedef struct {
@@ -405,8 +406,13 @@ static int parse(MK *m, char *text) {
 
         /* Several targets on one line share one recipe, which is how
          * `a.o b.o: common.h` is written. The recipe attaches to the last of
-         * them; the earlier ones get it copied when the rule closes. */
-        int firstrule = m->nrule;
+         * them and the earlier ones are pointed at it, here, while it is still
+         * known that they were on one line. Working it out afterwards from
+         * matching prerequisite lists does not work: `all: prog` followed by
+         * `install: prog` looks identical and is not the same thing, and the
+         * version that guessed gave `all` install's recipe. */
+        int mine[MK_MAX_PRE];
+        int ntarget = 0;
         const char *t = targets;
         while (*t) {
             while (mk_space(*t)) t++;
@@ -429,7 +435,10 @@ static int parse(MK *m, char *text) {
                 if (!r->target) return -1;
                 if (existing) r->phony = existing->phony;
             }
+            r->share_from = -1;
             r->pattern = strchr(r->target, '%') != 0;
+            if (ntarget < MK_MAX_PRE) mine[ntarget] = (int)(r - m->rules);
+            ntarget++;
 
             const char *q = prereqs;
             while (*q && r->npre < MK_MAX_PRE) {
@@ -444,25 +453,18 @@ static int parse(MK *m, char *text) {
                 r->npre++;
             }
             cur = r;
-            (void)firstrule;
         }
+        for (int k = 0; k + 1 < ntarget && k + 1 <= MK_MAX_PRE; k++)
+            m->rules[mine[k]].share_from = mine[ntarget - 1];
     }
 
-    /* `a.o b.o: dep` puts the recipe on the last target only. Give it to the
-     * others -- they were written on one line because they share it. */
+    /* The recipe went to the last target on its line; hand it to the others. */
     for (int i = 0; i < m->nrule; i++) {
-        if (m->rules[i].ncmd || m->rules[i].pattern) continue;
-        for (int j = i + 1; j < m->nrule; j++) {
-            if (!m->rules[j].ncmd || m->rules[j].pattern) continue;
-            if (m->rules[j].npre != m->rules[i].npre) break;
-            int same = m->rules[i].npre > 0;
-            for (int k = 0; k < m->rules[i].npre && same; k++)
-                if (strcmp(m->rules[i].pre[k], m->rules[j].pre[k])) same = 0;
-            if (!same) break;
-            for (int c = 0; c < m->rules[j].ncmd; c++) m->rules[i].cmd[c] = m->rules[j].cmd[c];
-            m->rules[i].ncmd = m->rules[j].ncmd;
-            break;
-        }
+        Rule *r = &m->rules[i];
+        if (r->ncmd || r->share_from < 0 || r->share_from >= m->nrule) continue;
+        Rule *src = &m->rules[r->share_from];
+        for (int c = 0; c < src->ncmd; c++) r->cmd[c] = src->cmd[c];
+        r->ncmd = src->ncmd;
     }
     return 0;
 }
