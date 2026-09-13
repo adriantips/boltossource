@@ -48,3 +48,14 @@ int  boltcc_debug(int lang, const char *src);
  * program uses something the native backend does not implement, which it names.
  */
 int  boltcc_native(int lang, const char *src, char **asm_out);
+
+/* The same, as one translation unit of a larger program rather than as a whole
+ * one: functions and file-scope variables become names the linker can see, a
+ * prototype with no definition here becomes a call into another object, and
+ * the entry point is emitted only by the unit that defines main(). `cc -c`
+ * assembles the result into a relocatable; `ld` makes a program of several.
+ *
+ * A unit with no main() may not give a file-scope variable an initialiser,
+ * because the code that would run it lives in the preamble only that unit has.
+ * It says so rather than leaving the variable quietly zero. */
+int  boltcc_module(int lang, const char *src, char **asm_out);

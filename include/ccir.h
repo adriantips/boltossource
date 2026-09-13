@@ -46,14 +46,17 @@ typedef struct {
     const char *name;
     int nparams;
     int nlocals;        /* every slot the body used, params included */
-    int entry;          /* pc of the function's first instruction    */
+    int entry;          /* pc of the function's first instruction, -1 if extern */
+    int external;       /* declared here, defined in another object   */
 } CCFunc;
 
 typedef struct {
     const Instr  *code;  int ncode;
     const CCFunc *funcs; int nfunc;
     int nglob;
-    int start;           /* pc of the preamble: globals, then main   */
+    const char *const *gnames;   /* one per global, for named symbols */
+    int start;           /* pc of the preamble: globals, then main, or -1 */
+    int module;          /* emitting an object, not a whole program   */
 } CCProgram;
 
 /* Emit NASM-syntax x86-64 for `p`, as a kmalloc'd NUL-terminated string the
