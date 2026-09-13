@@ -264,6 +264,20 @@ static const manpage_t MAN[] = {
   "desktop and opens the result in Photos. It reads the panel back rather than\n"
   "the compositor's buffer, so DOOM, the ring-3 browser and the text console\n"
   "capture correctly too." },
+{ "display", "display | display scale NAME | display res NAME",
+  "The panel, the desktop drawn on it, and the scale between them. With no\n"
+  "argument it prints all three plus the modes and scales available, marking\n"
+  "the current one with a star.\n"
+  "\n"
+  "`display scale 200%' divides the logical desktop by two and lets the\n"
+  "compositor's frame be blown back up to fill the panel, so every window, every\n"
+  "glyph and every app's fixed pixel layout doubles without any app knowing. 100\n"
+  "and 200 land on exact pixel blocks and stay sharp; 125 and 150 do not, since\n"
+  "the upscale picks nearest. `display scale auto' goes by panel width alone --\n"
+  "no monitor reports its physical size, so there is no real DPI to read.\n"
+  "\n"
+  "A scale that would leave a desktop smaller than 640x480 is declined and said\n"
+  "to be declined. `display res 1080p' reprograms the GPU to a real mode." },
 { "snap", "snap [ZONE]",
   "Tile the focused window. ZONE is left, right, top-left, top-right,\n"
   "bottom-left, bottom-right, max or restore; with no argument it prints the\n"

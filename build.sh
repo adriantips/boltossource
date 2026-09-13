@@ -173,7 +173,7 @@ echo "[3/6] kernel C sources"
 SRCS=(
     kernel/cmd_run.c kernel/manpages.c kernel/shline.c kernel/shscript.c
     kernel/notify.c kernel/cmd_notify.c kernel/png_enc.c kernel/screenshot.c kernel/cmd_shot.c
-    kernel/cmd_desk.c kernel/cmd_snap.c kernel/keymap.c kernel/cmd_keys.c kernel/app_software.c kernel/cmd_logs.c kernel/app_logs.c
+    kernel/cmd_desk.c kernel/cmd_snap.c kernel/cmd_display.c kernel/keymap.c kernel/cmd_keys.c kernel/app_software.c kernel/cmd_logs.c kernel/app_logs.c
     kernel/main.c kernel/serial.c kernel/console.c kernel/shell.c kernel/kprintf.c kernel/font8x8.c
     kernel/gdt.c kernel/idt.c kernel/interrupts.c kernel/pic.c kernel/pit.c
     kernel/acpi.c kernel/apic.c kernel/hpet.c kernel/smp.c

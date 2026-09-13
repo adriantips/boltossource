@@ -2111,6 +2111,14 @@ static void snap_apply(window_t *w, int zone) {
     if (zone == SNAP_NONE) {
         w->x = w->rx; w->y = w->ry; w->w = w->rw; w->h = w->rh;
         w->maximized = 0; w->snapped = SNAP_NONE;
+        /* The desktop can have shrunk since that rect was saved -- a scale
+         * change does exactly that -- and a window restored wider than the
+         * screen puts its own close button past the right edge. */
+        if (w->w > W)             w->w = W;
+        if (w->h > H - TASKBAR_H) w->h = H - TASKBAR_H;
+        if (w->x + w->w > W)      w->x = W - w->w;
+        if (w->x < 0)             w->x = 0;
+        if (w->y < 0)             w->y = 0;
         return;
     }
     snap_rect(zone, &w->x, &w->y, &w->w, &w->h);
@@ -2726,7 +2734,20 @@ void gui_apply_display(void) {
         }
         /* on failure the old mode stands; fall through with current PW,PH */
     }
-    W = PW; H = PH;
+    /* Display scaling. The panel keeps its native mode and the *desktop* gets
+     * smaller: at 200% one logical pixel is a 2x2 block of real ones, so the
+     * chrome, the text and every app's fixed pixel layout all double without a
+     * single app being told about it. Scaling the metrics instead would mean
+     * rewriting all 24 apps, and would still be wrong for the ones that draw a
+     * grid rather than a layout.
+     *
+     * A desktop smaller than 640x480 is not a desktop -- the taskbar alone is
+     * 48px of it -- so a scale that would produce one is declined and the
+     * display stays native. */
+    int pct = settings_scale_percent(g_settings.scale_index, PW, PH);
+    int lw2 = PW * 100 / pct, lh2 = PH * 100 / pct;
+    if (pct == 100 || lw2 < 640 || lh2 < 480) { W = PW; H = PH; }
+    else                                      { W = lw2; H = lh2; }
     out_x = 0; out_y = 0; out_w = PW; out_h = PH;
 
     g_clear_clip();                          /* clip now spans the new W,H */
@@ -2740,6 +2761,12 @@ void gui_apply_display(void) {
             if (w->h > H - TASKBAR_H) w->h = H - TASKBAR_H;
             clamp_window(w);
         }
+        /* and the rect it would restore to, or the next un-maximise undoes it */
+        if (w->rw > W)             w->rw = W;
+        if (w->rh > H - TASKBAR_H) w->rh = H - TASKBAR_H;
+        if (w->rx + w->rw > W)     w->rx = W - w->rw;
+        if (w->rx < 0)             w->rx = 0;
+        if (w->ry < 0)             w->ry = 0;
     }
 
     wallpaper_follow_res();      /* re-load the render cut for this panel size */

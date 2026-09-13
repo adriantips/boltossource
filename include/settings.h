@@ -21,6 +21,7 @@ typedef struct {
     int      aspect_index;  /* unused, kept for ABI                      */
     int      audio_device;  /* 0 = PC Speaker, 1 = Muted                 */
     int      font;          /* 0 = Retro 8x8, 1 = Arial 8x16 (default)   */
+    int      scale_index;   /* display scaling table index (0 = Auto)     */
 } settings_t;
 
 extern settings_t g_settings;
@@ -49,6 +50,17 @@ void        settings_res_dims(int i, int *w, int *h);   /* native/oversize -> pa
 int         settings_aspect_count(void);
 const char *settings_aspect_name(int i);
 void        settings_aspect_ratio(int i, int *num, int *den);  /* auto -> 0,0 */
+
+/* ---- display scaling ---------------------------------------------------- *
+ *  The panel keeps its native mode; the logical desktop is the panel divided
+ *  by this, and the compositor's frame is scaled back up to fill the screen.
+ *  Everything drawn gets bigger, including every app's fixed pixel layout,
+ *  without any app being told. Index 0 is Auto, which decides from the panel
+ *  size it is given -- the only thing the machine knows, since no panel tells
+ *  anybody its physical width.                                                */
+int         settings_scale_count(void);
+const char *settings_scale_name(int i);
+int         settings_scale_percent(int i, int panel_w, int panel_h);
 
 int         settings_audio_count(void);
 const char *settings_audio_name(int i);

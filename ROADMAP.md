@@ -265,7 +265,15 @@ which of these it is rather than failing quietly.
         and SSH use, Print Screen from the desktop. Replaces an uncompressed
         BMP of the compositor's backbuffer.
 - [ ] 80. Screen recording
-- [ ] 81. HiDPI / display scaling
+- [x] 81. Display scaling: the panel keeps its native mode and the logical
+        desktop becomes it divided by 100/125/150/200%, scaled back up to fill
+        the screen -- so every app's fixed pixel layout grows without any app
+        knowing. The pointer is mapped through the same rectangle, which is the
+        half that would have looked perfect in a screenshot and been unusable.
+        Auto reads panel width, because no monitor reports a physical size and
+        there is no DPI to have. A scale leaving less than 640x480 is declined
+        and says so; `display` is the shell front end, for the machine whose
+        desktop came up too small to click Settings on
 - [x] 82. Typed clipboard: text, images or file paths. Photos and Paint copy
         and paste pictures, File Explorer publishes paths and writes a pasted
         image out as a PNG, and `clip show` names the kind.

@@ -141,6 +141,33 @@ taskbar do the same with the mouse -- lit where there are windows, wide where
 you are. `desk`, `desk N` and `desk move N` are the shell front end, for the
 Terminal and for a session over SSH.
 
+### Display scaling
+
+A 4K panel with an unscaled desktop gives you 8px glyphs an inch and a half
+across the room. `display scale 200%` fixes that by making the *desktop*
+smaller -- 1920x1080 logical on a 3840x2160 panel -- and letting the
+compositor's frame be blown back up to fill the screen. One logical pixel
+becomes a 2x2 block of real ones, so the chrome, the text and every app's fixed
+pixel layout all double without a single app being told about it.
+
+That is the whole reason it works this way. Apps place text at literal
+coordinates; scaling the metrics and leaving the desktop at panel size would
+mean rewriting all 24 of them, and would still come out wrong for the ones that
+draw a grid rather than a layout.
+
+100% and 200% land on exact pixel blocks and stay sharp. 125% and 150% do not --
+the upscale picks nearest, so some rows double and their neighbours do not.
+They are offered anyway, because a desktop that is slightly too small is worse
+than one that is slightly uneven, and both the Settings page and `man display`
+say which is which. Auto goes by panel width alone: nothing on a PC reports its
+monitor's physical size, so there is no real DPI to read and this does not
+pretend otherwise.
+
+A scale that would leave less than 640x480 to work in is declined and says it
+was declined. `display` prints the panel, the desktop and the scale, which is
+also the only way to change any of it on a machine whose desktop has come up too
+small to click Settings on -- or over SSH, where there is no desktop at all.
+
 ### Screenshots
 
 Print Screen (F12) or `screenshot [PATH]` captures the screen to a PNG in
@@ -2241,7 +2268,7 @@ The interactive OS shell supports a wide range of commands:
 - Shell: `sh`, `source`, `.`, `test`, `[`, `true`, `false`, `set`, `unset`; variables, conditions, loops and functions (see [SHELL.md](SHELL.md))
 - SDK & help: `run` (ELF64 programs with arguments and exit status), `man` (pages/search/coverage), `help [COMMAND]`
 - Audio: `play` (a tone, or a WAV file streamed and converted as it goes), `media` (the player's transport: `open`, `play`/`pause`, `next`/`prev`, `track`, `seek`, `vol`, `repeat`, `list`)
-- Desktop: `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window), `snap` (tile the focused window to a half, a quarter or full screen), `keys` (list/rebind/reset global shortcuts), `logs` (the kernel log kept across reboots)
+- Desktop: `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window), `snap` (tile the focused window to a half, a quarter or full screen), `display` (panel size, desktop size, display scaling, video mode), `keys` (list/rebind/reset global shortcuts), `logs` (the kernel log kept across reboots)
 - Core: `echo`, `clear`, `mem`
 
 ## Full File Tree
@@ -2289,6 +2316,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- screenshot.c  cmd_shot.c  Panel capture -> PNG in ~/Pictures
 |   +-- cmd_desk.c             Virtual desktops from the shell
 |   +-- cmd_snap.c             Window tiling from the shell
+|   +-- cmd_display.c          Resolution and display scaling from the shell
 |   +-- keymap.c  cmd_keys.c   Global shortcut table (/etc/keys.conf)
 |   +-- cmd_run.c  manpages.c   Third-party ELF execution and command manual
 |   +-- shline.c  shscript.c    History/completion and the shell interpreter
