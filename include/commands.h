@@ -125,6 +125,9 @@ int cmd_logs(int, char **);
 
 /* SDK, manual and shell language */
 int cmd_run(int, char **);   int cmd_as(int, char **);   int cmd_man(int, char **);
+
+/* ---- handlers: the rest of the toolchain (kernel/cmd_ld.c, cmd_ar.c) ---- */
+int cmd_ld(int, char **);    int cmd_ar(int, char **);
 int cmd_sh(int, char **);    int cmd_test(int, char **);
 int cmd_true(int, char **);  int cmd_false(int, char **);
 int cmd_set(int, char **);   int cmd_unset(int, char **);

@@ -28,3 +28,12 @@
  * message in err -- with a line number, since an assembler that says only
  * "syntax error" is one you debug by bisection. */
 uint8_t *asm_assemble(const char *src, uint32_t *len, char *err, uint32_t errcap);
+
+/* The same source as a relocatable object instead of a program: the sections
+ * start at zero, `extern` names are left undefined, and every field that
+ * mentions a symbol becomes a hole with a relocation on it. `ld` is what turns
+ * a pile of these back into something with an entry point.
+ *
+ * The subset is the same subset; what changes is only who resolves the names.
+ */
+uint8_t *asm_assemble_obj(const char *src, uint32_t *len, char *err, uint32_t errcap);
