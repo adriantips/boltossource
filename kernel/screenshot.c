@@ -53,7 +53,7 @@ static void next_path(char *out, uint32_t cap) {
 /* Create the directory chain for `path`'s parent if it is missing: a fresh
  * account has a Pictures folder, but a screenshot into an arbitrary -o path
  * should not fail because one directory does not exist yet. */
-static int ensure_parent(const char *path) {
+int shot_ensure_parent(const char *path) {
     char dir[FS_PATH_MAX];
     uint32_t n = 0;
     for (const char *p = path; *p && n < sizeof dir - 1; p++) dir[n++] = *p;
@@ -92,7 +92,7 @@ int shot_take(const char *path, char *saved, uint32_t cap) {
     if (path && path[0]) snprintf(target, sizeof target, "%s", path);
     else                 next_path(target, sizeof target);
 
-    if (ensure_parent(target) != 0) { kfree(png); return -4; }
+    if (shot_ensure_parent(target) != 0) { kfree(png); return -4; }
 
     fs_node *f = fs_lookup(target);
     if (!f) {

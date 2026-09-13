@@ -241,6 +241,7 @@ const command_t commands[] = {
     { "desk",     "Core",             "virtual desktops: desk [N|move N]",  cmd_desk },
     { "snap",     "Core",             "tile the focused window: snap ZONE",  cmd_snap },
     { "display",  "Core",             "panel size, desktop size, scaling",  cmd_display },
+    { "rec",      "Core",             "record the screen to an animated PNG", cmd_rec },
     { "keys",     "Core",             "list or change global shortcuts",    cmd_keys },
     { "logs",     "System",           "the kernel log kept across reboots",  cmd_logs },
     { "man",      "Core",             "manual: man COMMAND | -k WORD | -c", cmd_man },

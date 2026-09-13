@@ -121,6 +121,7 @@ int cmd_notify(int, char **);
 int cmd_screenshot(int, char **);
 int cmd_desk(int, char **);   int cmd_media(int, char **);
 int cmd_snap(int, char **);   int cmd_display(int, char **);
+int cmd_rec(int, char **);
 int cmd_keys(int, char **);
 int cmd_logs(int, char **);
 

@@ -33,6 +33,7 @@
 #include "net.h"
 #include "notify.h"
 #include "screenshot.h"
+#include "record.h"
 #include "keymap.h"
 
 extern const unsigned char font8x8_basic[128][8];   /* 8x8 retro face   */
@@ -1231,6 +1232,54 @@ static uint32_t note_colour(int level) {
 #define NC_ROWS   5           /* visible rows before scrolling */
 #define NC_HEAD   38
 
+/* Recording indicator, one slot left of the bell. It is only there while a
+ * recording is running: a tray of buttons that do nothing is how a taskbar
+ * stops being readable. And it does not blink -- a blinking dot would change
+ * pixels every frame, and the recorder's whole economy is that a frame nobody
+ * can tell from the last one is never written. */
+static void tray_rec_rect(int *bx, int *by) {
+    *bx = W - 204;
+    *by = H - TASKBAR_H + (TASKBAR_H - 28) / 2;
+}
+
+static void draw_rec_tray(void) {
+    if (!rec_active()) return;
+    int bx, by; tray_rec_rect(&bx, &by);
+    int mxp = mlx(), myp = mly();
+    int hot = mxp >= bx && mxp < bx + 28 && myp >= by && myp < by + 28;
+    if (hot) g_round(bx, by, 28, 28, 8, 0x2A2A38, 255);
+    g_round(bx + 9, by + 9, 10, 10, 5, COL_BAD, 255);
+    if (hot) {                                   /* what clicking it will do */
+        const char *tip = "Stop recording";
+        int tw = g_text_width(tip, 1) + 16;
+        int tx = bx + 14 - tw / 2; if (tx < 6) tx = 6;
+        int ty = H - TASKBAR_H - 26;
+        g_round(tx, ty, tw, 22, 6, 0x16161E, 245);
+        g_text(tx + 8, ty + 6, tip, COL_TEXT, 1);
+    }
+}
+
+/* Ctrl+Print Screen: start recording, or stop the one that is running. One
+ * key for both because a recording you cannot stop from the keyboard means
+ * every recording ends with a trip to a terminal in the last frame. */
+static void gui_record_toggle(void) {
+    char msg[NOTE_TEXT_MAX];
+    if (rec_active()) {
+        char saved[FS_PATH_MAX];
+        int rc = rec_stop(saved, sizeof saved);
+        if (rc != 0) { snprintf(msg, sizeof msg, "Recording failed: %s", rec_strerror(rc));
+                       notify_error("Screen recording", msg); return; }
+        snprintf(msg, sizeof msg, "Saved %s", saved);
+        notify_success("Screen recording", msg);
+        return;
+    }
+    int rc = rec_start(0, 0);
+    if (rc != 0) { snprintf(msg, sizeof msg, "Could not start: %s", rec_strerror(rc));
+                   notify_error("Screen recording", msg); return; }
+    snprintf(msg, sizeof msg, "Recording to %s -- Ctrl+PrtSc to stop", rec_path());
+    notify_info("Screen recording", msg);
+}
+
 static void tray_bell_rect(int *bx, int *by) {
     *bx = W - 168;                               /* left of the network button */
     *by = H - TASKBAR_H + (TASKBAR_H - 28) / 2;
@@ -1463,6 +1512,7 @@ static void draw_taskbar(void) {
             g_round(bx + TB_BTN / 2 - 1, by + TB_BTN - 3, 3, 3, 1, COL_TEXT_DIM, 200);
         }
     }
+    draw_rec_tray();
     draw_bell_tray();
     draw_net_tray();
     draw_volume_tray();
@@ -2339,6 +2389,10 @@ static void on_left_down(int x, int y) {
             dirty = 1; return;                       /* clicks inside are absorbed */
         }
     }
+    { int rbx, rby; tray_rec_rect(&rbx, &rby);
+      if (rec_active() && x >= rbx && x < rbx + 28 && y >= rby && y < rby + 28) {
+          gui_record_toggle(); dirty = 1; return;
+      } }
     { int bbx, bby; tray_bell_rect(&bbx, &bby);
       if (x >= bbx && x < bbx + 28 && y >= bby && y < bby + 28) {
           notes_open = !notes_open;
@@ -2650,6 +2704,7 @@ static void gui_do_action(int a) {
     case ACT_SHOW_DESKTOP: gui_show_desktop(); break;
     case ACT_LOCK:         gui_lock(); dirty = 1; break;
     case ACT_SCREENSHOT:   gui_screenshot(); dirty = 1; break;
+    case ACT_RECORD:       gui_record_toggle(); dirty = 1; break;
     case ACT_SNAP_LEFT:    case ACT_SNAP_RIGHT:
     case ACT_SNAP_MAX:     case ACT_SNAP_RESTORE: {
         int t = topmost();
@@ -3049,6 +3104,11 @@ void gui_run(void) {
          * desktop, while the session is locked, and while a ring-3 program has
          * taken the panel. It returns immediately when nothing is playing. */
         media_pump();
+
+        /* And the screen recorder, above the early-out below for the same
+         * reason: recording DOOM or the ring-3 browser is the case somebody
+         * actually wants, and it only ever reads VRAM. */
+        rec_pump();
 
         /* A ring-3 program (the userland browser) has grabbed the panel: don't
          * touch VRAM or drain the keyboard -- it reads input via SYS_GETKEY and
