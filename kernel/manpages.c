@@ -338,6 +338,20 @@ static const manpage_t MAN[] = {
   "The knobs do what you expect; two of them at once is not something the\n"
   "audio path can do. Levels live in /etc/mixer.conf and are loaded at boot.\n"
   "The Mixer window is the same model with faders and meters." },
+{ "mic", "mic | mic test [SECONDS] | mic rec FILE [SECONDS] | mic gain PERCENT",
+  "The input side of the sound card. With no argument, names the jack the\n"
+  "codec routed to (Mic, Line in) and whether the ring is open.\n"
+  "`mic test` opens the input for a second and reports how many frames the DMA\n"
+  "engine produced and what the loudest sample was -- the frame rate is the\n"
+  "useful number, because a stream that was never started produces none at all.\n"
+  "`mic rec FILE 5` writes five seconds to a WAV at 48 kHz stereo, which is\n"
+  "the format captured, with no conversion on the way to the disk.\n"
+  "`mic gain` is the same knob as `mixer capture`, and master does not scale\n"
+  "it -- turning the speakers down should not turn the microphone down.\n"
+  "Under QEMU every recording is silent: no emulated audio backend here can\n"
+  "feed sound *into* a guest, so `mic test` reporting 48000 frames at peak 0\n"
+  "is the driver working, not failing. The Mixer window's Listen button is\n"
+  "the same path with a meter on it." },
 { "logs", "logs [-n LINES] | logs -a | logs save | logs clear",
   "The kernel log that outlives the boot it was written in. `dmesg` shows this\n"
   "boot's ring, which is in RAM; this shows /var/log/kernel.log, which is\n"

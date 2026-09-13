@@ -61,6 +61,31 @@ void audio_tone_ch(int mix_ch, uint32_t freq, uint32_t ms);
  * playing rather than at the next one. */
 void audio_gain_changed(void);
 
+/* --- capture --------------------------------------------------------------
+ *  The other direction, and it is not the output path with the arrow turned
+ *  round. An output route is chosen once at boot and left open; an input route
+ *  costs something to hold (a mic bias supply, a running DMA engine, a stream
+ *  descriptor the output side would otherwise be free to use), so it is opened
+ *  on demand and closed again.
+ *
+ *  The ring is cyclic and the engine never stops while it is open: read()
+ *  takes whatever has arrived since the last call. Not reading for longer than
+ *  the ring holds loses the oldest samples rather than stalling the engine --
+ *  a meter that falls behind should skip, not drag.
+ *
+ *  Same PCM contract as playback: 48 kHz, signed 16-bit, stereo.
+ * ------------------------------------------------------------------------*/
+int         audio_capture_ok(void);      /* an input route exists on this codec */
+const char *audio_capture_name(void);    /* "Mic" / "Line in" / "" if none      */
+int         audio_capture_open(void);    /* 0 on success, -1 if there is none   */
+uint32_t    audio_capture_read(int16_t *out, uint32_t frames);  /* frames taken */
+void        audio_capture_close(void);
+int         audio_capture_active(void);
+
+/* Take whatever has arrived and feed it to the mixer's capture meter, throwing
+ * the samples away. What a level meter needs when nobody is recording. */
+void        audio_capture_pump(void);
+
 /* --- codec back end -------------------------------------------------------
  *  A codec driver publishes one of these from its probe. Nothing outside
  *  drivers/audio.c calls through it; the dispatch layer owns the fallbacks,
@@ -74,6 +99,16 @@ typedef struct audio_dev {
     int      (*busy)(void);                            /* 1 while it is playing */
     void     (*stop)(void);
     void     (*volume)(int percent);                   /* 0..100 */
+
+    /* Capture. All five are NULL together on a codec with no input route --
+     * which is most of what a driver's probe has to decide, since a machine
+     * with a microphone jack it cannot reach is not a machine with a
+     * microphone. `cap_name` is what the jack calls itself. */
+    int         (*cap_open)(void);
+    uint32_t    (*cap_read)(int16_t *out, uint32_t frames);
+    void        (*cap_close)(void);
+    void        (*cap_gain)(int percent);
+    const char *(*cap_name)(void);
 } audio_dev_t;
 
 /* Claim the device if present, otherwise return NULL. Called only by

@@ -316,7 +316,25 @@ which of these it is rather than failing quietly.
         so a channel's level is the codec's gain while that channel owns the
         device -- not a software sum of simultaneous streams, which this audio
         path cannot do
-- [ ] 87. Microphone capture path
+- [x] 87. Microphone capture path, on both codecs. HDA walks its widget graph
+        backwards -- input pins scored from their configuration defaults, a
+        route traced back from an ADC, the branch selected at each fork, and
+        the pin's bias supply switched on, without which a real electret
+        capsule produces nothing while every register reads back correctly.
+        AC'97 has a record-select register that names no source out of reset,
+        which is the same bug by a shorter road. Both run a cyclic ring, and
+        AC'97 makes you earn it: its engine halts at the descriptor LVI names
+        rather than wrapping past it, so LVI is pushed along behind CIV on
+        every read -- programmed once, capture stops dead at 32768 frames with
+        the run bit still set and no error anywhere. `mic test` / `mic rec`,
+        a Listen button on the mixer's capture column, and a WAV writer in
+        kernel/wav.c to put a recording somewhere.
+        Two limits the test states rather than hides: no QEMU backend here can
+        feed a guest sound, so every recording it makes is silent; and this
+        QEMU is built without CONFIG_HPET, so the guest's only clock is the
+        PIT, which under-counts inside a hot polling loop (a 3 s capture timed
+        from inside claimed 66 kHz). `mic` counts frames instead, and the test
+        holds the stopwatch from the host
 - [x] 88. WAV playback: a RIFF/WAVE decoder that is also the converter --
         resampling, mono to stereo and 8-bit unsigned to signed, decoded
         incrementally so a track streams rather than converting in full.

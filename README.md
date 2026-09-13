@@ -661,6 +661,47 @@ settings. `mixer` is the same model from a prompt (`mixer media 40`,
 `mixer system mute`), which is what a machine being administered over SSH has
 instead of a window.
 
+### Microphone capture
+
+The other direction, on both codecs. HDA walks its widget graph *backwards*: an
+ADC arrives connected to nothing, so the driver scores the input pins from their
+configuration defaults (microphone over line-in over aux, and never a digital
+one), traces a route back from an ADC through any selectors and mixers, selects
+that branch at each fork, opens the pin as an input and switches its bias supply
+on where the pin can provide one — without which a real electret capsule produces
+nothing at all while every register reads back correctly. AC'97 has no graph; it
+has a record-select register that comes out of reset naming no source, which is
+the same bug with a shorter path to it.
+
+Both then run a **cyclic ring**, which is the one place capture is easier than
+playback: the engine never stops, and a reader takes whatever appeared between
+the position it last saw and the current one. AC'97 makes you work for that —
+its engine walks descriptors from CIV and halts the moment it finishes the one
+LVI names, so LVI has to be pushed along behind CIV on every read. Programmed
+once, capture runs exactly once around the buffer and stops dead at 32768 frames
+with the run bit still set and no error bit anywhere. (That is not hypothetical.
+It is what the first version of this did.)
+
+The input is opened on demand and closed again, unlike the output route, because
+holding it costs a running DMA engine, a stream descriptor and a bias supply.
+`mic` is the shell front end — `mic test` for a level, `mic rec FILE 5` for a
+recording — and the Mixer's capture column has a **Listen** button that opens the
+ring and meters it, closing it again when the window does. `kernel/wav.c` gained
+a writer to go with its decoder: a canonical 44-byte header and the samples, no
+conversion, because a capture is already 48 kHz stereo and resampling it on the
+way to the disk would throw away the only copy.
+
+**Two things this cannot be tested for, stated rather than glossed.** No audio
+backend in the QEMU here can put a sound *into* a guest — its `wav` backend is
+output-only and `none` feeds silence — so every recording `test/t_mic.py` makes
+is silent, and that is what the test asserts. And the guest cannot time itself:
+this QEMU is built without `CONFIG_HPET`, so `hpet_present()` is false and
+everything falls back to the PIT, which under-counts badly inside a loop polling
+MMIO a million times a second. A three-second capture timed from inside came back
+claiming 66 kHz. So `mic` counts *frames* — the sample clock is exact and is the
+best clock the machine has — and the test holds a stopwatch from the host, where
+four seconds of audio takes four seconds.
+
 WAV playback (`kernel/wav.c`) is the decoder *and* the converter, because
 the two cannot be separated: the codecs are fixed at 48 kHz stereo and almost no
 file on a disk is. It parses RIFF/WAVE (PCM and `WAVE_FORMAT_EXTENSIBLE`, 8- or
@@ -2373,7 +2414,7 @@ The interactive OS shell supports a wide range of commands:
 - Bonus / Unique: `focus`, `snapshot`, `timeline`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
 - Shell: `sh`, `source`, `.`, `test`, `[`, `true`, `false`, `set`, `unset`; variables, conditions, loops and functions (see [SHELL.md](SHELL.md))
 - SDK & help: `run` (ELF64 programs with arguments and exit status), `man` (pages/search/coverage), `help [COMMAND]`
-- Audio: `play` (a tone, or a WAV file streamed and converted as it goes), `media` (the player's transport: `open`, `play`/`pause`, `next`/`prev`, `track`, `seek`, `vol`, `repeat`, `list`), `mixer` (per-channel levels and real mutes, kept in `/etc/mixer.conf`)
+- Audio: `play` (a tone, or a WAV file streamed and converted as it goes), `media` (the player's transport: `open`, `play`/`pause`, `next`/`prev`, `track`, `seek`, `vol`, `repeat`, `list`), `mixer` (per-channel levels and real mutes, kept in `/etc/mixer.conf`), `mic` (the input: status, `test`, `rec FILE`, `gain`)
 - Desktop: `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window), `snap` (tile the focused window to a half, a quarter or full screen), `display` (panel size, desktop size, display scaling, video mode), `rec` (record the screen to an animated PNG), `power status` (power source, firmware profile and brightness), `keys` (list/rebind/reset global shortcuts), `logs` (the kernel log kept across reboots)
 - Core: `echo`, `clear`, `mem`
 
@@ -2428,6 +2469,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- cmd_rec.c              Screen recording from the shell
 |   +-- keymap.c  cmd_keys.c   Global shortcut table (/etc/keys.conf)
 |   +-- mixer.c    cmd_mixer.c  app_mixer.c   Channel levels (/etc/mixer.conf)
+|   +-- cmd_mic.c    Microphone capture from the shell
 |   +-- cmd_run.c  manpages.c   Third-party ELF execution and command manual
 |   +-- shline.c  shscript.c    History/completion and the shell interpreter
 |   +-- core.c  cmd_core.c       Core dumps on a ring-3 fault + the post-mortem inspector

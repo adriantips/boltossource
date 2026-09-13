@@ -244,6 +244,7 @@ const command_t commands[] = {
     { "rec",      "Core",             "record the screen to an animated PNG", cmd_rec },
     { "keys",     "Core",             "list or change global shortcuts",    cmd_keys },
     { "mixer",    "Core",             "per-channel volume levels and mutes", cmd_mixer },
+    { "mic",      "Core",             "the microphone: level, test, record", cmd_mic },
     { "logs",     "System",           "the kernel log kept across reboots",  cmd_logs },
     { "man",      "Core",             "manual: man COMMAND | -k WORD | -c", cmd_man },
     { "sh",       "Shell",            "run a shell script: sh FILE [args]", cmd_sh },
