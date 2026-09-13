@@ -181,14 +181,40 @@ which of these it is rather than failing quietly.
         reference rather than a value, because there are no types here to
         tell `f(p)` from `f(&p)` apart and copying would break the one
         people write; the manual says so rather than hiding it
-- [ ] 52. BoltCC: native x86-64 code generation
-- [ ] 53. BoltCC: emit linkable objects
-- [~] 54. `cc` command (builds + runs multi-file C; bytecode, not yet an ELF)
-        and `build`, which resolves a project's target out of its build.txt
-- [ ] 55. Assembler for `.asm` sources
-- [ ] 56. Linker producing ELF64 executables
-- [ ] 57. `make` with dependency rules
-- [ ] 58. Static library archiver
+- [x] 52. BoltCC: native x86-64 code generation (`cc -N`). A second backend
+        over the same bytecode: the machine stack is the operand stack, so
+        there is no register allocator and no class of bug where two values
+        believe they own rcx. It emits NASM text that `as` assembles, which is
+        slower than encoding directly and buys `cc -S` -- when native code does
+        the wrong thing you can read what it was asked to do
+- [x] 53. BoltCC: emit linkable objects (`cc -c`). Functions and file-scope
+        variables become names the linker resolves; a prototype with no
+        definition in this file becomes a call into another object; only the
+        unit defining main() carries `_start`. Each object keeps its own copy
+        of the runtime as local symbols, which is a few hundred bytes and the
+        reason two of them link without every helper colliding. Two units with
+        main(), and an initialiser in a unit that has no preamble to run it in,
+        are refused by name rather than compiled into something wrong
+- [x] 54. `cc`, which builds and runs multi-file C, and `build`, which resolves
+        a project's target out of its build.txt
+- [x] 55. Assembler for `.asm` sources (`as`). NASM syntax, a working subset of
+        the instruction set, three passes because a .data label's address
+        depends on how long .text turned out to be. Every encoding is checked
+        against real NASM in test/t_asm.py -- 94 operand forms, byte for byte,
+        which is the only cheap oracle there is for an assembler
+- [x] 56. Linker producing ELF64 executables (`ld`). 64, PC32, PLT32, 32 and
+        32S; archives scanned to a fixed point rather than once left to right,
+        so an archive that needs a later one still links; a .symtab on the
+        output, so a crash in the result comes back with names in it
+- [x] 57. `make` with dependency rules. Variables, $(NAME), $@ $< $^, pattern
+        rules, .PHONY. It compares each prerequisite against what it was when
+        the target was last built rather than asking which is newer: mtime here
+        is uptime ticks and is persisted, so after a reboot a freshly edited
+        source is *older* than its object and every other make would silently
+        skip it
+- [x] 58. Static library archiver (`ar`). System V format, so GNU ar reads ours
+        and we read its. No symbol index: the linker reads each member's own
+        symbol table, and a second copy of that is one more thing to keep true
 - [x] 59. BoltVCS: init / add / commit / log / status / show
 - [x] 60. BoltVCS: diff (LCS, not a line compare) / checkout / branch
 - [x] 61. Terminal text editor (`edit`)

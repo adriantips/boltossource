@@ -1239,6 +1239,7 @@ other program on the machine is one. `run` executes it and `pkg` can ship it.
 ```
 as hello.asm            assemble to ./hello
 as hello.asm -o /bin/hi choose the output name
+as -c hello.asm         write hello.o for the linker instead
 run hello
 ```
 
@@ -1283,6 +1284,11 @@ as: /a/bad.asm: line 5: unknown instruction: frobnicate
 
 It is also what BoltCC's native backend compiles through; see `cc -N` below.
 
+With `-c` it stops one step short and writes a relocatable object instead: the
+sections start at zero, `extern` names are left undefined, and every field that
+mentions a symbol becomes a hole with a relocation on it. That is what `ld`
+below is for.
+
 `test/t_asm.py` has two halves. The QEMU half assembles five programs from the
 shell and runs each: the smallest thing that can still be wrong, a `write`
 through a RIP-relative `[label]` into `.data`, a loop with a backward
@@ -1300,7 +1306,140 @@ Eight more forms are where BoltAS declines NASM's shorter encoding on purpose,
 and the test pins those to the long encoding of the same instruction rather
 than excusing them.
 
-## Native code -- `cc -N` and `cc -S`
+## Objects, archives and the linker -- `as -c`, `ar`, `ld`
+
+An assembler that does one file at a time, where every name has to be
+resolvable inside that file, is not a toolchain. You cannot split a program
+across files, you cannot keep a library of routines, and you cannot rebuild one
+piece without rebuilding all of them -- which is the difference between
+programming on a machine and demonstrating that the machine can compile.
+
+Three pieces close that, and they are the ordinary three.
+
+**`as -c`** writes an ET_REL object. Where a program resolves a name, an object
+leaves a hole and a note saying what goes in it: `R_X86_64_PC32` for a
+RIP-relative `[label]`, `PLT32` for a `call`, `64` for a `movabs` of an address,
+`32S` for an immediate or a displacement. `global` publishes a name, `extern`
+borrows one. The result is an ordinary object -- GNU `readelf` reads it, `nm`
+lists its symbols, and LLVM's `ld.lld` will link it into a working program,
+which is the strongest single statement that the format is the real one and not
+a lookalike.
+
+**`ar`** keeps objects in one file. System V format, the one every `ar` on
+every Unix writes, so an archive built here unpacks anywhere and one built
+elsewhere links here. The key letter comes first and without a dash, the way
+every Makefile in the world spells it:
+
+```
+ar r libmine.a a.o b.o    add or replace members
+ar t libmine.a            list them
+ar x libmine.a            extract
+```
+
+No symbol index is written. `ld` reads each member's own symbol table to decide
+whether it wants it, and a second copy of that inside the archive would be one
+more thing to keep true.
+
+**`ld`** (`kernel/link.c`) puts it back together: concatenate the `.text` of
+every input, concatenate the `.data`, decide where the two land, work out what
+every name is worth, and fill the holes. Out comes an ET_EXEC with the same two
+page-aligned segments `as` produces directly, so `kernel/elf.c` cannot tell the
+two routes apart.
+
+```
+ld -o prog main.o lib.o libmine.a
+ld -v -o prog main.o lib.o          say what the link did
+ld -e entry -o prog main.o          a different entry point
+```
+
+Three walks and no recursion -- parse and bounds-check, lay out and resolve,
+patch -- because this runs in the kernel with a kernel's stack, and a malformed
+object has to come back as a message rather than as a page fault in ring 0.
+Static only: `PLT32` resolves exactly like `PC32`, there being nothing dynamic
+on this machine to link against, which is also what a real static link does
+with it.
+
+Archives are scanned to a **fixed point** rather than once left to right. A
+member joins only if it defines a name still missing, and the scan repeats
+until a pass adds nothing -- so `ld top.o libinner.a libouter.a` links even
+though `libouter` needs `libinner`. `ld(1)` fails on that and makes you reorder
+the line; this deliberately does not.
+
+Undefined and duplicate names are errors that say which file:
+
+```
+ld: undefined reference to 'add3'
+ld: duplicate definition of 'main', in both main.o and main2.o
+```
+
+The output carries a `.symtab`, so a crash in a linked program comes back with
+names in it rather than a column of hex (see the core-dump section).
+
+Checking an object format is not something you can do from inside the tree that
+wrote it -- it is only right if a reader written by somebody else agrees. So
+`test/host/link.c` runs the shipping `kernel/asm.c`, `kernel/ar.c` and
+`kernel/link.c` on the host and `test/t_toolchain.py` points real binutils at
+what comes out: `readelf` parses the objects with the relocations we meant,
+`ld.lld` links them, GNU `ar` reads our archives and we read its (long member
+names and its symbol index included), and our linker consumes NASM's objects --
+which use `32S` where ours use `PC32`, so the other relocation path is
+exercised by a producer that has never heard of us. The QEMU half then does the
+whole thing on the machine, from typing the source to running the program.
+
+## `make`
+
+With objects and a linker, rebuilding one file instead of all of them finally
+means something, and something has to decide which. `make` (`kernel/make.c`) is
+the usual one: `target: prerequisites` and a recipe, variables (`=`, `:=`,
+`+=`), `$(NAME)`, the automatic `$@`, `$<` and `$^`, pattern rules with one `%`,
+`.PHONY`, and a default goal that is the first target whose name does not start
+with a dot. Recipes go to `sh_run_script()`, so a recipe line is an ordinary
+BoltShell line and gets pipes, redirection and shell variables without this
+file knowing what any of those are.
+
+```
+OBJS = main.o lib.o
+
+prog: $(OBJS)
+    ld -o $@ $^
+
+%.o: %.asm
+    as -c $< -o $@
+
+.PHONY: clean
+clean:
+    rm prog $(OBJS)
+```
+
+Two deliberate differences from `make(1)`, both forced by this machine rather
+than chosen.
+
+**It does not compare timestamps.** `fs_node.mtime` is pit ticks since boot and
+it is persisted, so a source edited early in today's session carries a *smaller*
+number than the object built from it last week. Every timestamp-comparing make
+reads that as up to date and quietly declines to rebuild, and silently not
+building is the worst thing a build tool can do. Each target instead records
+what its prerequisites looked like -- size and mtime -- when its recipe last
+ran, in a `.make.stamp` beside the makefile, and rebuilds when any of them
+*differs*. Differs, not is newer: it needs no ordering at all, so it survives a
+reboot, an mtime that goes backwards, and a file restored from a copy. `redo`
+and `tup` work this way for the same reason. Delete the stamp file and
+everything rebuilds once, which is the worst it can get wrong.
+
+**A recipe may be indented with spaces.** `write` takes no escapes and the
+shell reads a typed Tab as a request to complete a filename, so a makefile
+authored on this machine cannot contain a tab at all. "Missing separator" would
+have made this unusable rather than merely annoying.
+
+`-n` prints the recipes without running them; `-s` runs them without printing.
+
+`test/host/make.c` runs the shipping `kernel/make.c` over a filesystem of 64
+files in an array and a clock that is a variable, which is the only way to
+stage the case the whole design exists for: wind the clock back to simulate a
+reboot, edit a source so its mtime is now *lower* than its target's, and check
+it still rebuilds.
+
+## Native code -- `cc -N`, `cc -S` and `cc -c`
 
 `cc` compiles C and BoltCC's VM runs the bytecode. That is a real compiler and
 it is not a native one, and the difference showed everywhere: nothing a person
@@ -1316,6 +1455,7 @@ cc prog.c              compile and run on the VM      (the whole language)
 cc -N prog.c           compile to a native ELF64      (the integer subset)
 cc -N prog.c -o hello  choose the output name
 cc -S prog.c           print the x86-64 it would emit
+cc -c prog.c -o p.o    compile to an object for `ld`
 run ./prog
 ```
 
@@ -1349,6 +1489,49 @@ the emitted runtime is a few hundred bytes of assembly implementing `%d`, `%i`,
 `%u`, `%x`, `%c`, `%s` and `%%`, including the decimal conversion, because there
 is no library on this machine to link against and a program that prints a number
 has to carry the code that turns one into digits.
+
+### One file at a time -- `cc -c`
+
+`cc a.c b.c` preprocesses both and concatenates them into one translation unit.
+That is a unity build: a program really can be split across files, but nothing
+can be rebuilt without rebuilding everything, and nothing can be linked against
+assembly or against a library.
+
+`cc -c` is the other way. Each file becomes a relocatable object: functions and
+file-scope variables get names the linker resolves, a prototype with no
+definition in this file becomes a call into another object, and only the unit
+that defines `main()` carries `_start`.
+
+```
+cc -c main.c -o main.o
+cc -c lib.c  -o lib.o
+ld -o prog main.o lib.o
+run prog
+```
+
+The prototype is the part that changed. `int f(int);` used to be parsed and
+thrown away, reasonably -- a name declared and never defined should not look
+like a function with an empty body. It is kept now and marked, because when the
+output is an object that name is a function somebody else defines. A definition
+later in the file reuses the slot, so a single unit behaves exactly as before,
+and a call to one that is still only declared is refused unless an object is
+what is being written.
+
+Each object carries its own copy of BoltCC's runtime (`__printf` and friends) as
+*local* symbols. That is a few hundred duplicated bytes per object and it is the
+reason two of them link at all without every helper colliding. File-scope
+variables are prefixed `_G_`, because a C variable is allowed to be called `rax`
+and the assembler would read that as a register.
+
+Two things are refused by name rather than compiled into something wrong: two
+units that both define `main()`, and a file-scope initialiser in a unit with no
+`main()` -- the code that would run it lives in a preamble only that unit has,
+and a variable silently zero is worse than a compile error.
+
+Sharing a *variable* between units does not work yet: BoltCC skips `extern` as
+a modifier, so `extern int counter;` is indistinguishable from a definition and
+the second unit is a duplicate symbol. The linker says so rather than picking
+one.
 
 This is a step toward the self-hosting the SDK section still lists as
 unfinished, not the end of it. BoltCC's C is not the C the kernel is written in.
@@ -2015,11 +2198,12 @@ The interactive OS shell supports a wide range of commands:
 - Names & time: `hosts` (local name table), `dns` (resolve / show / flush the cache), `ntp` (clock sync)
 - Serving: `serve` (HTTP file server over real accepted connections), `netget` (fetch a URL from a ring-3 socket program)
 - Remote access: `sshd` (SSH-2 server: real shell, password auth, encrypted), `sshkey` (host key fingerprint)
-- Development: `build` (build a project's target from its `build.txt`), `vcs` (local version control: init / add / commit / log / diff / checkout / branch)
-- Language: `cc` (multi-file C/C++/C# via the preprocessor + BoltCC; `-g` runs it under the source-level debugger, `-N` compiles to a native ELF64 through the assembler, `-S` prints the x86-64), `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the Code app compiles C / C++ / C#
+- Development: `make` (rules, variables, pattern rules, `.PHONY`; rebuilds on a prerequisite that *differs*, not one that is newer), `build` (build a project's target from its `build.txt`), `vcs` (local version control: init / add / commit / log / diff / checkout / branch)
+- Toolchain: `as` (assemble x86-64, NASM syntax; `-c` writes a relocatable object), `ld` (link objects and archives into an ELF64 program), `ar` (static libraries in System V format: `r` / `t` / `x`)
+- Language: `cc` (multi-file C/C++/C# via the preprocessor + BoltCC; `-g` runs it under the source-level debugger, `-N` compiles to a native ELF64 through the assembler, `-S` prints the x86-64, `-c` writes an object for `ld`), `python` (BoltPy interpreter / REPL), `js` (BoltJS interpreter, `js -c "…"` or `js FILE.js`); the Code app compiles C / C++ / C#
 - Bonus / Unique: `focus`, `snapshot`, `timeline`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
 - Shell: `sh`, `source`, `.`, `test`, `[`, `true`, `false`, `set`, `unset`; variables, conditions, loops and functions (see [SHELL.md](SHELL.md))
-- SDK & help: `run` (ELF64 programs with arguments and exit status), `as` (assemble x86-64 into an ELF64 program, NASM syntax), `man` (pages/search/coverage), `help [COMMAND]`
+- SDK & help: `run` (ELF64 programs with arguments and exit status), `man` (pages/search/coverage), `help [COMMAND]`
 - Audio: `play` (a tone, or a WAV file streamed and converted as it goes), `media` (the player's transport: `open`, `play`/`pause`, `next`/`prev`, `track`, `seek`, `vol`, `repeat`, `list`)
 - Desktop: `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window), `keys` (list/rebind/reset global shortcuts), `logs` (the kernel log kept across reboots)
 - Core: `echo`, `clear`, `mem`
@@ -2059,6 +2243,9 @@ The interactive OS shell supports a wide range of commands:
 |   +-- dom.c   layout.c  html.c          Browser engine: DOM tree, CSS cascade, box/flex/grid layout
 |   +-- js.c    cmd_js.c  boltcc.c  cpp.c  cmd_cc.c  boltpy.c   JavaScript, C preprocessor, C/C++/C#, Python
 |   +-- ccbuild.c  cmd_build.c    Build targets (build.txt) shared by cc, `build` and the IDE
+|   +-- asm.c  cmd_asm.c  ccnative.c   BoltAS: x86-64 -> ELF64 program or object; BoltCC's native backend
+|   +-- link.c  cmd_ld.c  ar.c  cmd_ar.c   BoltLD: objects + archives -> a program; System V ar
+|   +-- make.c  cmd_make.c     BoltMake: rules, pattern rules, and a stamp file instead of timestamps
 |   +-- cmd_vcs.c               BoltVCS: local version control (.bvcs objects/commits/refs)
 |   +-- notify.c  cmd_notify.c  Notification store behind toasts and the centre
 |   +-- cmd_logs.c  app_logs.c  The kernel log across reboots, and its viewer
