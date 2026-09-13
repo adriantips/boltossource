@@ -2,6 +2,7 @@
 #include "commands.h"
 #include "gui.h"
 #include "settings.h"
+#include "backlight.h"
 #include "boot.h"
 #include "kprintf.h"
 #include "string.h"
@@ -29,6 +30,7 @@ static void show(void) {
         kprintf("  -- declined: %d%% leaves too little desktop", pct);
     kprintf("\n");
 
+    kprintf("bright   %d%% (%s)\n", backlight_get(), backlight_name());
     kprintf("scales  ");
     for (int i = 0; i < settings_scale_count(); i++)
         kprintf(" %s%s", settings_scale_name(i), i == g_settings.scale_index ? "*" : "");
@@ -60,6 +62,21 @@ int cmd_display(int argc, char **argv) {
         return 1;
     }
 
+    if (strcmp(argv[1], "brightness") == 0 || strcmp(argv[1], "bright") == 0) {
+        if (argc < 3) { kprintf("usage: display brightness 10..100\n"); return 1; }
+        int pct = atoi(argv[2]);
+        if (pct < 10 || pct > 100) {
+            /* Refused rather than clamped: somebody who types 5 wants 5, and a
+             * screen they cannot read well enough to undo it with is worse
+             * than being told no. */
+            kprintf("display: brightness is 10 to 100 (%s)\n", argv[2]);
+            return 1;
+        }
+        if (backlight_set(pct) != 0) { kprintf("display: the backlight refused\n"); return 1; }
+        show();
+        return 0;
+    }
+
     if (strcmp(argv[1], "res") == 0) {
         if (argc < 3) { kprintf("usage: display res NAME   (e.g. 1080p)\n"); return 1; }
         for (int i = 0; i < settings_res_count(); i++) {
@@ -73,6 +90,7 @@ int cmd_display(int argc, char **argv) {
         return 1;
     }
 
-    kprintf("usage: display | display scale NAME | display res NAME\n");
+    kprintf("usage: display | display scale NAME | display res NAME"
+            " | display brightness PCT\n");
     return 1;
 }

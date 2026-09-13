@@ -24,6 +24,12 @@ struct acpi_sdt_header {
     uint32_t creator_revision;
 } __attribute__((packed));
 
+/* The FADT's preferred power management profile (ACPI 6.x table 5-34): 1 is a
+ * desktop, 2 mobile, 3 a workstation, 8 a tablet. 0 when there is no FADT or
+ * the firmware did not say. It is the only thing about batteries that can be
+ * read without running the firmware's AML -- see include/power.h. */
+int acpi_pm_profile(void);
+
 /* Generic Address Structure (used by FADT reset reg, HPET base, ...). */
 struct acpi_gas {
     uint8_t  address_space;   /* 0 = system memory, 1 = system I/O */

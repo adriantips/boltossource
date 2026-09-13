@@ -24,6 +24,14 @@ void     fb_blit(const uint32_t *src);   /* copy a packed fw*fh xRGB image to VR
  * including a ring-3 program that owns the panel and the text console, neither
  * of which passes through the compositor. 0 on success, -1 with no panel. */
 int      fb_capture(uint32_t *dst);
+
+/* Scale every pixel on its way to the panel by pct/100. This is the software
+ * half of include/backlight.h; 100 is the fast path and costs nothing.
+ * fb_capture() undoes it, because a screenshot taken at 30% brightness that
+ * comes back nearly black is a bug report waiting to happen -- the dim belongs
+ * to the panel, not to the picture. */
+void     fb_set_dim(int pct);
+int      fb_dim(void);
 /* nearest-neighbour scale a packed sw*sh xRGB image into panel rect (dx,dy,dw,dh);
  * the rest of the panel is cleared to black (letterbox bars). */
 void     fb_blit_scaled(const uint32_t *src, uint32_t sw, uint32_t sh,

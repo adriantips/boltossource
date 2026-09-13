@@ -258,8 +258,12 @@ which of these it is rather than failing quietly.
 - [x] 77. Notification system: a kernel-wide store, stacked toasts, a tray
         notification centre with unread counts, and `notify`. The crash path
         and the storage layer post to it.
-- [~] 78. Quick settings: volume slider, network status and a calendar flyout
-        exist in the tray. Brightness and battery wait on items 91-92.
+- [x] 78. Quick settings: one tray panel with volume, brightness, the network
+        you are on and where your power is coming from, plus the calendar
+        flyout beside it. Brightness is real (item 92); the battery line says
+        what it honestly knows, which on a machine with no AML interpreter is
+        "there is no battery here" or "there is one and I cannot read it"
+        (item 91)
 - [x] 79. Screenshots: a real PNG encoder, the panel read back (so ring-3
         programs and the text console capture too), `screenshot` for headless
         and SSH use, Print Screen from the desktop. Replaces an uncompressed
@@ -319,8 +323,21 @@ which of these it is rather than failing quietly.
         that way does not take the keyboard off the shell. One codec, one
         stream: a blocking `play` preempts the players through a hook in
         drivers/audio.c, and Media and Music stop each other
-- [ ] 91. ACPI battery status
-- [ ] 92. Backlight / brightness control
+- [!] 91. ACPI battery status -- blocked on an AML interpreter. A battery on a
+        PC is an ACPI control-method device: the charge comes from *running*
+        the firmware's _BST method, and there is no port or register to read
+        instead (APM and SBS-over-SMBus are both gone from modern machines).
+        What ships is include/power.h: the FADT's power management profile,
+        which distinguishes a machine with no battery from one whose battery
+        cannot be read, and power_provide() for the day a real reading exists
+- [~] 92. Brightness: a software dimmer that scales every pixel on its way to
+        the panel, three table lookups each and skipped entirely at 100%, with
+        the level clamped at 10% because a screen nobody can read the way out
+        of is a brick. Screenshots undo it, since the dim belongs to the panel
+        and not the picture. **Still open:** a real backlight. That means GPU
+        registers or an ACPI method, neither of which exists on a display QEMU
+        provides -- include/backlight.h is the seam one arrives through, in the
+        same shape as the Wi-Fi radio's
 - [ ] 93. Suspend (S3) and resume
 - [ ] 94. USB mass storage, so USB drives appear in File Explorer
 - [ ] 95. Additional keyboard layouts

@@ -141,6 +141,44 @@ taskbar do the same with the mouse -- lit where there are windows, wide where
 you are. `desk`, `desk N` and `desk move N` are the shell front end, for the
 Terminal and for a session over SSH.
 
+### Quick settings, brightness and power
+
+The tray's speaker button opens a panel rather than a volume slider: volume,
+brightness, the network you are on (click it for the Wi-Fi picker) and where
+your power is coming from. One panel, because the moment a person reaches for
+the tray in a hurry is not the moment to make them find four different buttons.
+
+**Brightness** is a software dimmer: every pixel is scaled on its way to the
+panel, three table lookups each, and skipped entirely at 100%. A real backlight
+means a GPU's own registers or an ACPI method needing an AML interpreter this OS
+does not have -- and none of it exists on a machine whose display is QEMU's,
+which has no backlight at all. Writing register programming that cannot once be
+executed is how you ship a driver that has never worked, so `include/backlight.h`
+is a seam in the same shape as the Wi-Fi radio's: `backlight_provide()` and a
+real driver takes over, with nothing above it changing. The dimmer is not a
+placeholder either -- it is what every desktop OS falls back to for a monitor it
+cannot reach, and it is what you actually want at 2am. 10% is as dark as it
+goes, because a screen nobody can read the way out of is a brick.
+
+That creates one interaction worth knowing about: captures come from VRAM, so a
+screenshot taken at 40% would be a dark picture of a screen nobody remembers
+being dark. `fb_capture()` undoes the dim on the way out -- approximately, since
+at 10% each channel carries four bits of what it started with -- because the dim
+belongs to the panel and not to the picture.
+
+**Battery** is the honest gap. A battery on a PC is an ACPI control-method
+device: its charge is read by *executing* the firmware's AML bytecode, and there
+is no AML interpreter here. What can be read without one is the FADT's preferred
+power management profile, which is enough to tell "there is no battery in this
+machine" from "there is one and I cannot read it" -- and those are different
+sentences to put in front of somebody. So the panel says `On AC power` on a
+desktop and `Battery state unavailable` on a laptop, `power status` says the
+same from a prompt, and `power_provide()` in `include/power.h` is where a real
+reading arrives when an AML interpreter exists.
+
+`display brightness 40` is the shell front end, and the tray's wheel changes
+whichever slider the pointer is over.
+
 ### Display scaling
 
 A 4K panel with an unscaled desktop gives you 8px glyphs an inch and a half
@@ -2299,7 +2337,7 @@ The interactive OS shell supports a wide range of commands:
 - Shell: `sh`, `source`, `.`, `test`, `[`, `true`, `false`, `set`, `unset`; variables, conditions, loops and functions (see [SHELL.md](SHELL.md))
 - SDK & help: `run` (ELF64 programs with arguments and exit status), `man` (pages/search/coverage), `help [COMMAND]`
 - Audio: `play` (a tone, or a WAV file streamed and converted as it goes), `media` (the player's transport: `open`, `play`/`pause`, `next`/`prev`, `track`, `seek`, `vol`, `repeat`, `list`)
-- Desktop: `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window), `snap` (tile the focused window to a half, a quarter or full screen), `display` (panel size, desktop size, display scaling, video mode), `rec` (record the screen to an animated PNG), `keys` (list/rebind/reset global shortcuts), `logs` (the kernel log kept across reboots)
+- Desktop: `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window), `snap` (tile the focused window to a half, a quarter or full screen), `display` (panel size, desktop size, display scaling, video mode), `rec` (record the screen to an animated PNG), `power status` (power source, firmware profile and brightness), `keys` (list/rebind/reset global shortcuts), `logs` (the kernel log kept across reboots)
 - Core: `echo`, `clear`, `mem`
 
 ## Full File Tree
@@ -2348,6 +2386,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- cmd_desk.c             Virtual desktops from the shell
 |   +-- cmd_snap.c             Window tiling from the shell
 |   +-- cmd_display.c          Resolution and display scaling from the shell
+|   +-- power.c                Power source, and the seam a battery driver needs
 |   +-- record.c               Screen recording: sample, diff, APNG
 |   +-- cmd_rec.c              Screen recording from the shell
 |   +-- keymap.c  cmd_keys.c   Global shortcut table (/etc/keys.conf)

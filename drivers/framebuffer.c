@@ -91,12 +91,36 @@ void fb_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
  * straight onto the visible framebuffer, one scanline at a time so a pitch
  * wider than the width is handled. 32-bit stores keep it fast in a freestanding
  * build with no SSE memcpy. */
+/* ---- software dimming ---------------------------------------------------- *
+ * Three table lookups a pixel, and a branch that skips all of it at 100 --
+ * which is where it sits unless somebody asks for something else. A multiply
+ * per channel per pixel would be the same arithmetic done 786,000 times a
+ * frame instead of 256 times per level change. */
+static uint8_t dim_lut[256];
+static int     dim_pct = 100;
+
+void fb_set_dim(int pct) {
+    if (pct < 0)   pct = 0;
+    if (pct > 100) pct = 100;
+    dim_pct = pct;
+    for (int i = 0; i < 256; i++) dim_lut[i] = (uint8_t)((i * pct) / 100);
+}
+
+int fb_dim(void) { return dim_pct; }
+
+static inline uint32_t dim_px(uint32_t c) {
+    return ((uint32_t)dim_lut[(c >> 16) & 0xFF] << 16) |
+           ((uint32_t)dim_lut[(c >> 8)  & 0xFF] << 8)  |
+            (uint32_t)dim_lut[c & 0xFF];
+}
+
 void fb_blit(const uint32_t *src) {
     if (!fb) return;
     for (uint32_t y = 0; y < fh; y++) {
         volatile uint32_t *d = fb  + (uint64_t)y * pitch_px;
         const uint32_t    *s = src + (uint64_t)y * fw;
-        for (uint32_t x = 0; x < fw; x++) d[x] = s[x];
+        if (dim_pct >= 100) { for (uint32_t x = 0; x < fw; x++) d[x] = s[x]; }
+        else                { for (uint32_t x = 0; x < fw; x++) d[x] = dim_px(s[x]); }
     }
 }
 
@@ -111,12 +135,29 @@ void fb_blit(const uint32_t *src) {
  *
  * Alpha is forced opaque: the panel is xRGB and a PNG writer would otherwise
  * see whatever the hardware leaves in the top byte. */
+/* Undoing the software dim is approximate -- at 10% each channel carries four
+ * bits of what it started with and the banding shows -- but a screenshot that
+ * is merely a bit posterised beats one that is black. */
+static inline uint32_t undim_ch(uint32_t v) {
+    uint32_t r = v * 100u / (uint32_t)dim_pct;
+    return r > 255 ? 255 : r;
+}
+
 int fb_capture(uint32_t *dst) {
     if (!fb || !dst) return -1;
     for (uint32_t y = 0; y < fh; y++) {
         const volatile uint32_t *s = fb + (uint64_t)y * pitch_px;
         uint32_t *d = dst + (uint64_t)y * fw;
-        for (uint32_t x = 0; x < fw; x++) d[x] = s[x] | 0xFF000000u;
+        if (dim_pct >= 100) {
+            for (uint32_t x = 0; x < fw; x++) d[x] = s[x] | 0xFF000000u;
+        } else {
+            for (uint32_t x = 0; x < fw; x++) {
+                uint32_t c = s[x];
+                d[x] = 0xFF000000u | (undim_ch((c >> 16) & 0xFF) << 16)
+                                   | (undim_ch((c >> 8) & 0xFF) << 8)
+                                   |  undim_ch(c & 0xFF);
+            }
+        }
     }
     return 0;
 }
@@ -150,6 +191,7 @@ void fb_blit_scaled(const uint32_t *src, uint32_t sw, uint32_t sh,
         uint32_t sy = (uint32_t)((uint64_t)j * sh / dh);
         const uint32_t    *s = src + (uint64_t)sy * sw;
         volatile uint32_t *d = fb + (uint64_t)py * pitch_px + dx;
-        for (uint32_t i = 0; i < w; i++) d[i] = s[colmap[i]];
+        if (dim_pct >= 100) for (uint32_t i = 0; i < w; i++) d[i] = s[colmap[i]];
+        else                for (uint32_t i = 0; i < w; i++) d[i] = dim_px(s[colmap[i]]);
     }
 }

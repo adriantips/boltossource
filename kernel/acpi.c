@@ -133,6 +133,10 @@ static void cache_table(uint64_t phys) {
 /* Targeted DSDT scan for \_S5_ -> SLP_TYPa/b. Pattern after the "_S5_" name is
  * a small PackageOp: 12 <pkglen> 04 <a> <b> ... where <a>/<b> are either a
  * BytePrefix (0x0A v) or a constant op (Zero/One/0x00..). */
+int acpi_pm_profile(void) {
+    return g_fadt ? (int)g_fadt->preferred_pm_profile : 0;
+}
+
 static void parse_s5(const struct fadt *f) {
     /* The 64-bit X_DSDT field only exists in the extended (ACPI 2.0+) FADT.
      * On a 1.0 FADT (length ~116) reading it walks off the end of the table, so
