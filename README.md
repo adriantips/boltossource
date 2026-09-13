@@ -743,6 +743,69 @@ audio arriving at the sound card over the whole run is far more than the system
 sounds hold, at both of their pitches — so it was fed continuously, by something
 other than the shell, across the end of a track.
 
+## Keyboard layouts
+
+The driver had two 128-byte tables baked into it, US only. That is fine until
+somebody sits down at a German keyboard and finds that Z types Y, that the key
+marked ä types an apostrophe, and that there is **no way at all** to type the @
+printed on the Q key — because it needs AltGr, and AltGr was being folded into
+Alt.
+
+`include/kbdlayout.h` makes a layout data: three levels per scancode (plain,
+shifted, AltGr) plus dead keys, with **us, us-intl, uk, de, fr, es, it and se**
+shipped. Each is written as a list of *differences from US*, because that is
+what a layout is — German is QWERTY with Y and Z swapped, three letters where
+the punctuation was, and a third level on the right Alt — and twenty lines of
+differences are far easier to check than a hand-typed 128-byte array. Selecting
+one resolves it into three flat tables, so the lookup on the interrupt path is
+an array index.
+
+**AltGr is not Alt.** The right Alt key is a third-level shift, and on de/fr/es/it
+it is the only route to @, the braces and the currency signs.
+
+**Dead keys** are the "input method groundwork" half: on most European layouts an
+accent is not a character but a pending modification — press ´, nothing appears,
+press e, get é. Press it twice or follow it with a space for the literal accent;
+a pair with no combined form emits both, in order, which is what everything else
+does. It composes one accent with one letter, which covers every Latin-script
+layout and none of the CJK ones.
+
+Three things had to be fixed underneath before any of it could work:
+
+- **There were no glyphs.** A layout that types ä on a machine whose font stops
+  at 0x7F has added a blank square, not a language. `mkfont.py` generates
+  `kernel/font_latin1.c` — the Latin-1 supplement for both faces, mostly by
+  *composition* (the letter is already there; the mark above it is the only new
+  information), with the currency signs and inverted punctuation drawn by hand.
+  The two faces pack their bits in opposite directions, which is worth knowing
+  before debugging mirrored accents on correct letters.
+- **Every text field dropped them anyway.** A dozen places asked
+  `c >= 32 && c < 127`, so a German user naming a file with an umlaut got the
+  name without the umlaut and no sign anything had happened. One
+  `kbd_is_text()` in `include/keyboard.h` now decides, for the terminal, the
+  editors, the sheets, the Wi-Fi passphrase field and the shell alike.
+- **Shortcuts collided with the alphabet.** Resolved actions were delivered as
+  bytes 0xC0 and up in the character ring, which turned out to be exactly
+  À through Ô — so on a French keyboard, typing É was indistinguishable from
+  pressing the screenshot shortcut. There is no room above Latin-1 to move
+  them to, so actions have their own ring now (`kbd_action_get()`), the way raw
+  scancodes already did, and the character ring carries only characters.
+
+**Latin-1 only, and the layouts are chosen to match.** This OS's text path moves
+`char`, not code points: Polish, Czech, Turkish, Greek and Cyrillic need UTF-8
+through the console, the editors, the clipboard and the filesystem first, which
+is a real piece of work and a different one. `kbd` says so rather than offering a
+layout that would type blanks. The euro sits at 0x80 the way CP1252 puts it,
+because it postdates Latin-1 and there is nowhere else for it.
+
+`test/host/kbdlayout.c` checks every key of every layout against what is printed
+on a real key cap, in a millisecond, with no VM — and earned itself immediately:
+the digit row starts at scancode 0x02, so the key marked '3' is 0x04, and half
+the layouts had their digit-row overrides one place out. `test/t_kbd.py` then
+drives the real path in QEMU, sending a genuine AltGr and comparing **raw
+bytes** off the serial port, because a lone 0xE9 is not valid UTF-8 and decoding
+the log hides exactly the characters under test.
+
 ## USB mass storage
 
 A USB stick is a SCSI disk behind two bulk endpoints, and `drivers/usbstor.c`
@@ -2476,7 +2539,7 @@ The interactive OS shell supports a wide range of commands:
 - SDK & help: `run` (ELF64 programs with arguments and exit status), `man` (pages/search/coverage), `help [COMMAND]`
 - Audio: `play` (a tone, or a WAV file streamed and converted as it goes), `media` (the player's transport: `open`, `play`/`pause`, `next`/`prev`, `track`, `seek`, `vol`, `repeat`, `list`), `mixer` (per-channel levels and real mutes, kept in `/etc/mixer.conf`), `mic` (the input: status, `test`, `rec FILE`, `gain`)
 - Storage: `diskinfo` (controllers, block devices, what is mounted), `usb` (USB storage: list, `mount`, `umount`, `format NAME --yes`)
-- Desktop: `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window), `snap` (tile the focused window to a half, a quarter or full screen), `display` (panel size, desktop size, display scaling, video mode), `rec` (record the screen to an animated PNG), `power status` (power source, firmware profile and brightness), `keys` (list/rebind/reset global shortcuts), `logs` (the kernel log kept across reboots)
+- Desktop: `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window), `snap` (tile the focused window to a half, a quarter or full screen), `display` (panel size, desktop size, display scaling, video mode), `rec` (record the screen to an animated PNG), `power status` (power source, firmware profile and brightness), `keys` (list/rebind/reset global shortcuts), `kbd` (keyboard layout: list, switch, `show` every key of every level), `logs` (the kernel log kept across reboots)
 - Core: `echo`, `clear`, `mem`
 
 ## Full File Tree
@@ -2531,6 +2594,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- cmd_rec.c              Screen recording from the shell
 |   +-- keymap.c  cmd_keys.c   Global shortcut table (/etc/keys.conf)
 |   +-- mixer.c    cmd_mixer.c  app_mixer.c   Channel levels (/etc/mixer.conf)
+|   +-- kbdlayout.c cmd_kbd.c    font_latin1.c  Layouts + the glyphs they need
 |   +-- cmd_mic.c    Microphone capture from the shell
 |   +-- cmd_run.c  manpages.c   Third-party ELF execution and command manual
 |   +-- shline.c  shscript.c    History/completion and the shell interpreter

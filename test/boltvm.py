@@ -536,21 +536,28 @@ class BoltVM:
         return {"type": "key", "data": {"down": down,
                                         "key": {"type": "qcode", "data": qcode}}}
 
-    def key(self, qcode, shift=False, ctrl=False, alt=False, meta=False):
+    def key(self, qcode, shift=False, ctrl=False, alt=False, meta=False, altgr=False):
         """Press and release one key, optionally with modifiers held.
 
         `ctrl` is what lets a test drive anything that reads control keys --
         the editor's ^S / ^X, a shell interrupt -- which cannot be expressed as
         a character through type(). `meta` is the Super/Win key, which the
         compositor reserves for itself: window snapping, the Start menu and
-        the virtual desktops."""
+        the virtual desktops.
+
+        `altgr` is the RIGHT Alt key and is deliberately separate from `alt`,
+        because on the machine it is not the same key: on a German, French,
+        Spanish or Italian layout it is a third-level shift and the only way
+        to type an at-sign. QEMU calls it alt_r."""
         ev = []
         if shift: ev.append(self._keyev("shift", True))
         if ctrl:  ev.append(self._keyev("ctrl", True))
         if alt:   ev.append(self._keyev("alt", True))
+        if altgr: ev.append(self._keyev("alt_r", True))
         if meta:  ev.append(self._keyev("meta_l", True))
         ev += [self._keyev(qcode, True), self._keyev(qcode, False)]
         if meta:  ev.append(self._keyev("meta_l", False))
+        if altgr: ev.append(self._keyev("alt_r", False))
         if alt:   ev.append(self._keyev("alt", False))
         if ctrl:  ev.append(self._keyev("ctrl", False))
         if shift: ev.append(self._keyev("shift", False))

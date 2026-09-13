@@ -186,7 +186,7 @@ static void term_key(window_t *w, char c) {
         const char *p = clip_get();              /* paste: replay each char (\n runs it) */
         for (int i = 0; p[i]; i++)
             if (p[i] != '\r') term_key(w, p[i]);
-    } else if ((unsigned char)c >= 32 && (unsigned char)c < 127 && t->len < (int)sizeof(t->line) - 1) {
+    } else if (kbd_is_text((unsigned char)c) && t->len < (int)sizeof(t->line) - 1) {
         if (t->pos == t->len) {
             t->line[t->len++] = c; t->line[t->len] = 0;
             t->pos = t->len; term_putc(t, c);

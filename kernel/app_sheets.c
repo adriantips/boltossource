@@ -437,7 +437,7 @@ static void sheets_key(window_t *w, char c) {
         case KEY_UP:         edit_commit(); move_sel(-1, 0); break;
         case KEY_DOWN:       edit_commit(); move_sel(1, 0);  break;
         default:
-            if ((unsigned char)c >= 32 && (unsigned char)c < 127) edit_insert(c);
+            if (kbd_is_text((unsigned char)c)) edit_insert(c);
             break;
         }
         ensure_visible();
@@ -459,7 +459,7 @@ static void sheets_key(window_t *w, char c) {
     case '\b': case KEY_DEL:
         cells[sel_r][sel_c][0] = 0; s_dirty = 1; break;
     default:
-        if ((unsigned char)c >= 32 && (unsigned char)c < 127) {
+        if (kbd_is_text((unsigned char)c)) {
             edit_begin(0);
             edit_insert(c);
         }

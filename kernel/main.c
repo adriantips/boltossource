@@ -52,6 +52,7 @@
 #include "hw.h"
 #include "users.h"
 #include "keymap.h"
+#include "kbdlayout.h"
 
 /* kernel/boot.asm copies bootinfo and its E820 table into .data before it
  * zeroes .bss, using these offsets spelled out as constants. stage2.asm writes
@@ -418,6 +419,10 @@ void kmain(struct bootinfo *bi) {
     users_init();    kprintf("[ok] user accounts (%d) loaded\n", users_count());
     /* After the filesystem, because the bindings live in /etc/keys.conf. */
     keymap_init();   kprintf("[ok] %d keyboard shortcuts\n", keymap_count());
+    kbd_layout_init();
+    kprintf("[ok] keyboard layout: %s (%s), %d available\n",
+            kbd_layout_name(kbd_layout_current()),
+            kbd_layout_label(kbd_layout_current()), kbd_layout_count());
     ttf_init();      /* parse the embedded TrueType font for scalable text */
     sysreg_init();   kprintf("[ok] service + task registry\n");
     /* Safe mode exists for the boot that would otherwise never finish: a NIC

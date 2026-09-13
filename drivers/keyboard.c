@@ -3,6 +3,7 @@
 #include "io.h"
 #include "keyboard.h"
 #include "keymap.h"
+#include "kbdlayout.h"
 
 /* extended (0xE0-prefixed) make code -> our control-byte key code, or 0 */
 static char ext_map(uint8_t sc) {
@@ -20,20 +21,15 @@ static char ext_map(uint8_t sc) {
     }
 }
 
-/* US scancode set 1 -> ASCII. Two tables: unshifted and shifted. Indices match
- * the make-code of each key; release codes (bit 7 set) are handled separately. */
-static const char map[128] = {
-    0,  27, '1','2','3','4','5','6','7','8','9','0','-','=','\b','\t',
-    'q','w','e','r','t','y','u','i','o','p','[',']','\n', 0, 'a','s',
-    'd','f','g','h','j','k','l',';','\'','`', 0,'\\','z','x','c','v',
-    'b','n','m',',','.','/', 0, '*', 0, ' ',
-};
-static const char shiftmap[128] = {
-    0,  27, '!','@','#','$','%','^','&','*','(',')','_','+','\b','\t',
-    'Q','W','E','R','T','Y','U','I','O','P','{','}','\n', 0, 'A','S',
-    'D','F','G','H','J','K','L',':','"','~', 0,'|','Z','X','C','V',
-    'B','N','M','<','>','?', 0, '*', 0, ' ',
-};
+/* The scancode -> character tables used to be two 128-byte arrays right here,
+ * US only. They are kernel/kbdlayout.c now, because which character a key
+ * produces is a property of the keyboard in front of the person and not of the
+ * driver -- and because a third level was needed for AltGr, which cannot be
+ * expressed as "shifted or not" at all. `map()` and `shiftmap()` become one
+ * lookup taking a level. */
+static char layout_char(uint8_t sc, int level) {
+    return (char)kbd_layout_char(sc, level);
+}
 
 /* Single-producer (IRQ) / single-consumer (shell) ring. 8-bit indices wrap at
  * 256 == RBSZ, so the modulo is free. */
@@ -42,10 +38,18 @@ static volatile char    rb[RBSZ];
 static volatile uint8_t rhead, rtail;
 static volatile int     shift;
 static volatile int     ctrl;            /* either Ctrl key held */
-static volatile int     alt;             /* either Alt key held  */
+static volatile int     alt;             /* LEFT Alt only -- see altgr */
+/* The right Alt key on a non-US keyboard is not Alt. It is a third-level shift
+ * and on German, French, Spanish and Italian layouts it is the only way to
+ * type @, the braces and the currency signs. It used to be folded into `alt`,
+ * so AltGr+Q fired whatever Alt+Q was bound to and produced nothing at all. */
+static volatile int     altgr;
 static volatile int     win;             /* either Super/Win key held */
 static volatile int     win_used;         /* a key was pressed while Win held -> not a tap */
 static volatile int     extended;        /* last byte was the 0xE0 prefix */
+/* A dead key that has been pressed and is waiting for the letter it modifies.
+ * 0 when nothing is pending. See include/kbdlayout.h. */
+static volatile uint8_t dead_pending;
 
 /* Map a navigation key to its selection-extending (Shift+nav) variant. */
 static char shift_nav(char e) {
@@ -95,6 +99,24 @@ static void raw_push(uint16_t v) {
     if (n != krhead) { kraw[krtail] = v; krtail = n; }
 }
 void kbd_raw_enable(int on) { raw_on = on ? 1 : 0; krhead = krtail = 0; }
+
+/* Resolved global shortcuts, in their own ring. Small, because these are
+ * chords a person pressed and nobody presses sixteen of them before the
+ * compositor next looks. */
+#define ARSZ 16
+static volatile uint8_t aring[ARSZ];
+static volatile uint8_t arhead, artail;
+
+static void action_push(int a) {
+    uint8_t n = (uint8_t)((artail + 1) % ARSZ);
+    if (n != arhead) { aring[artail] = (uint8_t)a; artail = n; }
+}
+int kbd_action_get(void) {
+    if (arhead == artail) return -1;
+    int a = aring[arhead];
+    arhead = (uint8_t)((arhead + 1) % ARSZ);
+    return a;
+}
 int kbd_raw_get(void) {
     if (krhead == krtail) return -1;
     uint16_t v = kraw[krhead];
@@ -115,7 +137,7 @@ static uint8_t logical_key(uint8_t sc, int ext) {
     if (sc >= 0x3B && sc <= 0x44) return (uint8_t)(KEYK_F1 + (sc - 0x3B));  /* F1..F10 */
     if (sc == 0x57) return (uint8_t)(KEYK_F1 + 10);                          /* F11 */
     if (sc == 0x58) return (uint8_t)(KEYK_F1 + 11);                          /* F12 */
-    char c = map[sc];                        /* unshifted: Shift is a modifier */
+    char c = layout_char(sc, 0);             /* unshifted: Shift is a modifier */
     if (!c) return 0;
     if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
     return (uint8_t)c;
@@ -133,14 +155,16 @@ static void on_key(struct registers *r) {
     if (ext) {
         if (sc == 0x1D) { ctrl = 1; return; }       /* right Ctrl pressed  */
         if (sc == 0x9D) { ctrl = 0; return; }       /* right Ctrl released */
-        if (sc == 0x38) { alt = 1; return; }        /* right Alt pressed   */
-        if (sc == 0xB8) { alt = 0; return; }        /* right Alt released  */
+        /* Right Alt is AltGr, not Alt. The distinction is the whole reason a
+         * German keyboard can type an @ sign. */
+        if (sc == 0x38) { altgr = 1; return; }
+        if (sc == 0xB8) { altgr = 0; return; }
         if (sc == 0x5B || sc == 0x5C) { win = 1; win_used = 0; return; }  /* L/R Super pressed  */
         if (sc == 0xDB || sc == 0xDC) {                                   /* L/R Super released */
             int wu = win_used; win = 0;
             if (!wu) {                              /* a tap: whatever is bound to Win alone */
                 int a = keymap_tap(KMOD_WIN);
-                if (a != ACT_NONE) push((char)(KEY_ACTION_BASE + a));
+                if (a != ACT_NONE) action_push(a);
             }
             return;
         }
@@ -164,7 +188,7 @@ static void on_key(struct registers *r) {
     uint8_t lk = logical_key(sc, ext);
     if (lk) {
         int a = keymap_lookup(cur_mods(), lk);
-        if (a != ACT_NONE) { push((char)(KEY_ACTION_BASE + a)); return; }
+        if (a != ACT_NONE) { action_push(a); win_used = 1; return; }
     }
 
     /* ---- ordinary delivery ----------------------------------------------- */
@@ -173,13 +197,38 @@ static void on_key(struct registers *r) {
         if (e) push(shift ? shift_nav(e) : e);
         return;
     }
-    char c = shift ? shiftmap[sc] : map[sc];
+    /* AltGr wins over Shift where a layout defines a third level, and falls
+     * back to the shifted character where it does not -- so AltGr+Shift+7 on a
+     * layout with nothing there still types a '/' rather than nothing. */
+    char c = 0;
+    if (altgr) c = layout_char(sc, 2);
+    if (!c)    c = layout_char(sc, shift ? 1 : 0);
     if (!c) return;
+
     if (ctrl) {                                     /* Ctrl+key -> shortcut, else swallow */
         char s = ctrl_shortcut(c);
         if (s) push(s);
         return;
     }
+
+    /* Dead keys. An accent is not a character on most European layouts, it is
+     * a pending modification: press it, nothing appears, then the next letter
+     * comes out accented. A pair that does not combine emits both, which is
+     * what every other system does and what people expect -- and pressing the
+     * accent twice gives the literal accent, which is how you type one. */
+    uint8_t u = (uint8_t)c;
+    if (dead_pending) {
+        uint8_t acc = dead_pending;
+        dead_pending = 0;
+        if (u == ' ') { push((char)acc); return; }        /* accent + space = accent */
+        uint8_t combined = kbd_dead_compose(acc, u);
+        if (combined) { push((char)combined); return; }
+        push((char)acc);                                   /* no pair: both, in order */
+        push(c);
+        return;
+    }
+    if (kbd_is_dead(u)) { dead_pending = u; return; }
+
     push(c);
 }
 
@@ -212,12 +261,19 @@ void keyboard_init(void) {
      * cannot happen until there is a filesystem to read it from. */
     keymap_reset();
     rhead = rtail = 0;
+    arhead = artail = 0;
     shift = 0;
     ctrl = 0;
     alt = 0;
+    altgr = 0;
     win = 0;
     win_used = 0;
     extended = 0;
+    dead_pending = 0;
+    /* The built-in US layout, so keys work from the first press. kbd_layout_init()
+     * re-applies it and then loads /etc/keyboard.conf, which cannot happen until
+     * there is a filesystem to read it from. */
+    kbd_layout_set(0);
 
     /* Drain the 8042 before installing the handler, and again after.
      *

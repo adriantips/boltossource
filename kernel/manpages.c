@@ -326,6 +326,24 @@ static const manpage_t MAN[] = {
   "away from every program. F-keys need no modifier. Two actions cannot share\n"
   "a chord -- unbind one with `keys ACTION none` first. Changes are written to\n"
   "/etc/keys.conf and reloaded at boot." },
+{ "kbd", "kbd | kbd NAME | kbd show [NAME] | kbd save",
+  "The keyboard layout -- which character each key produces, which is not the\n"
+  "same question as which key it is. us, us-intl, uk, de, fr, es, it, se.\n"
+  "`kbd show` prints all three levels of every key, because a layout is the\n"
+  "one setting you cannot check by trying it: if it is wrong, every attempt to\n"
+  "type the thing you want to test comes out wrong too, including the command\n"
+  "you would fix it with. Compare the rows against the key caps.\n"
+  "AltGr is the RIGHT Alt key and is NOT Alt. On de, fr, es and it it is the\n"
+  "only way to type @, the braces and the currency signs; it used to be folded\n"
+  "into Alt, which is why those keys did nothing at all.\n"
+  "Dead keys: on most European layouts an accent types nothing on its own and\n"
+  "the next letter comes out accented. Press it twice, or follow it with a\n"
+  "space, to get the accent itself. A pair that does not combine emits both.\n"
+  "Latin-1 only. Polish, Czech, Turkish, Greek and Cyrillic need UTF-8 through\n"
+  "the console, the editors, the clipboard and the filesystem first, so they\n"
+  "are absent rather than present and typing blanks. The layout is kept in\n"
+  "/etc/keyboard.conf and reloaded at boot; `keys` is the separate table of\n"
+  "global shortcuts." },
 { "mixer", "mixer | mixer CHANNEL PERCENT | mixer CHANNEL mute|unmute|toggle",
   "The volume mixer. Channels are master, media, system, app and capture:\n"
   "master scales the four below it, media is anything playing a file, system\n"

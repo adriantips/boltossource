@@ -52,3 +52,28 @@ char kbd_getc(void);      /* block (hlt) until a key is available, then return i
  * Encoding: bits0-6 scancode, 0x100 = release, 0x200 = extended (0xE0). */
 void kbd_raw_enable(int on);
 int  kbd_raw_get(void);
+
+/* Is this byte a character somebody meant to type?
+ *
+ * Every text field in the OS was asking `c >= 32 && c < 127`, in about a dozen
+ * places, and every one of them silently dropped everything a non-US keyboard
+ * produces -- so a German user naming a file with an umlaut in it got the name
+ * without the umlaut and no indication anything had happened. One predicate,
+ * so the answer cannot differ between the terminal and the editor.
+ *
+ * 0x80..0x9F stays out: those are control codes in Latin-1 and no layout
+ * produces them, with the single exception of the euro, which lives at 0x80
+ * because it postdates the standard and there is nowhere else for it.
+ *
+ * This does NOT admit the low control bytes -- the key ring also carries
+ * navigation codes there, and inserting a KEY_UP into a password field is
+ * never what was meant. */
+static inline int kbd_is_text(unsigned char c) {
+    return (c >= 32 && c < 127) || c == 0x80 || c >= 0xA0;
+}
+
+/* The next resolved global shortcut, or -1 if none is pending. A parallel ring
+ * to the character one: an action is not a character, and once the character
+ * ring started carrying Latin-1 there was no byte left to pretend it was.
+ * Returns an ACT_* value from keymap.h. */
+int  kbd_action_get(void);
