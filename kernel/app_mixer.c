@@ -109,21 +109,29 @@ static void mixer_draw(window_t *w, int cx, int cy, int cw, int ch) {
 
         draw_meter(fx + fw + 6, fy, fh, mixer_peak(c), COL_GOOD);
 
-        /* mute button */
+        /* The button under each fader. On the four output channels it is the
+         * mute; on the input it is a monitor, because a microphone's meter
+         * only means anything while the ring is actually open and holding it
+         * open costs a running DMA engine. */
         int my = fy + fh + 8;
-        g_round(colx + 6, my, colw - 12, MUTE_H - 4, 6,
-                muted ? COL_BAD : COL_PANEL_3, 255);
-        const char *ml = muted ? "Muted" : "Mute";
+        int monitoring = mixer_is_input(c) && audio_capture_active();
+        uint32_t bg = mixer_is_input(c) ? (monitoring ? COL_GOOD : COL_PANEL_3)
+                                        : (muted ? COL_BAD : COL_PANEL_3);
+        const char *ml = mixer_is_input(c) ? (monitoring ? "Listening" : "Listen")
+                                           : (muted ? "Muted" : "Mute");
+        g_round(colx + 6, my, colw - 12, MUTE_H - 4, 6, bg, 255);
         g_text(colx + colw / 2 - g_text_width(ml, 1) / 2, my + 5, ml,
-               muted ? 0xFFFFFF : COL_TEXT_DIM, 1);
+               (monitoring || (!mixer_is_input(c) && muted)) ? 0xFFFFFF : COL_TEXT_DIM, 1);
 
         /* label + the number, under everything */
         int ly = my + MUTE_H + 4;
         const char *lab = mixer_label(c);
         g_text(colx + colw / 2 - g_text_width(lab, 1) / 2, ly, lab,
                c == MIX_MASTER ? COL_TEXT : COL_TEXT_DIM, 1);
-        char pct[16];
-        if (mixer_is_input(c) || c == MIX_MASTER) snprintf(pct, sizeof pct, "%d%%", vol);
+        char pct[20];
+        if (mixer_is_input(c))
+            snprintf(pct, sizeof pct, "%s", audio_capture_ok() ? audio_capture_name() : "none");
+        else if (c == MIX_MASTER) snprintf(pct, sizeof pct, "%d%%", vol);
         else snprintf(pct, sizeof pct, "%d%% (%d)", vol, eff);   /* what the codec gets */
         g_text(colx + colw / 2 - g_text_width(pct, 1) / 2, ly + 14, pct,
                muted ? COL_BAD : COL_TEXT_DIM, 1);
@@ -139,6 +147,17 @@ static void mixer_draw(window_t *w, int cx, int cy, int cw, int ch) {
 
 /* ----------------------------------------------------------------- input --- */
 
+/* A level change reaches the hardware by two different routes. Reopening the
+ * input is the only way to push a new capture gain at the codec -- the ring is
+ * where the driver applies it -- and it is cheap enough to do on a drag. */
+static void gain_changed(int c) {
+    if (mixer_is_input(c)) {
+        if (audio_capture_active()) { audio_capture_close(); audio_capture_open(); }
+    } else {
+        audio_gain_changed();
+    }
+}
+
 /* Set a channel from a y inside its fader. Top of the track is 100. */
 static void set_from_y(int c, int ly, int cy, int ch, int cw, int cx) {
     int fx, fy, fw, fh;
@@ -147,7 +166,7 @@ static void set_from_y(int c, int ly, int cy, int ch, int cw, int cx) {
     if (v < 0) v = 0;
     if (v > 100) v = 100;
     mixer_set_volume(c, v);
-    audio_gain_changed();
+    gain_changed(c);
 }
 
 /* The client rect is handed to draw() but not to click()/drag(), so the last
@@ -169,8 +188,13 @@ static void mixer_click(window_t *w, int lx, int ly) {
         int my = fy + fh + 8;
         sel = c;
         if (ly >= my && ly < my + MUTE_H - 4) {
-            mixer_toggle_mute(c);
-            audio_gain_changed();
+            if (mixer_is_input(c)) {
+                if (audio_capture_active()) audio_capture_close();
+                else                        audio_capture_open();
+            } else {
+                mixer_toggle_mute(c);
+                audio_gain_changed();
+            }
         } else if (ly >= fy - 8 && ly < fy + fh + 8) {
             grabbed = c;
             set_from_y(c, ly, cy, ch, cw, cx);
@@ -195,7 +219,7 @@ static void mixer_drag(window_t *w, int lx, int ly) {
 static void mixer_scroll(window_t *w, int delta) {
     (void)w;
     mixer_set_volume(sel, mixer_volume(sel) + delta * 5);
-    audio_gain_changed();
+    gain_changed(sel);
     mixer_save();
     gui_request_redraw();
 }
@@ -208,11 +232,15 @@ static void mixer_key(window_t *w, char c) {
     case KEY_UP:   mixer_set_volume(sel, mixer_volume(sel) + 5); break;
     case KEY_DOWN: mixer_set_volume(sel, mixer_volume(sel) - 5); break;
     case ' ':
-    case 'm': case 'M': mixer_toggle_mute(sel); break;
+    case 'm': case 'M':
+        if (mixer_is_input(sel)) {
+            if (audio_capture_active()) audio_capture_close(); else audio_capture_open();
+        } else mixer_toggle_mute(sel);
+        break;
     case 'r': case 'R': mixer_reset(); break;
     default: return;
     }
-    audio_gain_changed();
+    gain_changed(sel);
     mixer_save();
     gui_request_redraw();
 }
@@ -220,8 +248,9 @@ static void mixer_key(window_t *w, char c) {
 /* The meters only mean anything if they are repainted while sound is playing,
  * and the window tick is the cheapest place to ask for that. */
 static void mixer_tick(window_t *w) {
-    (void)w;
-    if (mixer_peak(MIX_MASTER) > 0) gui_request_redraw();
+    if (w && !w->open && audio_capture_active()) audio_capture_close();
+    audio_capture_pump();          /* no-op unless the input is open */
+    if (mixer_peak(MIX_MASTER) > 0 || audio_capture_active()) gui_request_redraw();
 }
 
 /* draw() is the only callback given the client rect, so it stashes it. */

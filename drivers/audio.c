@@ -118,6 +118,56 @@ void audio_tone_ch(int mix_ch, uint32_t freq, uint32_t ms) {
 
 void audio_tone(uint32_t freq, uint32_t ms) { audio_tone_ch(MIX_APP, freq, ms); }
 
+/* --- capture --------------------------------------------------------------
+ *  Opened on demand and closed again, unlike the output route. Holding it open
+ *  costs a running DMA engine, a stream descriptor and -- on real hardware --
+ *  a bias supply on the microphone ring, none of which a machine that is not
+ *  recording should be paying for.
+ * ------------------------------------------------------------------------*/
+static int cap_open;
+
+int audio_capture_ok(void)     { return dev && dev->cap_open != 0; }
+int audio_capture_active(void) { return cap_open; }
+
+const char *audio_capture_name(void) {
+    return audio_capture_ok() ? dev->cap_name() : "";
+}
+
+int audio_capture_open(void) {
+    if (!audio_capture_ok()) return -1;
+    if (cap_open) return 0;
+    if (dev->cap_open() != 0) return -1;
+    dev->cap_gain(mixer_effective(MIX_CAPTURE));
+    cap_open = 1;
+    return 0;
+}
+
+void audio_capture_close(void) {
+    if (!cap_open) return;
+    dev->cap_close();
+    cap_open = 0;
+}
+
+uint32_t audio_capture_read(int16_t *out, uint32_t frames) {
+    if (!cap_open || !out || !frames) return 0;
+    uint32_t got = dev->cap_read(out, frames);
+    if (got) mixer_note_peak(MIX_CAPTURE, out, got);
+    return got;
+}
+
+/* Drain the ring into a small scratch just to measure it. Static rather than
+ * on the stack: kernel stacks here are not big enough to hold a tenth of a
+ * second of stereo PCM, and this is called from a window tick. */
+void audio_capture_pump(void) {
+    static int16_t scratch[2048 * 2];
+    if (!cap_open) return;
+    /* Loop, because a tick that arrives late can have more waiting than the
+     * scratch holds, and a meter reading the oldest 40 ms of a 600 ms backlog
+     * is a meter showing the past. */
+    for (int i = 0; i < 16; i++)
+        if (audio_capture_read(scratch, 2048) == 0) break;
+}
+
 void audio_init(void) {
     mixer_init();                    /* levels from /etc/mixer.conf, if it exists */
     dev = hda_probe();

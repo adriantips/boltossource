@@ -158,3 +158,69 @@ int wav_load(const char *path, wav_t *w, uint8_t **buf, const char **err) {
     *buf = mem;
     return 0;
 }
+
+/* ===========================================================================
+ *  Writing one out.
+ *
+ *  A canonical 44-byte header and then the samples. No conversion: a capture
+ *  arrives at 48 kHz signed 16-bit stereo, which is the one format every
+ *  decoder on earth reads, and resampling it on the way to the disk would be
+ *  throwing away the only copy that exists.
+ * ===========================================================================*/
+
+static void put32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+static void put16(uint8_t *p, uint16_t v) {
+    p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8);
+}
+
+void wav_fix_length(uint8_t *h, uint16_t channels, uint32_t frames) {
+    uint32_t bytes = frames * channels * 2u;
+    put32(h + 4,  36u + bytes);        /* RIFF chunk size: everything after it */
+    put32(h + 40, bytes);              /* data chunk size                       */
+}
+
+void wav_header(uint8_t *h, uint32_t rate, uint16_t channels, uint32_t frames) {
+    memcpy(h + 0,  "RIFF", 4);
+    memcpy(h + 8,  "WAVEfmt ", 8);
+    put32(h + 16, 16);                             /* fmt chunk size, PCM      */
+    put16(h + 20, 1);                              /* WAVE_FORMAT_PCM          */
+    put16(h + 22, channels);
+    put32(h + 24, rate);
+    put32(h + 28, rate * channels * 2u);           /* byte rate                */
+    put16(h + 32, (uint16_t)(channels * 2));       /* block align              */
+    put16(h + 34, 16);                             /* bits per sample          */
+    memcpy(h + 36, "data", 4);
+    wav_fix_length(h, channels, frames);
+}
+
+int wav_save(const char *path, const int16_t *pcm, uint32_t frames,
+             uint32_t rate, uint16_t channels, const char **err) {
+    if (!path || !pcm || !frames || !channels) { if (err) *err = "nothing to write"; return -1; }
+
+    file *fh = vfs_open(path, O_WRONLY | O_CREAT | O_TRUNC);
+    if (!fh) { if (err) *err = "cannot create"; return -1; }
+
+    uint8_t hdr[WAV_HDR_BYTES];
+    wav_header(hdr, rate, channels, frames);
+    if (vfs_write(fh, hdr, sizeof hdr) != (int64_t)sizeof hdr) {
+        vfs_close(fh);
+        if (err) *err = "short write on the header";
+        return -1;
+    }
+
+    /* In chunks, because vfs_write is free to return a short count and a
+     * recording that stops at the first one is a recording of its first
+     * second. Same loop wav_load() reads with, for the same reason. */
+    uint64_t left = (uint64_t)frames * channels * 2u;
+    const uint8_t *p = (const uint8_t *)pcm;
+    while (left) {
+        int64_t n = vfs_write(fh, p, left > 65536u ? 65536u : left);
+        if (n <= 0) { vfs_close(fh); if (err) *err = "short write"; return -1; }
+        p += n; left -= (uint64_t)n;
+    }
+    vfs_close(fh);
+    return 0;
+}

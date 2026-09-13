@@ -42,6 +42,16 @@
  *  block of silence -- and the engine is stopped while it is grinding through
  *  the silence. Without that pad, the gap between the buffer draining and the
  *  caller noticing would be filled with a replay of the chunk just played.
+ *
+ *  Capture is the same graph walk with the arrows reversed, plus one thing that
+ *  is genuinely different: the cyclic buffer that is a nuisance on the output
+ *  side is exactly what you want on the input side. The engine runs
+ *  continuously and a reader takes whatever appeared between the position it
+ *  last saw and the current one, so nothing is started and stopped per chunk.
+ *  What that costs is that a reader who goes away for longer than the ring
+ *  holds loses the oldest samples -- the right failure for a level meter and
+ *  the wrong one for a recording, which is why the recorder is the half that
+ *  has to keep up.
  * ===========================================================================*/
 
 /* --- controller registers (BAR0) ---------------------------------------- */
@@ -124,10 +134,14 @@
 
 #define PINCAP_HP_DRV   (1u << 3)
 #define PINCAP_OUT      (1u << 4)
+#define PINCAP_IN       (1u << 5)
+#define PINCAP_VREF80   (1u << 12)
 #define PINCAP_EAPD     (1u << 16)
 
 #define PIN_CTL_OUT_EN  0x40
 #define PIN_CTL_HP_EN   0x80
+#define PIN_CTL_IN_EN   0x20
+#define PIN_CTL_VREF80  0x04      /* bits 2:0 select the bias; 4 = 80% */
 
 /* Amp payload selectors: which amp, and which channels, a SET_AMP applies to. */
 #define AMP_SET_OUT     0x8000
@@ -140,6 +154,14 @@
  * engine falls into when the data runs out (see the header comment). */
 #define CAP_BYTES       (256u * 1024)   /* ~1.36 s at 48 kHz stereo */
 #define PAD_BYTES       (32u * 1024)    /* ~170 ms of silence       */
+
+/* The capture ring. 0.68 s is long enough that a level meter polled from a
+ * window tick (about twice a second) never misses anything, and short enough
+ * that a reader who has stopped caring is not holding a megabyte. Two
+ * descriptors of half each, because the engine wants at least one and a
+ * single-entry BDL is a special case on some controllers. */
+#define CAPIN_BYTES     (128u * 1024)
+#define IN_STREAM_TAG   2
 
 #define RIRB_OFFSET     2048            /* both rings share one page, 128-aligned */
 
@@ -164,6 +186,20 @@ static struct {
     struct hop path[8];
     int      path_n;
     uint32_t data_bytes;           /* real PCM in the buffer now playing      */
+
+    /* the input half -- zero throughout on a codec with no route in */
+    uint32_t isd;                  /* input stream descriptor base offset     */
+    uint16_t adc, in_pin;
+    uint16_t gain_nid;             /* which widget holds the capture gain     */
+    uint8_t  gain_idx;             /* ...and at which of its inputs           */
+    int      gain_is_in;           /* 1 = an input amp, 0 = an output amp     */
+    struct hop in_path[8];
+    int      in_path_n;
+    struct dma_buf cap_bdl, cap_pcm;
+    int      cap_ready;            /* the buffers exist                        */
+    int      cap_on;               /* the engine is running                    */
+    uint32_t cap_rd;               /* byte offset we have consumed up to       */
+    const char *in_label;
 } h;
 
 static void udelay(uint32_t us) {
@@ -285,16 +321,21 @@ static void set_out_gain(uint16_t nid, int pct) {
     cmd(nid, V_SET_AMP, p);
 }
 
-/* Unmute one input of a mixer at full gain. A mixer sums its inputs, so the
- * route through it is chosen by unmuting the one we want rather than by
- * selecting it. */
-static void unmute_in(uint16_t nid, int idx) {
+/* Set one input of a widget to `pct` of its range. A mixer sums its inputs, so
+ * the route through it is chosen by unmuting the one we want rather than by
+ * selecting it -- and on the capture side the same register is the microphone's
+ * gain knob, which is why this takes a percentage rather than just opening. */
+static void set_in_gain(uint16_t nid, int idx, int pct) {
     uint32_t cap = amp_cap(nid, 1);
     if (!cap) return;
     int steps = (int)((cap >> 8) & 0x7F);
-    cmd(nid, V_SET_AMP, (uint16_t)(AMP_SET_IN | AMP_SET_LEFT | AMP_SET_RIGHT |
-                                   ((idx & 0xF) << 8) | steps));
+    uint16_t p = (uint16_t)(AMP_SET_IN | AMP_SET_LEFT | AMP_SET_RIGHT | ((idx & 0xF) << 8));
+    if (pct <= 0 && (cap & 0x80000000u)) p |= AMP_MUTE;
+    else p |= (uint16_t)(steps * pct / 100);
+    cmd(nid, V_SET_AMP, p);
 }
+
+static void unmute_in(uint16_t nid, int idx) { set_in_gain(nid, idx, 100); }
 
 /* Walk backwards from `nid` looking for a DAC, recording the branch that leads
  * to one at every fork. Depth-limited: a codec graph with a cycle in its
@@ -336,6 +377,128 @@ static int pin_score(uint16_t nid) {
         case 2:  return 20;                                 /* headphone */
         default: return 1;
     }
+}
+
+/* What an input pin is called, from its configuration default. This is the
+ * string the mixer shows, so it has to be the jack somebody would look for on
+ * the side of the machine rather than a widget number. */
+static const char *in_pin_label(uint32_t cfg) {
+    switch ((cfg >> 20) & 0xF) {
+        case 0xA: return "Mic";
+        case 0xB: return "Telephony";
+        case 0xC: return "SPDIF in";
+        case 0xD: return "Digital in";
+        case 0x8: return "Line in";
+        case 0x9: return "Aux";
+        default:  return "Input";
+    }
+}
+
+/* How much we want a given input pin. A microphone beats a line input beats
+ * anything else, and a digital pin is not a candidate at all -- we ask for
+ * analogue PCM and nothing downstream can convert. */
+static int in_pin_score(uint16_t nid) {
+    if (param(nid, P_AUDIO_CAP) & WCAP_DIGITAL) return 0;
+    if (!(param(nid, P_PIN_CAP) & PINCAP_IN)) return 0;
+    uint32_t cfg = cmd(nid, V_GET_CFG_DEF, 0);
+    if (((cfg >> 30) & 3) == 1) return 0;                   /* nothing behind it */
+    switch ((cfg >> 20) & 0xF) {
+        case 0xA: return 30;                                /* microphone */
+        case 0x8: return 20;                                /* line in    */
+        case 0x9: return 10;                                /* aux        */
+        default:  return 1;
+    }
+}
+
+/* Backwards from an ADC looking for an input pin, recording the branch taken at
+ * every fork. Same shape and the same depth limit as trace_dac() -- a codec
+ * with a cycle in its connection lists must not take the kernel down. */
+static uint16_t trace_in_pin(uint16_t nid, int depth) {
+    if (depth > 4) return 0;
+    uint16_t conn[16];
+    int n = conn_list(nid, conn, 16);
+    for (int i = 0; i < n; i++) {
+        uint8_t t = wtype(conn[i]);
+        uint16_t found = 0;
+        if (t == WT_PIN)
+            found = in_pin_score(conn[i]) ? conn[i] : 0;
+        else if (t == WT_MIXER || t == WT_SELECTOR)
+            found = trace_in_pin(conn[i], depth + 1);
+        if (!found) continue;
+        if (h.in_path_n < (int)(sizeof(h.in_path) / sizeof(h.in_path[0]))) {
+            h.in_path[h.in_path_n].nid  = nid;
+            h.in_path[h.in_path_n].idx  = (uint8_t)i;
+            h.in_path[h.in_path_n].type = wtype(nid);
+            h.in_path_n++;
+        }
+        return found;
+    }
+    return 0;
+}
+
+/* Every ADC on this function group, scored by the pin it can reach. Sets up the
+ * route it settles on and leaves h.adc/h.in_pin non-zero if there is one.
+ *
+ * A codec with no microphone jack is the normal case on a server and on most
+ * emulated machines, so this failing is not a failure -- capture is simply
+ * absent, and audio_capture_ok() says so rather than the whole probe refusing
+ * a controller that plays perfectly well. */
+static void find_input(uint16_t w0, uint16_t wc) {
+    int best = 0;
+    for (uint16_t w = w0; w < w0 + wc; w++) {
+        if (wtype(w) != WT_ADC) continue;
+        if (param(w, P_AUDIO_CAP) & WCAP_DIGITAL) continue;
+        h.in_path_n = 0;
+        uint16_t p = trace_in_pin(w, 0);
+        if (!p) continue;
+        int s = in_pin_score(p);
+        if (s <= best) continue;
+        best = s; h.adc = w; h.in_pin = p;
+    }
+    if (!h.adc) return;
+
+    /* Re-run for the ADC we settled on: the loop above left h.in_path holding
+     * whichever candidate it happened to examine last. (The output side had
+     * exactly this bug, and it is the same two lines to fix.) */
+    h.in_path_n = 0;
+    trace_in_pin(h.adc, 0);
+
+    uint32_t cfg = cmd(h.in_pin, V_GET_CFG_DEF, 0);
+    h.in_label = in_pin_label(cfg);
+
+    cmd(h.adc, V_SET_POWER, 0);
+    cmd(h.in_pin, V_SET_POWER, 0);
+
+    /* Open the pin as an input, and switch the bias supply on if this is a
+     * microphone and the pin can provide it. An electret capsule is a passive
+     * part: with no VREF on the ring it produces nothing at all, and every
+     * register still reads back correctly. */
+    uint32_t pincap = param(h.in_pin, P_PIN_CAP);
+    uint8_t ctl = PIN_CTL_IN_EN;
+    if (((cfg >> 20) & 0xF) == 0xA && (pincap & PINCAP_VREF80)) ctl |= PIN_CTL_VREF80;
+    cmd(h.in_pin, V_SET_PIN_CTL, ctl);
+
+    for (int i = 0; i < h.in_path_n; i++) {
+        struct hop *p = &h.in_path[i];
+        cmd(p->nid, V_SET_POWER, 0);
+        if (p->type == WT_SELECTOR) cmd(p->nid, V_SET_CONN_SEL, p->idx);
+        set_in_gain(p->nid, p->idx, 100);
+    }
+
+    /* Whichever end of the route owns a gain control is the microphone knob.
+     * The ADC's input amp first, because it is the one that exists on every
+     * codec that has an ADC at all. */
+    if (amp_cap(h.adc, 1)) {
+        h.gain_nid = h.adc; h.gain_is_in = 1;
+        h.gain_idx = h.in_path_n ? h.in_path[h.in_path_n - 1].idx : 0;
+    } else if (amp_cap(h.in_pin, 1)) {
+        h.gain_nid = h.in_pin; h.gain_is_in = 1; h.gain_idx = 0;
+    } else if (amp_cap(h.adc, 0)) {
+        h.gain_nid = h.adc; h.gain_is_in = 0;
+    }
+
+    cmd(h.adc, V_SET_CONV_STRM, (uint16_t)(IN_STREAM_TAG << 4));
+    cmd(h.adc, V_SET_STREAM_FMT, FMT_48K_S16_2);
 }
 
 /* Find the audio function group on codec `cad`, then the best output pin on it
@@ -406,18 +569,26 @@ static int claim_codec(uint8_t cad) {
     /* Whichever end of the route owns a gain control becomes the volume knob;
      * everything else stays wide open so the two do not stack up. */
     h.vol_nid = amp_cap(h.dac, 0) ? h.dac : (amp_cap(h.pin, 0) ? h.pin : 0);
+
+    /* And the way back in, if this codec has one. Done here rather than in the
+     * probe because it needs the same widget range the output walk used. */
+    find_input(w0, wc);
     return 1;
 }
 
 /* --- the stream engine --------------------------------------------------- */
 
-static void stream_reset(void) {
-    mmio_write8(h.mm, h.sd + SD_CTL, 0);
-    for (int i = 0; i < 1000 && (mmio_read8(h.mm, h.sd + SD_CTL) & CTL_RUN); i++) udelay(10);
-    mmio_write8(h.mm, h.sd + SD_CTL, CTL_SRST);
-    for (int i = 0; i < 1000 && !(mmio_read8(h.mm, h.sd + SD_CTL) & CTL_SRST); i++) udelay(10);
-    mmio_write8(h.mm, h.sd + SD_CTL, 0);
-    for (int i = 0; i < 1000 && (mmio_read8(h.mm, h.sd + SD_CTL) & CTL_SRST); i++) udelay(10);
+/* Reset one stream descriptor: stop it, assert SRST, wait for it to read back,
+ * drop SRST, wait again. Parameterised because the input and output engines are
+ * the same register block at two offsets -- two copies of this is how one of
+ * them ends up with a fix the other never got. */
+static void sd_reset(uint32_t base) {
+    mmio_write8(h.mm, base + SD_CTL, 0);
+    for (int i = 0; i < 1000 && (mmio_read8(h.mm, base + SD_CTL) & CTL_RUN); i++) udelay(10);
+    mmio_write8(h.mm, base + SD_CTL, CTL_SRST);
+    for (int i = 0; i < 1000 && !(mmio_read8(h.mm, base + SD_CTL) & CTL_SRST); i++) udelay(10);
+    mmio_write8(h.mm, base + SD_CTL, 0);
+    for (int i = 0; i < 1000 && (mmio_read8(h.mm, base + SD_CTL) & CTL_SRST); i++) udelay(10);
 }
 
 static uint32_t hda_capacity(void) { return h.present ? CAP_BYTES / 4 : 0; }
@@ -434,7 +605,7 @@ static void hda_submit(const int16_t *pcm, uint32_t frames) {
     b[0].addr = h.pcm.phys;              b[0].len = data;      b[0].flags = 1;  /* IOC */
     b[1].addr = h.pcm.phys + CAP_BYTES;  b[1].len = PAD_BYTES; b[1].flags = 0;
 
-    stream_reset();
+    sd_reset(h.sd);
     mmio_write32(h.mm, h.sd + SD_CBL, data + PAD_BYTES);
     mmio_write16(h.mm, h.sd + SD_LVI, 1);
     mmio_write16(h.mm, h.sd + SD_FMT, FMT_48K_S16_2);
@@ -463,6 +634,73 @@ static void hda_volume(int percent) {
     set_out_gain(h.vol_nid, percent);
 }
 
+/* --- capture ------------------------------------------------------------- */
+
+static const char *hda_cap_name(void) { return h.in_label ? h.in_label : ""; }
+
+static void hda_cap_gain(int percent) {
+    if (!h.present || !h.gain_nid) return;
+    if (h.gain_is_in) set_in_gain(h.gain_nid, h.gain_idx, percent);
+    else              set_out_gain(h.gain_nid, percent);
+}
+
+static int hda_cap_open(void) {
+    if (!h.present || !h.adc) return -1;
+    if (h.cap_on) return 0;
+
+    if (!h.cap_ready) {
+        if (dma_alloc(2 * sizeof(struct bdl_entry), &h.cap_bdl) != 0) return -1;
+        if (dma_alloc(CAPIN_BYTES, &h.cap_pcm) != 0) { dma_free(&h.cap_bdl); return -1; }
+        h.cap_ready = 1;
+    }
+    /* Start from silence rather than from whatever the last session left in
+     * the ring: a meter that opens showing the tail of an old recording is
+     * worse than one that opens showing nothing. */
+    memset(h.cap_pcm.virt, 0, CAPIN_BYTES);
+
+    struct bdl_entry *b = (struct bdl_entry *)h.cap_bdl.virt;
+    b[0].addr = h.cap_pcm.phys;                    b[0].len = CAPIN_BYTES / 2; b[0].flags = 0;
+    b[1].addr = h.cap_pcm.phys + CAPIN_BYTES / 2;  b[1].len = CAPIN_BYTES / 2; b[1].flags = 0;
+
+    sd_reset(h.isd);
+    mmio_write32(h.mm, h.isd + SD_CBL, CAPIN_BYTES);
+    mmio_write16(h.mm, h.isd + SD_LVI, 1);
+    mmio_write16(h.mm, h.isd + SD_FMT, FMT_48K_S16_2);
+    mmio_write32(h.mm, h.isd + SD_BDPL, (uint32_t)h.cap_bdl.phys);
+    mmio_write32(h.mm, h.isd + SD_BDPU, (uint32_t)(h.cap_bdl.phys >> 32));
+    mmio_write8 (h.mm, h.isd + SD_STS, 0x1C);
+    mmio_write8 (h.mm, h.isd + SD_CTL + 2, (uint8_t)(IN_STREAM_TAG << 4));
+    h.cap_rd = 0;
+    h.cap_on = 1;
+    mmio_write8 (h.mm, h.isd + SD_CTL, CTL_RUN);
+    return 0;
+}
+
+static void hda_cap_close(void) {
+    if (!h.present || !h.cap_on) return;
+    mmio_write8(h.mm, h.isd + SD_CTL, 0);
+    h.cap_on = 0;
+}
+
+static uint32_t hda_cap_read(int16_t *out, uint32_t frames) {
+    if (!h.cap_on || !out || !frames) return 0;
+    uint32_t lpib = mmio_read32(h.mm, h.isd + SD_LPIB);
+    if (lpib >= CAPIN_BYTES) lpib %= CAPIN_BYTES;      /* paranoia; spec says it wraps */
+    uint32_t avail = (lpib + CAPIN_BYTES - h.cap_rd) % CAPIN_BYTES;
+    uint32_t want = frames * 4;
+    if (avail > want) avail = want;
+    if (!avail) return 0;
+
+    /* One copy or two, depending on whether the span crosses the end. */
+    const uint8_t *src = (const uint8_t *)h.cap_pcm.virt;
+    uint32_t first = CAPIN_BYTES - h.cap_rd;
+    if (first > avail) first = avail;
+    memcpy(out, src + h.cap_rd, first);
+    if (avail > first) memcpy((uint8_t *)out + first, src, avail - first);
+    h.cap_rd = (h.cap_rd + avail) % CAPIN_BYTES;
+    return avail / 4;
+}
+
 static const audio_dev_t hda_dev = {
     .name     = "Intel HDA",
     .capacity = hda_capacity,
@@ -470,6 +708,11 @@ static const audio_dev_t hda_dev = {
     .busy     = hda_busy,
     .stop     = hda_stop,
     .volume   = hda_volume,
+    .cap_open = hda_cap_open,
+    .cap_read = hda_cap_read,
+    .cap_close = hda_cap_close,
+    .cap_gain = hda_cap_gain,
+    .cap_name = hda_cap_name,
 };
 
 /* --- bring-up ------------------------------------------------------------ */
@@ -550,6 +793,7 @@ const audio_dev_t *hda_probe(void) {
     if (!oss) { kprintf("[audio] HDA reports no output streams\n"); return 0; }
     /* Input stream descriptors come first, then the output ones. */
     h.sd = SD_BASE + iss * SD_STRIDE;
+    h.isd = iss ? SD_BASE : 0;          /* no input engines -> no capture at all */
 
     if (dma_alloc(4096, &h.ring) != 0) return 0;
     rings_init();
@@ -588,9 +832,15 @@ const audio_dev_t *hda_probe(void) {
         return 0;
     }
 
+    if (!h.isd) h.adc = 0;              /* a route with nowhere to stream it */
+
     h.present = 1;
     kprintf("[ok] Intel HDA %x:%x (codec %d, pin %d -> dac %d, %s), 48kHz stereo\n",
             pd.vendor, pd.device, h.cad, h.pin, h.dac,
             h.use_corb ? "CORB/RIRB" : "immediate");
+    if (h.adc)
+        kprintf("[ok] HDA capture: %s (pin %d -> adc %d)\n", h.in_label, h.in_pin, h.adc);
+    else
+        kprintf("[--] HDA: no input route on this codec; no capture\n");
     return &hda_dev;
 }

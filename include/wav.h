@@ -51,3 +51,21 @@ int      wav_done(const wav_t *w);
  * alike) and parse it. On success *buf owns a kmalloc'd copy the caller must
  * kfree once it has finished with *w. Returns 0, or -1 with *err set. */
 int wav_load(const char *path, wav_t *w, uint8_t **buf, const char **err);
+
+/* --- and back out again ---------------------------------------------------
+ *  The other direction, which only arrived when there was something to record.
+ *  No conversion here and none wanted: a capture is already 48 kHz signed
+ *  16-bit stereo, and anything that resampled it on the way to the disk would
+ *  be throwing away the only copy.
+ *
+ *  wav_header() fills a 44-byte canonical RIFF/WAVE header so a recorder can
+ *  write it first and append frames as they arrive -- the length fields have to
+ *  be patched once the recording stops, which is what wav_fix_length() is for.
+ * ------------------------------------------------------------------------*/
+#define WAV_HDR_BYTES 44
+void wav_header(uint8_t *out44, uint32_t rate, uint16_t channels, uint32_t frames);
+void wav_fix_length(uint8_t *hdr44, uint16_t channels, uint32_t frames);
+
+/* Write a complete file through the VFS. Returns 0, or -1 with *err set. */
+int wav_save(const char *path, const int16_t *pcm, uint32_t frames,
+             uint32_t rate, uint16_t channels, const char **err);
