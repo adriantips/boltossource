@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""as -c, ar and ld: a program that did not fit in one file.
+"""as -c, cc -c, ar and ld: a program that did not fit in one file.
 
-`as` could already turn text typed on BoltOS into a program. It could only do
-it one file at a time, and every name had to be resolvable inside that file --
-which is the difference between an assembler and a toolchain. This covers the
-three pieces that close the gap: objects with holes in them, archives to keep
-objects in, and a linker that fills the holes.
+`as` could already turn text typed on BoltOS into a program, and `cc -N` a C
+file. Both could only do it one file at a time, with every name resolvable
+inside that file -- which is the difference between a compiler and a toolchain.
+This covers the four pieces that close the gap: objects with holes in them,
+archives to keep objects in, a linker that fills the holes, and a C compiler
+that will stop one step short of a program and leave the names open.
 
 The host half is where the real checking happens, because an object format is
 only right if a reader that was not written alongside it agrees:
@@ -18,6 +19,8 @@ only right if a reader that was not written alongside it agrees:
   * where every resolved reference ended up is compared against where lld
     put it, since the two lay the sections out differently on purpose
   * GNU ar reads our archives and we read GNU ar's, long member names included
+  * two C files compiled separately link into one program, with the call, the
+    shared variable and the single entry point all landing where nm says
 
 The QEMU half then does the whole thing on the machine itself, from typing the
 source to running the program, because none of the above proves the commands
@@ -100,6 +103,25 @@ global inner
 inner:
     mov rax, 41
     ret
+"""
+
+# The same split, in C. main.c names `answer` without defining it, shares a
+# file-scope variable, and is the only unit with main() -- so it is the only
+# one that may carry _start.
+MAIN_C = """int answer(int);
+int counter;
+
+int main(void) {
+    counter = answer(20);
+    return counter;
+}
+"""
+
+LIB_C = """int twice(int n) { return n + n; }
+
+int answer(int n) {
+    return twice(n) + 2;
+}
 """
 
 
@@ -260,6 +282,80 @@ def host_tests():
         "the archive scan did not run to a fixed point: " + out
     print("  ok: an archive that needs a later archive still links")
 
+    # --- C, compiled one file at a time ------------------------------------
+    ccobj = OUT / ("ccobj-host.exe" if os.name == "nt" else "ccobj-host")
+    subprocess.run([cc, "-std=c11", "-O1", "-g", "-Wall",
+                    "-Wno-inconsistent-dllimport", "-DBOLTCC_NO_DEBUGGER",
+                    "-iquote", str(Path(ROOT) / "include"),
+                    str(Path(ROOT) / "test" / "host" / "ccobj.c"), "-o", str(ccobj)],
+                   check=True)
+
+    def compile_c(name, body, mode="module"):
+        (d / (name + ".c")).write_text(body)
+        r = subprocess.run([str(ccobj), mode], stdin=open(d / (name + ".c")),
+                           capture_output=True, text=True, cwd=str(d))
+        return r.stdout, r.stderr
+
+    for name, body in (("cmain", MAIN_C), ("clib", LIB_C)):
+        text, why = compile_c(name, body)
+        assert not text.startswith("ERR") and "section .text" in text,             "%s.c did not compile to a module:\n%s" % (name, why)
+        (d / (name + ".asm")).write_text(text)
+
+    mtext = (d / "cmain.asm").read_text()
+    ltext = (d / "clib.asm").read_text()
+    assert "extern answer" in mtext, \
+        "a prototype with no definition here did not become an extern:\n" + mtext[:400]
+    assert "global _start" in mtext, "the unit with main() has no entry point"
+    assert "global _start" not in ltext, \
+        "a unit without main() emitted an entry point, which would be a second one"
+    assert "global answer" in ltext and "global twice" in ltext, ltext[:400]
+    print("  ok: C compiles per file -- externs out, entry point only where main is")
+
+    for n in ("cmain", "clib"):
+        out = bolt("asmobj", n + ".asm", n + ".o")
+        assert out.startswith("OK"), "%s.asm did not assemble: %s" % (n, out)
+    out = bolt("ld", "cprog", "cmain.o", "clib.o")
+    assert out.startswith("OK"), "the two C objects did not link: " + out
+
+    if readelf:
+        r = run([tool("nm.exe", "nm"), str(d / "cprog")])
+        for want in ("T main", "T answer", "T twice", "D _G_counter", "T _start"):
+            assert want in r.stdout, "%s is not in the linked program:\n%s" % (want, r.stdout)
+        r = run([tool("objdump.exe", "objdump"), "-d", str(d / "cprog")])
+        assert "call" in r.stdout and "<answer>" in r.stdout,             "the cross-object call did not resolve:\n" + r.stdout[:1500]
+        assert "<twice>" in r.stdout, "the call within one object did not resolve"
+        assert "<_G_counter>" in r.stdout, "the shared variable did not resolve"
+    # Each object carries its own copy of BoltCC's runtime, as local symbols.
+    # That is a few hundred wasted bytes per object and it is why two of them
+    # can be linked at all without every helper colliding.
+    assert "__printf" in mtext and "__printf" in ltext, \
+        "an object did not carry the runtime it needs to stand alone"
+    assert "global __printf" not in mtext, \
+        "the runtime was published as a global, which is a duplicate symbol " \
+        "the moment a second object turns up"
+    print("  ok: two separately compiled C files link into one program")
+
+    text, why = compile_c("twomain", MAIN_C.replace("answer(20)", "20"))
+    (d / "twomain.asm").write_text(text)
+    bolt("asmobj", "twomain.asm", "twomain.o")
+    out = bolt("ld", "bad", "cmain.o", "twomain.o", "clib.o")
+    assert "duplicate definition of 'main'" in out, \
+        "two units with main() linked anyway: " + out
+
+    text, why = compile_c("noinit", "int counter = 5;\nint helper(void){return counter;}\n")
+    assert text.startswith("ERR") and "cannot initialise the global" in why, \
+        "an initialiser that could never run was accepted:\n%s%s" % (text[:200], why)
+
+    text, why = compile_c("undef", "int missing(int);\nint main(void){return missing(1);}\n",
+                          mode="program")
+    assert text.startswith("ERR") and "declared but never defined" in why, \
+        "a whole program was allowed to call a name nothing defines:\n%s%s" % (text[:200], why)
+    text, why = compile_c("undef", "int missing(int);\nint main(void){return missing(1);}\n")
+    assert "extern missing" in text, \
+        "the same file as a module should leave the name to the linker:\n" + why
+    print("  ok: two mains, an initialiser that could not run, and a name "
+          "nothing defines are each refused")
+
     # --- the ways it should refuse -----------------------------------------
     out = bolt("ld", "bad", "main.o")
     assert "undefined reference to 'add3'" in out, out
@@ -349,6 +445,22 @@ def qemu_tests():
         assert "no such file" in out.lower() or "not found" in out.lower(), \
             "a failed link still wrote a file:\n" + out[-400:]
         print("  ok: an unresolved name is named, and no program is left behind")
+
+        # And the same split, in C, compiled one file at a time.
+        write_file(vm, "/t/cmain.c", MAIN_C)
+        write_file(vm, "/t/clib.c", LIB_C)
+        out = vm.run("cc -c /t/cmain.c -o /t/cmain.o", timeout=120)
+        assert "-> /t/cmain.o" in out and "object" in out, \
+            "cc -c did not write an object:\n" + out[-700:]
+        out = vm.run("cc -c /t/clib.c -o /t/clib.o", timeout=120)
+        assert "-> /t/clib.o" in out, out[-700:]
+        out = vm.run("ld -o /t/cprog /t/cmain.o /t/clib.o", timeout=90)
+        assert "-> /t/cprog" in out, "the two C objects did not link:\n" + out[-700:]
+        out = vm.run("run /t/cprog", timeout=90)
+        assert "answer is 42" in out, \
+            "the C program did not call across the object boundary:\n" + out[-700:]
+        assert "exited 42" in out, out[-700:]
+        print("  ok: two C files compiled separately, linked, and run")
 
         # The linked program carries its symbols, so a crash in it has names.
         out = vm.run("man ld", timeout=40)

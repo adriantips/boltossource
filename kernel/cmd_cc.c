@@ -13,16 +13,17 @@
  *  BoltOS  -  kernel/cmd_cc.c
  *  `cc` -- the C compiler driver: preprocess, combine, compile, run.
  *
- *  BoltCC compiles one translation unit at a time and has no separate
- *  compilation or linking model, so `cc a.c b.c` preprocesses each file and
- *  concatenates the results into a single unit before compiling. That is a
- *  unity build, and it is worth naming plainly rather than dressing up as
- *  something it is not -- but it does mean a program really can be split across
- *  files, with headers shared between them, which is the thing that was
- *  impossible before.
+ *  `cc a.c b.c` preprocesses each file and concatenates the results into a
+ *  single translation unit before compiling. That is a unity build, and it is
+ *  worth naming plainly rather than dressing up as something it is not. It
+ *  means a program can be split across files, with headers shared between
+ *  them, which is the thing that was impossible before; forward references
+ *  already work in BoltCC, so the order on the command line does not matter.
  *
- *  Forward references already work in BoltCC, so the order of the files on the
- *  command line does not matter.
+ *  `cc -c` is the other way of splitting one: each file becomes a relocatable
+ *  object with named symbols, and `ld` resolves between them. That is separate
+ *  compilation properly, and it is what lets one file be rebuilt without the
+ *  others -- which is the whole reason `make` has anything to decide.
  *
  *  The list of files, the include path and the macros are a build target
  *  (include/ccbuild.h). `cc` builds one from the command line; `build` reads
@@ -40,12 +41,19 @@ static void usage(void) {
             "  -g          run under the debugger (breakpoints, stepping, locals)\n"
             "  -S          print the x86-64 the native backend would emit\n"
             "  -N          compile to a native ELF64 program instead of running\n"
+            "  -c          compile to a relocatable object for `ld`\n"
             "  -q          run, but do not print the compile banner\n"
             "\n"
             "Without -N a program runs on BoltCC's bytecode VM, which is the whole\n"
             "language. -N compiles it through the assembler into a real program the\n"
             "machine executes directly -- a subset: integers, functions, control\n"
             "flow, printf and puts. Anything outside that is named, not miscompiled.\n"
+            "\n"
+            "-c stops one step earlier and writes an object: functions and file-scope\n"
+            "variables become names `ld` can resolve, a prototype with no definition\n"
+            "here becomes a call into another object, and only the unit with main()\n"
+            "carries the entry point. That is how a program gets split across files\n"
+            "that are compiled separately, rather than concatenated into one unit.\n"
             "\n"
             "Several files are preprocessed and combined into one translation unit\n"
             "(a unity build -- BoltCC has no separate linking step), then compiled\n"
@@ -77,22 +85,24 @@ static int write_file(const char *path, const void *data, uint32_t len, const ch
     return 0;
 }
 
-/* -S prints (or writes) the assembly; -N hands that same text to the assembler
- * and writes the program. They are one function because -S is exactly -N with
- * the last step left off, and that is the property that makes a miscompile
- * something you can look at. */
+/* -S prints the assembly, -N assembles it into a program, -c assembles it into
+ * an object. One function because they are the same three steps with different
+ * places to stop, and that is the property that makes a miscompile something
+ * you can look at. */
 static int cc_native(ccb_target_t *t, const char *unit, const char *first_src,
-                     const char *outpath, int native, int quiet) {
+                     const char *outpath, int native, int quiet, int object) {
     int lang = ccb_lang(t);
     char *text = 0;
-    if (boltcc_native(lang, unit, &text) != 0 || !text) return 1;
+    int rc = object ? boltcc_module(lang, unit, &text)
+                    : boltcc_native(lang, unit, &text);
+    if (rc != 0 || !text) return 1;
 
     uint32_t tlen = (uint32_t)strlen(text);
     char namebuf[128];
 
     if (!native) {
         if (outpath) {
-            int rc = write_file(outpath, text, tlen, "assembly");
+            rc = write_file(outpath, text, tlen, "assembly");
             if (!rc) kprintf("cc: -> %s (%u bytes of assembly)\n", outpath, (unsigned)tlen);
             kfree(text);
             return rc;
@@ -104,7 +114,8 @@ static int cc_native(ccb_target_t *t, const char *unit, const char *first_src,
 
     char err[ASM_MAX_ERR] = "";
     uint32_t len = 0;
-    uint8_t *img = asm_assemble(text, &len, err, sizeof err);
+    uint8_t *img = object ? asm_assemble_obj(text, &len, err, sizeof err)
+                          : asm_assemble(text, &len, err, sizeof err);
     if (!img) {
         /* The assembler failing on generated code is this backend's bug, not
          * the program's, so say which side of the line the message came from. */
@@ -116,14 +127,19 @@ static int cc_native(ccb_target_t *t, const char *unit, const char *first_src,
     }
     kfree(text);
 
-    if (!outpath) { derive_out(first_src, 0, namebuf, sizeof namebuf); outpath = namebuf; }
-    int rc = write_file(outpath, img, len, "program");
+    if (!outpath) {
+        derive_out(first_src, object ? ".o" : 0, namebuf, sizeof namebuf);
+        outpath = namebuf;
+    }
+    rc = write_file(outpath, img, len, object ? "object" : "program");
     kfree(img);
     if (rc) return rc;
     if (!quiet) {
-        kprintf("cc: %s -> %s (%u bytes, native)\n",
-                boltcc_lang_name(lang), outpath, (unsigned)len);
-        kprintf("    run it with: run %s\n", outpath);
+        kprintf("cc: %s -> %s (%u bytes, %s)\n",
+                boltcc_lang_name(lang), outpath, (unsigned)len,
+                object ? "object" : "native");
+        if (object) kprintf("    link it with: ld -o PROG %s ...\n", outpath);
+        else        kprintf("    run it with: run %s\n", outpath);
     }
     return 0;
 }
@@ -132,7 +148,7 @@ int cmd_cc(int argc, char **argv) {
     const char *srcs[CCB_MAX_SRC];
     int nsrc = 0;
     const char *outpath = 0;
-    int only_pp = 0, quiet = 0, debug = 0, emit_asm = 0, native = 0;
+    int only_pp = 0, quiet = 0, debug = 0, emit_asm = 0, native = 0, object = 0;
     ccb_target_t t;
 
     ccb_from_list(&t, 0, 0);          /* zero it; sources are added below */
@@ -144,6 +160,7 @@ int cmd_cc(int argc, char **argv) {
         else if (!strcmp(a, "-g"))                 debug = 1;
         else if (!strcmp(a, "-S"))                 emit_asm = 1;
         else if (!strcmp(a, "-N"))                 native = 1;
+        else if (!strcmp(a, "-c"))                 object = native = 1;
         else if (!strcmp(a, "-q"))                 quiet = 1;
         else if (!strcmp(a, "-I") && i + 1 < argc) ccb_add_include(&t, argv[++i]);
         else if (!strncmp(a, "-I", 2) && a[2])     ccb_add_include(&t, a + 2);
@@ -168,7 +185,7 @@ int cmd_cc(int argc, char **argv) {
     if (only_pp) {
         kprintf("%s", unit);
     } else if (emit_asm || native) {
-        failed = cc_native(&t, unit, srcs[0], outpath, native, quiet);
+        failed = cc_native(&t, unit, srcs[0], outpath, native, quiet, object);
     } else if (outpath) {
         fs_node *f = fs_lookup(outpath);
         if (!f) f = fs_create(outpath, 0);

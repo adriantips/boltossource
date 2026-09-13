@@ -64,6 +64,7 @@ typedef struct {
     int   entry;            /* code pc, filled at codegen                       */
     const char **locnames;  /* slot -> name, for the debugger; from the AST arena */
     int   nlocnames;
+    int   declared_only;    /* a prototype with no definition in this file      */
 } Func;
 
 /* --------------------------------------------------------------- bytecode --- */
@@ -118,6 +119,7 @@ typedef struct { int t; long i; char *s; } Val;
 
 typedef struct {
     int lang;
+    int module;             /* compiling an object: names may be left open     */
     /* lexer */
     const char *src;
     Tok  *toks; int ntok, tokcap, ti;
@@ -759,6 +761,8 @@ static int skip_top_noise(void) {  /* returns 1 if it consumed something */
     return 0;
 }
 
+static int func_find(const char *nm);      /* defined with the rest of codegen */
+
 static void parse_func_or_global(void) {
     parse_type();
     /* `struct Point { ... };` at file scope declares a type and stops there,
@@ -768,8 +772,18 @@ static void parse_func_or_global(void) {
     const char *nm = cur()->str; adv();
 
     if (curk() == TK_LP) {                              /* function */
-        if (C->nfunc >= MAX_FUNCS) cc_error("too many functions", 0);
-        Func *f = &C->funcs[C->nfunc++];
+        /* A name already seen as a prototype is this definition's slot, not a
+         * second one; otherwise func_find would answer with the declaration
+         * and codegen would call a function with no body. */
+        int prev = func_find(nm);
+        Func *f;
+        if (prev >= 0 && C->funcs[prev].declared_only) f = &C->funcs[prev];
+        else {
+            if (C->nfunc >= MAX_FUNCS) cc_error("too many functions", 0);
+            f = &C->funcs[C->nfunc++];
+            f->declared_only = 0;
+            f->body = 0;
+        }
         f->name = nm;
         const char *ps[32]; int np = 0;
         expect(TK_LP, "(");
@@ -777,24 +791,35 @@ static void parse_func_or_global(void) {
             do {
                 if (id_is(cur(), "void") && C->toks[C->ti + 1].kind == TK_RP) { adv(); break; }
                 parse_type();
-                if (curk() == TK_ID) { if (np < 32) ps[np++] = cur()->str; adv(); }
+                const char *pn = 0;
+                if (curk() == TK_ID) { pn = cur()->str; adv(); }
                 while (curk() == TK_LBRACK) { adv(); accept(TK_RBRACK); }
+                /* `int f(int);` names no parameter, and a prototype never has
+                 * to. It is still a parameter: the count is what a call gets
+                 * checked against, and for a declaration it is the only thing
+                 * anybody reads. Not counting it made every call to a header's
+                 * prototype "wrong argument count". */
+                if (np < 32) ps[np++] = pn ? pn : "";
             } while (accept(TK_COMMA));
         }
         expect(TK_RP, ")");
 
-        /* A prototype -- `int f(int);` with no body -- is what a header is made
-         * of, so it has to be accepted and skipped rather than rejected. The
-         * function slot is released again so a later definition of the same
-         * name is the one that gets compiled, and so a name declared but never
-         * defined does not look like a function with an empty body. Forward
-         * references already resolve by name at codegen, so nothing is lost by
-         * dropping the declaration entirely. */
-        if (accept(TK_SEMI)) { C->nfunc--; return; }
-
         f->nparams = np;
         f->params = (const char **)ast_alloc(np * (int)sizeof(char *));
         for (int i = 0; i < np; i++) f->params[i] = ps[i];
+
+        /* A prototype -- `int f(int);` with no body -- is what a header is made
+         * of. The slot used to be released here, on the grounds that a name
+         * declared and never defined should not look like a function with an
+         * empty body. It is kept now, marked, because when the output is an
+         * object that name is a function another object defines, and knowing
+         * its argument count is the whole point of the declaration. A later
+         * definition in this file reuses the slot, and a call to one that is
+         * still only declared is refused unless an object is what is being
+         * written. */
+        if (accept(TK_SEMI)) { f->declared_only = 1; f->body = 0; return; }
+
+        f->declared_only = 0;
         f->body = parse_block();
     } else {                                            /* global variable(s) */
         for (;;) {
@@ -848,6 +873,7 @@ static int glob_find(const char *nm) {
     for (int i = 0; i < C->nglob; i++) if (strcmp(C->gname[i], nm) == 0) return i;
     return -1;
 }
+int func_find(const char *nm);
 static int func_find(const char *nm) {
     for (int i = 0; i < C->nfunc; i++) if (strcmp(C->funcs[i].name, nm) == 0) return i;
     return -1;
@@ -933,6 +959,8 @@ static void gen_call(Node *n) {
     }
     int fi = func_find(nm);
     if (fi < 0) cc_error("undefined function", nm);
+    if (C->funcs[fi].declared_only && !C->module)
+        cc_error("declared but never defined", nm);
     if (argc != C->funcs[fi].nparams) cc_error("wrong argument count for", nm);
     for (int i = 0; i < argc; i++) gen_expr(n->kids[i]);
     emit(OP_CALL, fi, argc, 0);
@@ -1592,10 +1620,12 @@ const char *boltcc_version(void) { return "BoltCC 1.0  -  C / C++ / C# -> byteco
  * VM stops on the first line and takes commands; `native_out`, when it is not
  * null, says to hand the bytecode to the other backend and never start the VM
  * at all. */
-static int boltcc_exec(int lang, const char *src, int debug, char **native_out) {
+static int boltcc_exec(int lang, const char *src, int debug, char **native_out,
+                       int module) {
     CC ctx; memset(&ctx, 0, sizeof(ctx));
     C = &ctx;
     C->lang = lang;
+    C->module = module;
     C->src  = src;
     g_haderr = 0;
 
@@ -1610,11 +1640,15 @@ static int boltcc_exec(int lang, const char *src, int debug, char **native_out) 
     parse_program();
 
     int mi = func_find(lang == BCC_CSHARP ? "Main" : "main");
-    if (mi < 0) cc_error(lang == BCC_CSHARP ? "no Main() entry point" : "no main() function", 0);
+    /* An object is allowed not to have one. Something else in the link does,
+     * and that is the unit that gets the entry point. */
+    if (mi < 0 && !C->module)
+        cc_error(lang == BCC_CSHARP ? "no Main() entry point" : "no main() function", 0);
 
     /* codegen every function body */
     for (int i = 0; i < C->nfunc; i++) {
         Func *f = &C->funcs[i];
+        if (f->declared_only) { f->entry = -1; f->nlocnames = 0; f->locnames = 0; continue; }
         C->nloc = 0; C->maxloc = 0; C->nloop = 0;
         for (int k = 0; k < MAX_LOCALS; k++) C->slotname[k] = 0;
         for (int p = 0; p < f->nparams; p++) loc_add(f->params[p]);
@@ -1630,24 +1664,35 @@ static int boltcc_exec(int lang, const char *src, int debug, char **native_out) 
         for (int k = 0; k < C->maxloc; k++) f->locnames[k] = C->slotname[k];
     }
 
-    /* preamble: run global initialisers, then call main/Main, then halt */
-    int start = C->ncode;
-    for (int i = 0; i < C->nglob; i++) {
-        if (C->ginit[i]) {
-            C->nloc = 0;               /* globals init runs with no locals */
-            gen_expr(C->ginit[i]);
-            emit(OP_STOREG, i, 0, 0);
+    /* preamble: run global initialisers, then call main/Main, then halt.
+     * An object with no main has no preamble at all -- there is nowhere to run
+     * it from -- which is also why a global with an initialiser is refused in
+     * one: the code that would assign it would never execute, and a variable
+     * silently zero is worse than a compile error. */
+    int start = -1;
+    if (mi >= 0) {
+        start = C->ncode;
+        for (int i = 0; i < C->nglob; i++) {
+            if (C->ginit[i]) {
+                C->nloc = 0;               /* globals init runs with no locals */
+                gen_expr(C->ginit[i]);
+                emit(OP_STOREG, i, 0, 0);
+            }
         }
-    }
-    if (C->funcs[mi].nparams != 0) {
-        /* Main(string[] args): pass an empty-arg placeholder (0) */
-        for (int i = 0; i < C->funcs[mi].nparams; i++) emit(OP_PUSHI, 0, 0, 0);
-        emit(OP_CALL, mi, C->funcs[mi].nparams, 0);
+        if (C->funcs[mi].nparams != 0) {
+            /* Main(string[] args): pass an empty-arg placeholder (0) */
+            for (int i = 0; i < C->funcs[mi].nparams; i++) emit(OP_PUSHI, 0, 0, 0);
+            emit(OP_CALL, mi, C->funcs[mi].nparams, 0);
+        } else {
+            emit(OP_CALL, mi, 0, 0);
+        }
+        emit(OP_POP, 0, 0, 0);
+        emit(OP_HALT, 0, 0, 0);
     } else {
-        emit(OP_CALL, mi, 0, 0);
+        for (int i = 0; i < C->nglob; i++)
+            if (C->ginit[i])
+                cc_error("an object with no main() cannot initialise the global", C->gname[i]);
     }
-    emit(OP_POP, 0, 0, 0);
-    emit(OP_HALT, 0, 0, 0);
 
     if (native_out) {
         /* The bytecode is finished and nothing about the VM has been touched.
@@ -1659,12 +1704,15 @@ static int boltcc_exec(int lang, const char *src, int debug, char **native_out) 
             nf[i].nparams = C->funcs[i].nparams;
             nf[i].nlocals = C->funcs[i].nlocnames;   /* every slot the body used */
             nf[i].entry   = C->funcs[i].entry;
+            nf[i].external = C->funcs[i].declared_only;
         }
         CCProgram prog;
         prog.code = C->code; prog.ncode = C->ncode;
         prog.funcs = nf;     prog.nfunc = C->nfunc;
         prog.nglob = C->nglob;
+        prog.gnames = C->gname;
         prog.start = start;
+        prog.module = C->module;
 
         char nerr[128] = "";
         *native_out = ccnative_emit(&prog, nerr, sizeof nerr);
@@ -1709,9 +1757,13 @@ cleanup:
     return rc;
 }
 
-int boltcc_run(int lang, const char *src)   { return boltcc_exec(lang, src, 0, 0); }
-int boltcc_debug(int lang, const char *src) { return boltcc_exec(lang, src, 1, 0); }
+int boltcc_run(int lang, const char *src)   { return boltcc_exec(lang, src, 0, 0, 0); }
+int boltcc_debug(int lang, const char *src) { return boltcc_exec(lang, src, 1, 0, 0); }
 int boltcc_native(int lang, const char *src, char **asm_out) {
     *asm_out = 0;
-    return boltcc_exec(lang, src, 0, asm_out);
+    return boltcc_exec(lang, src, 0, asm_out, 0);
+}
+int boltcc_module(int lang, const char *src, char **asm_out) {
+    *asm_out = 0;
+    return boltcc_exec(lang, src, 0, asm_out, 1);
 }
