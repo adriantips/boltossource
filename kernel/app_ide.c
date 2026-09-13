@@ -912,7 +912,7 @@ static void ide_key(window_t *w, char c) {
         if (u == 27) { S.prompt = PR_NONE; }
         else if (c == '\n') commit_prompt();
         else if (c == '\b') { if (S.inlen > 0) S.input[--S.inlen] = 0; }
-        else if (u >= 32 && u < 127 && S.inlen < CCB_PATH_MAX - 1) {
+        else if (kbd_is_text(u) && S.inlen < CCB_PATH_MAX - 1) {
             S.input[S.inlen++] = c; S.input[S.inlen] = 0;
         }
         return;

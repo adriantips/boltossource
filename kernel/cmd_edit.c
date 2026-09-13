@@ -364,7 +364,7 @@ int cmd_edit(int argc, char **argv) {
         }
 
         default:
-            if ((unsigned char)c >= 32 && (unsigned char)c < 127) ins_char(&e, c);
+            if (kbd_is_text((unsigned char)c)) ins_char(&e, c);
             break;
         }
     }

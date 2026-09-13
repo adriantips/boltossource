@@ -8,6 +8,7 @@
 #include "io.h"
 
 extern const unsigned char font8x8_basic[128][8];
+extern const unsigned char font8x8_latin1[128][8];  /* mkfont.py, 0x80..0xFF */
 
 #define SCALE   2
 #define CELL    (8 * SCALE)        /* 16x16 px per character cell */
@@ -60,7 +61,11 @@ static void draw_cell(uint32_t col, uint32_t row) {
     fb_rect(px, py, CELL, CELL, bg_at(py));
     unsigned char ch = (unsigned char)grid[row][col];
     if (ch >= 32 && ch < 128) {
-        const unsigned char *g = font8x8_basic[ch & 0x7F];
+        /* Used to be `ch & 0x7F`, which drew 'e' for an e-acute rather than
+         * nothing -- a mask, not a decision. Latin-1 has a glyph now. */
+        const unsigned char *g = (unsigned char)ch >= 0x80
+                               ? font8x8_latin1[(unsigned char)ch - 0x80]
+                               : font8x8_basic[(unsigned char)ch];
         for (int ry = 0; ry < 8; ry++) {
             unsigned char bits = g[ry];
             for (int rx = 0; rx < 8; rx++)

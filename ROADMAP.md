@@ -388,7 +388,31 @@ which of these it is rather than failing quietly.
         t_usbstor.py writes a file from the shell and reads the image back on
         the *host* with an independent FAT reader, which is the only way to
         tell a driver that reaches the device from one that writes to a buffer
-- [ ] 95. Additional keyboard layouts
+- [x] 95. Keyboard layouts: us, us-intl, uk, de, fr, es, it, se, each written
+        as a list of differences from US because that is what a layout is.
+        Three levels per key plus dead keys, resolved into flat tables so the
+        interrupt path stays an array index.
+        AltGr is its own modifier now -- it was folded into Alt, which meant a
+        German keyboard had no way at all to type the @ printed on its Q key.
+        Dead keys are the input-method groundwork: an accent types nothing and
+        modifies the next letter, twice or with a space gives the literal one,
+        and a pair with no combined form emits both.
+        Three things had to be fixed underneath. There were no glyphs, so
+        mkfont.py generates the Latin-1 supplement for both faces (mostly by
+        composing the mark over the letter that was already there). A dozen
+        text fields asked `c >= 32 && c < 127` and silently dropped everything
+        a non-US keyboard produces -- one kbd_is_text() decides now. And
+        resolved shortcuts were delivered as bytes 0xC0 and up in the
+        character ring, which is exactly A-grave through O-circumflex, so on a
+        French keyboard typing E-acute was indistinguishable from the
+        screenshot shortcut; actions have their own ring now.
+        Latin-1 only, said out loud rather than discovered: the text path
+        moves char, not code points, so Polish, Czech, Turkish, Greek and
+        Cyrillic want UTF-8 through the console, the editors, the clipboard
+        and the filesystem first.
+        test/host/kbdlayout.c checks every key of every layout against the key
+        caps in a millisecond, and caught the digit row being one scancode out
+        in half the layouts
 
 ## Phase 7 — Observability, testing, docs
 

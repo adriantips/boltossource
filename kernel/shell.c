@@ -59,11 +59,10 @@ int sh_readline(char *buf, int cap) {
         char c = (char)ci;
         if (c == '\n') { kputc('\n'); buf[len] = 0; return len; }
         if (c == '\b') { if (len) { len--; kputc('\b'); } continue; }
-        /* Printable only. The key ring also carries navigation codes and the
-         * resolved global shortcuts (0xC0 and up), and inserting one of those
-         * into a password prompt or a debugger command is never what was
-         * meant -- pressing Alt+Tab at a prompt should do nothing, not type. */
-        if ((unsigned char)c >= 32 && (unsigned char)c < 127 && len < cap - 1)
+        /* Text only: the key ring also carries navigation codes, and putting
+         * a KEY_UP into a password prompt is never what was meant. See
+         * kbd_is_text(), which is where "text" is decided for the whole OS. */
+        if (kbd_is_text((unsigned char)c) && len < cap - 1)
             { buf[len++] = c; kputc(c); }
     }
 }
@@ -244,6 +243,7 @@ const command_t commands[] = {
     { "display",  "Core",             "panel size, desktop size, scaling",  cmd_display },
     { "rec",      "Core",             "record the screen to an animated PNG", cmd_rec },
     { "keys",     "Core",             "list or change global shortcuts",    cmd_keys },
+    { "kbd",      "Core",             "keyboard layout: list, switch, show", cmd_kbd },
     { "mixer",    "Core",             "per-channel volume levels and mutes", cmd_mixer },
     { "mic",      "Core",             "the microphone: level, test, record", cmd_mic },
     { "logs",     "System",           "the kernel log kept across reboots",  cmd_logs },
@@ -488,7 +488,7 @@ void shell_run(void) {
             memmove(line + pos - 1, line + pos, (uint32_t)(len - pos + 1)); len--; pos--;
         } else if (c == KEY_DEL && pos < len) {
             memmove(line + pos, line + pos + 1, (uint32_t)(len - pos)); len--;
-        } else if (c >= 32 && c < 127 && len < LINESZ - 1) {
+        } else if (kbd_is_text((unsigned char)c) && len < LINESZ - 1) {
             memmove(line + pos + 1, line + pos, (uint32_t)(len - pos + 1));
             line[pos++] = (char)c; len++;
             if (oldpos == oldlen) { kputc((char)c); continue; }

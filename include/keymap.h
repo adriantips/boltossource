@@ -53,13 +53,18 @@ enum {
     ACT_COUNT
 };
 
-/* An action delivered to the compositor arrives in the ordinary key ring as
- * this byte plus the action number, which is why ACT_COUNT must stay small.
- * 0xC0 is above every code the driver produces and every printable character. */
-#define KEY_ACTION_BASE 0xC0
-#define KEY_IS_ACTION(c) ((unsigned char)(c) >= KEY_ACTION_BASE && \
-                          (unsigned char)(c) < KEY_ACTION_BASE + ACT_COUNT)
-#define KEY_TO_ACTION(c) ((int)((unsigned char)(c) - KEY_ACTION_BASE))
+/* Actions used to be delivered as bytes 0xC0 and up in the ordinary key ring,
+ * on the reasoning that nothing else produced them.
+ *
+ * Then the keyboard learned layouts, and 0xC0..0xD4 turned out to be exactly
+ * A-grave through O-circumflex -- so on a French keyboard, typing É was
+ * indistinguishable from pressing the screenshot shortcut. There is no room
+ * above Latin-1 to move them to, because the ring carries bytes.
+ *
+ * So actions have their own ring now (kbd_action_get in keyboard.h), the way
+ * raw scancodes already did, and the character ring carries only characters.
+ * The macros are gone rather than redefined: a compile error at every call
+ * site is what you want when the thing being read moves. */
 
 typedef struct { uint8_t mods, key; } keybind_t;
 

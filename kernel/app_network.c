@@ -13,6 +13,7 @@
  *  the window already painted saying what it is doing -- the same shape
  *  kernel/app_software.c uses for the package manager, for the same reason.
  * ===========================================================================*/
+#include "keyboard.h"
 #include <stdint.h>
 #include "gui.h"
 #include "wifi.h"
@@ -293,7 +294,7 @@ static void net_key(window_t *w, char c) {
         gui_request_redraw();
         return;
     }
-    if ((unsigned char)c >= 32 && (unsigned char)c < 127 && st.passlen < (int)sizeof st.pass - 1) {
+    if (kbd_is_text((unsigned char)c) && st.passlen < (int)sizeof st.pass - 1) {
         st.pass[st.passlen++] = c;
         st.pass[st.passlen] = 0;
         gui_request_redraw();
