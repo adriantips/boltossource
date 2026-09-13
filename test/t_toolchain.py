@@ -117,6 +117,22 @@ _start:
     syscall
 """
 
+# A real SHT_NOBITS section, which only NASM produces here -- BoltAS spells
+# `resb` into .data. The linker has to put it after everything with contents so
+# the segment can declare more memory than it carries.
+BSS_ASM = """bits 64
+section .text
+global _start
+_start:
+    mov rax, 7
+    mov [buf], rax
+    mov rdi, [buf]
+    mov rax, 60
+    syscall
+section .bss
+buf: resq 1
+"""
+
 # The same split, in C. main.c names `answer` without defining it, shares a
 # file-scope variable, and is the only unit with main() -- so it is the only
 # one that may carry _start.
@@ -293,6 +309,28 @@ def host_tests():
     assert out.startswith("OK") and "objects=3" in out and "fromlib=2" in out, \
         "the archive scan did not run to a fixed point: " + out
     print("  ok: an archive that needs a later archive still links")
+
+    # --- .bss: address space, not bytes in the file -------------------------
+    if nasm and readelf:
+        (d / "bss.asm").write_text(BSS_ASM)
+        r = run([nasm, "-f", "elf64", "bss.asm", "-o", "bss.o"], cwd=str(d))
+        assert r.returncode == 0, r.stderr
+        out = bolt("ld", "bssprog", "bss.o")
+        assert out.startswith("OK") and "data=0" in out, \
+            "a NOBITS section was counted as file data: " + out
+        r = run([readelf, "-l", str(d / "bssprog")])
+        seg = [l for l in r.stdout.splitlines() if "0x0000000000402000" in l]
+        assert seg, "no data segment:\n" + r.stdout
+
+        # FileSiz then MemSiz on the continuation line readelf prints.
+        idx = r.stdout.splitlines().index(seg[0])
+        sizes = r.stdout.splitlines()[idx + 1].split()
+        assert sizes[0] != sizes[1], \
+            "the data segment's file size equals its memory size, so the whole\n" \
+            ".bss is being written out as zeros:\n" + r.stdout
+        print("  ok: a NOBITS section costs address space and nothing in the file")
+    else:
+        print("  SKIP: no nasm/readelf for the .bss layout check")
 
     # --- C, compiled one file at a time ------------------------------------
     ccobj = OUT / ("ccobj-host.exe" if os.name == "nt" else "ccobj-host")

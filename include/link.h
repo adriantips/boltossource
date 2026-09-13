@@ -44,6 +44,7 @@ typedef struct {
     uint32_t from_archives;   /* how many of those were pulled from an .a   */
     uint32_t relocs;          /* holes filled                               */
     uint32_t text, data;      /* merged section sizes                       */
+    uint32_t bss;             /* address space the file does not carry      */
     uint64_t entry;
 } ld_stats_t;
 
