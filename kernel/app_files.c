@@ -896,6 +896,17 @@ static void files_seed(void) {
 }
 
 /* open a node from elsewhere (e.g. a desktop-icon double-click) */
+/* Open a node the way a double-click in the explorer does: a known document
+ * type goes to its app, anything else to the explorer's own viewer. The Start
+ * menu's file results come through here rather than carrying a second copy of
+ * the association table that would drift from this one. */
+void files_launch(fs_node *n) {
+    if (!n || !FW) return;
+    F.view = 0;
+    open_item(&F, n);
+    if (n->is_dir || F.view) gui_open(FW);
+}
+
 void files_open_node(fs_node *n) {
     if (!n || !FW) return;
     if (n->is_dir) go(&F, n, 1);

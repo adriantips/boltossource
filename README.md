@@ -90,6 +90,26 @@ a line that will not parse is reported and skipped rather than costing you a
 keyboard. Lock and screenshot outrank a modal dialog; the window-management ones
 do not.
 
+### The Start menu
+
+Press Win and type. The app grid filters as the characters arrive, and from the
+second character the query also goes to the filesystem: the signed-in user's
+home directory first, because that is where a person's own files are, then the
+rest of the tree, skipping anything whose name starts with a dot and anything
+the current account may not read. Five results, because a menu that lists a
+thousand files is not a menu -- `find` is where the complete answer lives.
+
+Enter opens the first match, an app if one matched and otherwise the first file.
+A file opens in the program its extension belongs to, through the same
+`files_launch()` the File Explorer's double-click uses, so there is one
+association table rather than two that drift apart. Results are held as paths
+rather than `fs_node` pointers: the menu can sit open while something else
+deletes the file, and a stale node would be a dangling pointer into freed heap
+the moment somebody clicked it.
+
+The search only runs when the query changes, not once per frame -- it walks the
+tree, and the desktop repaints a great deal more often than anybody types.
+
 ### Window tiling
 
 Halves, quarters and maximise. Drag a title bar to the top edge to maximise, to
