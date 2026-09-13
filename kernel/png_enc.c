@@ -219,11 +219,12 @@ static int deflate_fixed(bitout *b, const uint8_t *src, uint32_t n) {
 /* Filter 0 (None) or 1 (Sub), chosen per row by the minimum-sum-of-absolute-
  * differences heuristic every real encoder uses. Sub wins on gradients and
  * loses on flat runs, and a screenshot has both. */
-static void filter_rows(const uint32_t *px, int w, int h, uint8_t *raw) {
+static void filter_rows(const uint32_t *px, int span, int x0, int y0,
+                        int w, int h, uint8_t *raw) {
     uint32_t stride = (uint32_t)w * 3;
     for (int y = 0; y < h; y++) {
         uint8_t *dst = raw + (uint64_t)y * (stride + 1);
-        const uint32_t *s = px + (uint64_t)y * w;
+        const uint32_t *s = px + (uint64_t)(y0 + y) * span + x0;
 
         /* the unfiltered row, written past its own filter byte */
         uint8_t *cur = dst + 1;
@@ -252,24 +253,82 @@ static void filter_rows(const uint32_t *px, int w, int h, uint8_t *raw) {
 }
 
 /* ------------------------------------------------------------- chunks ----- */
+/* The filtered rows of one rectangle, deflated, wrapped in a zlib stream.
+ * png_encode() is this plus a header and two chunks; an APNG frame is this
+ * plus a different pair of chunks. */
+static int zlib_rect(const uint32_t *px, int span, int x0, int y0, int w, int h,
+                     bitout *z) {
+    uint64_t need = ((uint64_t)w * 3 + 1) * (uint64_t)h;
+    if (need > 512u * 1024 * 1024) return -1;
+    uint32_t rawlen = (uint32_t)need;
+    uint8_t *raw = (uint8_t *)kmalloc(rawlen);
+    if (!raw) return -1;
+    filter_rows(px, span, x0, y0, w, h, raw);
+
+    bo_byte(z, 0x78);                        /* CM=8, CINFO=7 (32 KiB window) */
+    bo_byte(z, 0x01);                        /* 0x7801 % 31 == 0, no dictionary */
+    if (deflate_fixed(z, raw, rawlen) != 0) { kfree(raw); return -1; }
+    /* The adler covers what deflate compressed, which for PNG is the filtered
+     * rows rather than the pixels. */
+    uint32_t a32 = png_adler32(raw, rawlen);
+    for (int i = 24; i >= 0; i -= 8) bo_byte(z, (uint8_t)(a32 >> i));
+    kfree(raw);
+    return z->oom ? -1 : 0;
+}
+
 static void put_be32(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16);
     p[2] = (uint8_t)(v >> 8);  p[3] = (uint8_t)v;
 }
 
-static void chunk(bitout *o, const char *type, const uint8_t *data, uint32_t n) {
+/* One chunk from two pieces, because an fdAT is a sequence number glued to the
+ * front of a zlib stream and copying a megabyte to join them would be silly.
+ * Returns the offset its data starts at, which is what lets a chunk already in
+ * the buffer be patched afterwards. */
+static uint32_t chunk2(bitout *o, const char *type,
+                       const uint8_t *a, uint32_t na,
+                       const uint8_t *b, uint32_t nb) {
     uint8_t hdr[8];
-    put_be32(hdr, n);
+    put_be32(hdr, na + nb);
     hdr[4] = (uint8_t)type[0]; hdr[5] = (uint8_t)type[1];
     hdr[6] = (uint8_t)type[2]; hdr[7] = (uint8_t)type[3];
     for (int i = 0; i < 8; i++) bo_byte(o, hdr[i]);
-    for (uint32_t i = 0; i < n; i++) bo_byte(o, data[i]);
+    uint32_t at = o->len;
+    for (uint32_t i = 0; i < na; i++) bo_byte(o, a[i]);
+    for (uint32_t i = 0; i < nb; i++) bo_byte(o, b[i]);
 
     uint32_t crc = png_crc32(0, hdr + 4, 4);
-    crc = png_crc32(crc, data, n);
+    crc = png_crc32(crc, a, na);
+    crc = png_crc32(crc, b, nb);
     uint8_t c[4]; put_be32(c, crc);
     for (int i = 0; i < 4; i++) bo_byte(o, c[i]);
+    return at;
 }
+
+static uint32_t chunk(bitout *o, const char *type, const uint8_t *data, uint32_t n) {
+    return chunk2(o, type, data, n, 0, 0);
+}
+
+/* Recompute a chunk's CRC after its data has been edited in place. `at` is
+ * what chunk() returned, so the four bytes before it are the type. */
+static void chunk_recrc(bitout *o, uint32_t at, uint32_t n) {
+    if (o->oom || at < 4 || at + n + 4 > o->len) return;
+    uint32_t crc = png_crc32(0, o->buf + at - 4, 4);
+    crc = png_crc32(crc, o->buf + at, n);
+    put_be32(o->buf + at + n, crc);
+}
+
+static void ihdr_bytes(uint8_t *ihdr, int w, int h) {
+    put_be32(ihdr + 0, (uint32_t)w);
+    put_be32(ihdr + 4, (uint32_t)h);
+    ihdr[8]  = 8;      /* bit depth                 */
+    ihdr[9]  = 2;      /* colour type 2: truecolour */
+    ihdr[10] = 0;      /* deflate                   */
+    ihdr[11] = 0;      /* adaptive filtering        */
+    ihdr[12] = 0;      /* no interlace              */
+}
+
+static const uint8_t PNG_SIG[8] = { 137, 'P', 'N', 'G', 13, 10, 26, 10 };
 
 int png_encode(const uint32_t *px, int w, int h, uint8_t **out, uint32_t *outlen) {
     if (!px || !out || !outlen || w <= 0 || h <= 0) return -1;
@@ -282,35 +341,13 @@ int png_encode(const uint32_t *px, int w, int h, uint8_t **out, uint32_t *outlen
     if (need > 512u * 1024 * 1024) return -1;
     *out = 0; *outlen = 0;
 
-    uint32_t rawlen = (uint32_t)need;
-    uint8_t *raw = (uint8_t *)kmalloc(rawlen);
-    if (!raw) return -1;
-    filter_rows(px, w, h, raw);
-
-    /* zlib stream: header, one deflate block, adler32 of the *unfiltered-
-     * stream* bytes (which for PNG means the filtered rows -- the adler covers
-     * exactly what deflate compressed). */
     bitout z = { 0, 0, 0, 0, 0, 0 };
-    bo_byte(&z, 0x78);                       /* CM=8, CINFO=7 (32 KiB window) */
-    bo_byte(&z, 0x01);                       /* 0x7801 % 31 == 0, no dictionary */
-    if (deflate_fixed(&z, raw, rawlen) != 0) { kfree(raw); kfree(z.buf); return -1; }
-    uint8_t ad[4]; put_be32(ad, png_adler32(raw, rawlen));
-    for (int i = 0; i < 4; i++) bo_byte(&z, ad[i]);
-    kfree(raw);
-    if (z.oom) { kfree(z.buf); return -1; }
+    if (zlib_rect(px, w, 0, 0, w, h, &z) != 0) { kfree(z.buf); return -1; }
 
     bitout o = { 0, 0, 0, 0, 0, 0 };
-    static const uint8_t SIG[8] = { 137, 'P', 'N', 'G', 13, 10, 26, 10 };
-    for (int i = 0; i < 8; i++) bo_byte(&o, SIG[i]);
+    for (int i = 0; i < 8; i++) bo_byte(&o, PNG_SIG[i]);
 
-    uint8_t ihdr[13];
-    put_be32(ihdr + 0, (uint32_t)w);
-    put_be32(ihdr + 4, (uint32_t)h);
-    ihdr[8]  = 8;      /* bit depth                */
-    ihdr[9]  = 2;      /* colour type 2: truecolour */
-    ihdr[10] = 0;      /* deflate                  */
-    ihdr[11] = 0;      /* adaptive filtering       */
-    ihdr[12] = 0;      /* no interlace             */
+    uint8_t ihdr[13]; ihdr_bytes(ihdr, w, h);
     chunk(&o, "IHDR", ihdr, sizeof ihdr);
     chunk(&o, "IDAT", z.buf, z.len);
     chunk(&o, "IEND", 0, 0);
@@ -320,3 +357,107 @@ int png_encode(const uint32_t *px, int w, int h, uint8_t **out, uint32_t *outlen
     *out = o.buf; *outlen = o.len;
     return 0;
 }
+
+/* ===========================================================================
+ *  Animated PNG
+ * ========================================================================= */
+struct png_anim {
+    bitout   o;
+    int      w, h;
+    int      frames;
+    uint32_t seq;          /* APNG sequence number; fcTL and fdAT share it  */
+    uint32_t actl;         /* offset of the acTL data, patched at the end   */
+    uint32_t fctl;         /* offset of the newest fcTL data                */
+    int      err;
+};
+
+png_anim *png_anim_begin(int w, int h) {
+    if (w <= 0 || h <= 0 || w > 65535 || h > 65535) return 0;
+    png_anim *a = (png_anim *)kmalloc(sizeof *a);
+    if (!a) return 0;
+    memset(a, 0, sizeof *a);
+    a->w = w; a->h = h;
+
+    for (int i = 0; i < 8; i++) bo_byte(&a->o, PNG_SIG[i]);
+    uint8_t ihdr[13]; ihdr_bytes(ihdr, w, h);
+    chunk(&a->o, "IHDR", ihdr, sizeof ihdr);
+
+    /* acTL has to come before the image data and carries the frame count,
+     * which is not known until the last frame is in. Write it now with zeros
+     * and patch it at the end -- the alternative is buffering every frame
+     * somewhere else and assembling the file twice. */
+    uint8_t actl[8];
+    put_be32(actl + 0, 0);                  /* num_frames, filled in later */
+    put_be32(actl + 4, 0);                  /* num_plays: 0 = forever      */
+    a->actl = chunk(&a->o, "acTL", actl, sizeof actl);
+
+    if (a->o.oom) { png_anim_abort(a); return 0; }
+    return a;
+}
+
+int png_anim_add(png_anim *a, const uint32_t *px, int stride,
+                 int x, int y, int w, int h) {
+    if (!a || a->err || !px) return -1;
+    if (w <= 0 || h <= 0 || x < 0 || y < 0 || x + w > a->w || y + h > a->h) return -1;
+    /* The first frame is the PNG's own image, so it is the whole thing. */
+    if (a->frames == 0 && (x || y || w != a->w || h != a->h)) return -1;
+
+    bitout z = { 0, 0, 0, 0, 0, 0 };
+    if (zlib_rect(px, stride, x, y, w, h, &z) != 0) { kfree(z.buf); a->err = 1; return -1; }
+
+    uint8_t f[26];
+    put_be32(f + 0,  a->seq++);
+    put_be32(f + 4,  (uint32_t)w);
+    put_be32(f + 8,  (uint32_t)h);
+    put_be32(f + 12, (uint32_t)x);
+    put_be32(f + 16, (uint32_t)y);
+    f[20] = 0; f[21] = 0;                   /* delay_num: png_anim_hold fills it */
+    f[22] = 0; f[23] = 250;                 /* delay_den 250: ticks of 4 ms      */
+    f[24] = 0;                              /* dispose APNG_DISPOSE_OP_NONE      */
+    f[25] = 0;                              /* blend   APNG_BLEND_OP_SOURCE      */
+    a->fctl = chunk(&a->o, "fcTL", f, sizeof f);
+
+    if (a->frames == 0) {
+        chunk(&a->o, "IDAT", z.buf, z.len);
+    } else {
+        uint8_t sq[4]; put_be32(sq, a->seq++);
+        chunk2(&a->o, "fdAT", sq, 4, z.buf, z.len);
+    }
+    kfree(z.buf);
+    a->frames++;
+    if (a->o.oom) { a->err = 1; return -1; }
+    return 0;
+}
+
+void png_anim_hold(png_anim *a, uint32_t ms) {
+    if (!a || a->err || !a->frames) return;
+    /* delay_den is 250, so the unit is 4 ms and 65535 units is over four
+     * minutes -- long enough that a paused recording does not wrap. */
+    uint32_t units = (ms + 2) / 4;
+    if (units < 1)     units = 1;
+    if (units > 65535) units = 65535;
+    a->o.buf[a->fctl + 20] = (uint8_t)(units >> 8);
+    a->o.buf[a->fctl + 21] = (uint8_t)units;
+    chunk_recrc(&a->o, a->fctl, 26);
+}
+
+int png_anim_finish(png_anim *a, uint8_t **out, uint32_t *outlen) {
+    if (!a) return -1;
+    if (a->err || !a->frames || !out || !outlen) { png_anim_abort(a); return -1; }
+    chunk(&a->o, "IEND", 0, 0);
+    put_be32(a->o.buf + a->actl, (uint32_t)a->frames);
+    chunk_recrc(&a->o, a->actl, 8);
+    if (a->o.oom) { png_anim_abort(a); return -1; }
+    *out = a->o.buf; *outlen = a->o.len;
+    kfree(a);                                /* the buffer belongs to the caller */
+    return 0;
+}
+
+void png_anim_abort(png_anim *a) {
+    if (!a) return;
+    kfree(a->o.buf);
+    kfree(a);
+}
+
+uint32_t png_anim_bytes(const png_anim *a) { return a ? a->o.len : 0; }
+int      png_anim_frames(const png_anim *a) { return a ? a->frames : 0; }

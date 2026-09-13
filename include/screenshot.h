@@ -25,6 +25,12 @@
 int  shot_take(const char *path, char *saved, uint32_t cap);
 const char *shot_strerror(int rc);
 
+/* Create the directory chain for `path`'s parent if any of it is missing.
+ * Shared with the screen recorder, which writes files into ~/Videos the same
+ * way this writes them into ~/Pictures, and there is no reason for two of
+ * these. 0, or -1 if a directory could not be made. */
+int  shot_ensure_parent(const char *path);
+
 /* Where an unnamed screenshot goes for the signed-in account, e.g.
  * "/home/ada/Pictures". Falls back to /home/Pictures with no session. */
 void shot_dir(char *out, uint32_t cap);

@@ -264,7 +264,15 @@ which of these it is rather than failing quietly.
         programs and the text console capture too), `screenshot` for headless
         and SSH use, Print Screen from the desktop. Replaces an uncompressed
         BMP of the compositor's backbuffer.
-- [ ] 80. Screen recording
+- [x] 80. Screen recording: the panel sampled from the compositor's loop and
+        written as an animated PNG. Only the rectangle that changed since the
+        last frame is stored, and a frame identical to the one before it is not
+        stored at all -- the previous frame's duration is extended, so an idle
+        terminal costs nothing. Durations are measured rather than assumed,
+        because the encoder shares the compositor's thread and the frame rate
+        is a request. `rec`, Ctrl+PrtSc, and a tray dot that stops it; the APNG
+        encoder is checked frame for frame by an independent reader in
+        test/t_rec.py
 - [x] 81. Display scaling: the panel keeps its native mode and the logical
         desktop becomes it divided by 100/125/150/200%, scaled back up to fill
         the screen -- so every app's fixed pixel layout grows without any app

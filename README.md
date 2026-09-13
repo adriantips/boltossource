@@ -185,6 +185,37 @@ exact pixels on flat, gradient, noise, 1x1 and images longer than the window --
 an encoder only ever read back by its own decoder can be wrong in matching
 pairs and nobody finds out.
 
+### Screen recording
+
+`rec start` samples the panel from the compositor's loop and writes the result
+to `~/Videos/screencast-N.png`; Ctrl+Print Screen does the same from the
+desktop, a red dot appears in the tray while it runs, and clicking that dot
+stops it.
+
+An animated PNG rather than a video file. The machine already has a PNG encoder
+and does not have an H.264 one; the first frame of an APNG is a valid still for
+anything that cannot play the rest; and every browser plays it, including the
+one in this OS. `kernel/png_enc.c` grew `acTL`/`fcTL`/`fdAT` and the ability to
+compress a sub-rectangle of a frame -- the still encoder is now the same code
+with one frame.
+
+The economy is in what is *not* written. Each sample is diffed against the last
+frame and only the changed bounding box goes in; a sample nobody could tell from
+the one before it is not written at all -- the previous frame's duration is
+extended instead. A terminal session sitting idle costs nothing. Eight seconds
+of a terminal being typed into is about 900 KB at 1024x768.
+
+Two honest limits, which `rec status` and `man rec` both state. The encoder runs
+on the compositor's thread, so the desktop is slower while recording and the
+frame rate is a request rather than a promise -- which is why each frame's
+duration is *measured* and written after the fact, so the result plays back at
+the speed the machine actually managed rather than the speed it was asked for.
+And it stops itself at 8 MB or 1800 frames, saving what it has rather than
+throwing it away.
+
+The tray dot deliberately does not blink. A blinking dot changes pixels every
+frame, and every recording would then have a changed rectangle in it forever.
+
 ### Logs
 
 `dmesg` shows this boot's kernel ring, which lives in RAM. `/var/log/kernel.log`
@@ -2268,7 +2299,7 @@ The interactive OS shell supports a wide range of commands:
 - Shell: `sh`, `source`, `.`, `test`, `[`, `true`, `false`, `set`, `unset`; variables, conditions, loops and functions (see [SHELL.md](SHELL.md))
 - SDK & help: `run` (ELF64 programs with arguments and exit status), `man` (pages/search/coverage), `help [COMMAND]`
 - Audio: `play` (a tone, or a WAV file streamed and converted as it goes), `media` (the player's transport: `open`, `play`/`pause`, `next`/`prev`, `track`, `seek`, `vol`, `repeat`, `list`)
-- Desktop: `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window), `snap` (tile the focused window to a half, a quarter or full screen), `display` (panel size, desktop size, display scaling, video mode), `keys` (list/rebind/reset global shortcuts), `logs` (the kernel log kept across reboots)
+- Desktop: `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window), `snap` (tile the focused window to a half, a quarter or full screen), `display` (panel size, desktop size, display scaling, video mode), `rec` (record the screen to an animated PNG), `keys` (list/rebind/reset global shortcuts), `logs` (the kernel log kept across reboots)
 - Core: `echo`, `clear`, `mem`
 
 ## Full File Tree
@@ -2317,6 +2348,8 @@ The interactive OS shell supports a wide range of commands:
 |   +-- cmd_desk.c             Virtual desktops from the shell
 |   +-- cmd_snap.c             Window tiling from the shell
 |   +-- cmd_display.c          Resolution and display scaling from the shell
+|   +-- record.c               Screen recording: sample, diff, APNG
+|   +-- cmd_rec.c              Screen recording from the shell
 |   +-- keymap.c  cmd_keys.c   Global shortcut table (/etc/keys.conf)
 |   +-- cmd_run.c  manpages.c   Third-party ELF execution and command manual
 |   +-- shline.c  shscript.c    History/completion and the shell interpreter

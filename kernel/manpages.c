@@ -264,6 +264,22 @@ static const manpage_t MAN[] = {
   "desktop and opens the result in Photos. It reads the panel back rather than\n"
   "the compositor's buffer, so DOOM, the ring-3 browser and the text console\n"
   "capture correctly too." },
+{ "rec", "rec start [FPS] [PATH] | rec stop | rec cancel | rec status",
+  "Record the screen to an animated PNG. With no PATH it writes the next free\n"
+  "~/Videos/screencast-N.png; FPS is the sampling rate (1-30, default 5).\n"
+  "Ctrl+Print Screen starts and stops one from the desktop, and a red dot\n"
+  "appears in the tray while it runs -- click it to stop.\n"
+  "\n"
+  "Only the rectangle that changed since the last sample goes into the file, and\n"
+  "a frame identical to the one before it is not written at all: the previous\n"
+  "frame's duration is extended instead. A terminal session sitting idle costs\n"
+  "nothing; a full-screen animation costs a great deal.\n"
+  "\n"
+  "The encoder runs on the compositor's thread, so the desktop is slower while\n"
+  "recording and the frame rate is a request rather than a promise. Each frame's\n"
+  "duration is measured rather than assumed, so the result plays back at the\n"
+  "speed the machine managed. Recording stops itself at 8 MB or 1800 frames and\n"
+  "saves what it has." },
 { "display", "display | display scale NAME | display res NAME",
   "The panel, the desktop drawn on it, and the scale between them. With no\n"
   "argument it prints all three plus the modes and scales available, marking\n"

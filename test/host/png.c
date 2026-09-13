@@ -103,6 +103,73 @@ int main(int argc, char **argv) {
       snprintf(path, sizeof path, "%s/desktop.png", dir);
       bad |= emit(path, px, w, h); free(px); }
 
+    /* An animation, the shape kernel/record.c produces: one full frame and
+     * then rectangles. test/t_rec.py rebuilds it from these same numbers and
+     * compares pixel for pixel, so a sub-rectangle written at the wrong offset
+     * -- the classic APNG bug, and invisible in a still -- is caught here. */
+    { int w = 64, h = 48;
+      uint32_t *px = malloc((size_t)w * h * 4);
+      for (int y = 0; y < h; y++)
+          for (int x = 0; x < w; x++)
+              px[y * w + x] = 0xFF000000u | (uint32_t)((x * 4) & 0xFF) << 16
+                                          | (uint32_t)((y * 5) & 0xFF) << 8 | 0x40u;
+
+      png_anim *a = png_anim_begin(w, h);
+      if (!a) { fprintf(stderr, "png_anim_begin failed\n"); bad = 1; }
+      else {
+          bad |= png_anim_add(a, px, w, 0, 0, w, h) != 0;
+          png_anim_hold(a, 120);
+
+          for (int y = 8; y < 20; y++) for (int x = 10; x < 30; x++) px[y * w + x] = 0xFFCC2211u;
+          bad |= png_anim_add(a, px, w, 10, 8, 20, 12) != 0;
+          png_anim_hold(a, 40);
+
+          for (int y = 30; y < 40; y++) for (int x = 40; x < 56; x++) px[y * w + x] = 0xFF22CC33u;
+          bad |= png_anim_add(a, px, w, 40, 30, 16, 10) != 0;
+          png_anim_hold(a, 250);
+
+          px[(h - 1) * w + (w - 1)] = 0xFFFFFFFFu;
+          bad |= png_anim_add(a, px, w, w - 1, h - 1, 1, 1) != 0;
+          png_anim_hold(a, 8);
+
+          if (png_anim_frames(a) != 4) { fprintf(stderr, "frame count wrong\n"); bad = 1; }
+
+          uint8_t *out = 0; uint32_t len = 0;
+          if (png_anim_finish(a, &out, &len) != 0) {
+              fprintf(stderr, "png_anim_finish failed\n"); bad = 1;
+          } else {
+              snprintf(path, sizeof path, "%s/anim.png", dir);
+              FILE *f = fopen(path, "wb");
+              if (!f) { fprintf(stderr, "cannot write %s\n", path); bad = 1; }
+              else { fwrite(out, 1, len, f); fclose(f); printf("%s %d %d %u\n", path, w, h, len); }
+              free(out);
+          }
+      }
+      free(px); }
+
+    /* The first frame is the PNG's own image, so a sub-rectangle there would
+     * produce a file whose IHDR and IDAT disagree about the size. */
+    { uint32_t p4[4] = { 0, 0, 0, 0 };
+      png_anim *a = png_anim_begin(2, 2);
+      if (a) {
+          if (png_anim_add(a, p4, 2, 0, 0, 1, 1) != -1) {
+              fprintf(stderr, "a partial first frame was accepted\n"); bad = 1;
+          }
+          if (png_anim_add(a, p4, 2, 1, 1, 2, 2) != -1) {
+              fprintf(stderr, "a frame past the right edge was accepted\n"); bad = 1;
+          }
+          png_anim_abort(a);
+      }
+      /* and an animation with no frames at all is not a file */
+      a = png_anim_begin(2, 2);
+      if (a) {
+          uint8_t *o = 0; uint32_t n = 0;
+          if (png_anim_finish(a, &o, &n) != -1) {
+              fprintf(stderr, "an empty animation was written\n"); bad = 1;
+          }
+      }
+      if (png_anim_begin(0, 4)) { fprintf(stderr, "zero width accepted\n"); bad = 1; } }
+
     /* Rejections: nothing should be allocated or written for these. */
     { uint8_t *o = (uint8_t *)1; uint32_t n = 1; uint32_t p = 0;
       if (png_encode(0,   1, 1, &o, &n) != -1) { fprintf(stderr, "null pixels accepted\n");  bad = 1; }

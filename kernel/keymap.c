@@ -43,6 +43,7 @@ static const action_def ACTIONS[ACT_COUNT] = {
  { "desk-prev",      "Go to the previous desktop",          { KMOD_CTRL | KMOD_ALT, KEY_LEFT } },
  { "desk-move-next", "Take the window to the next desktop", { KMOD_WIN | KMOD_SHIFT, KEY_RIGHT } },
  { "desk-move-prev", "Take the window to the previous one",  { KMOD_WIN | KMOD_SHIFT, KEY_LEFT } },
+ { "record",         "Start or stop recording the screen",   { KMOD_CTRL, KEYK_F12 } },
 };
 
 static keybind_t bindings[ACT_COUNT];
