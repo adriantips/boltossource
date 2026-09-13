@@ -1557,12 +1557,56 @@ static void sm_build_filter(void) {
         if (sm_ci_contains(wins[i].title, sm_query)) sm_filt[sm_nfilt++] = i;
 }
 
+/* Files, from the same box. Two characters in, the query also goes to the
+ * filesystem: the home directory first, because that is where a person's own
+ * files are, then the rest of the tree. Five results, because the menu has to
+ * stay a menu -- `find` is where the complete answer lives.
+ *
+ * Paths rather than fs_node pointers: the menu can sit open while something
+ * else deletes a file, and a stale node here would be a dangling pointer into
+ * freed heap the moment somebody clicked it. */
+#define SM_FILES 5
+#define SM_ROW   26
+#define SM_FHEAD 22
+static char sm_fpath[SM_FILES][FS_PATH_MAX];
+static int  sm_fdir[SM_FILES];
+static int  sm_nfile;
+
+static void sm_scan(fs_node *d, int depth) {
+    if (!d || depth > 6) return;                   /* deep enough for any real tree */
+    for (fs_node *c = d->child; c && sm_nfile < SM_FILES; c = c->next) {
+        if (c->name[0] == '.') continue;            /* /.trash and the dotfiles */
+        if (sm_ci_contains(c->name, sm_query) && fs_may(c, FS_PERM_READ)) {
+            char p[FS_PATH_MAX];
+            fs_abspath(c, p, sizeof p);
+            int dup = 0;
+            for (int i = 0; i < sm_nfile; i++) if (strcmp(sm_fpath[i], p) == 0) dup = 1;
+            if (!dup) {
+                snprintf(sm_fpath[sm_nfile], FS_PATH_MAX, "%s", p);
+                sm_fdir[sm_nfile++] = c->is_dir;
+            }
+        }
+        if (c->is_dir) sm_scan(c, depth + 1);
+    }
+}
+
+/* Called when the query changes, not per frame: this walks the tree. */
+static void sm_build_files(void) {
+    sm_nfile = 0;
+    if (sm_qlen < 2) return;                        /* one letter matches everything */
+    const char *home = users_home();
+    if (home && home[0]) sm_scan(fs_lookup(home), 0);
+    sm_scan(fs_root(), 0);
+}
+
+static int sm_files_h(void) { return sm_nfile ? SM_FHEAD + sm_nfile * SM_ROW : 0; }
+
 static void start_menu_rect(int *ox, int *oy, int *mw, int *mh) {
     sm_build_filter();
-    int n = sm_nfilt > 0 ? sm_nfilt : 1;
-    int rows = (n + SM_COLS - 1) / SM_COLS; if (rows < 1) rows = 1;
+    int rows = (sm_nfilt + SM_COLS - 1) / SM_COLS;
+    if (rows < 1) rows = sm_nfile ? 0 : 1;          /* keep a row for "nothing found" */
     *mw = SM_PAD * 2 + SM_COLS * SM_TW;
-    *mh = SM_HEAD + rows * SM_TH + SM_PAD - 8 + SM_FOOT;
+    *mh = SM_HEAD + rows * SM_TH + SM_PAD - 8 + sm_files_h() + SM_FOOT;
     int sx, sy; taskbar_layout(&sx, &sy);
     int x = sx; if (x + *mw > W - 8) x = W - 8 - *mw; if (x < 8) x = 8;
     int y = H - TASKBAR_H - *mh - 10; if (y < 8) y = 8;
@@ -1572,6 +1616,14 @@ static void start_menu_rect(int *ox, int *oy, int *mw, int *mh) {
 static void start_menu_tile(int slot, int ox, int oy, int *tx, int *ty) {
     *tx = ox + SM_PAD + (slot % SM_COLS) * SM_TW;
     *ty = oy + SM_HEAD + (slot / SM_COLS) * SM_TH;
+}
+
+/* file result k, counted from the top of the results block */
+static void sm_row_rect(int k, int ox, int oy, int mw, int mh, int *rx, int *ry, int *rw, int *rh) {
+    *rx = ox + SM_PAD - 6;
+    *rw = mw - 2 * (SM_PAD - 6);
+    *rh = SM_ROW;
+    *ry = oy + mh - SM_FOOT - sm_files_h() + SM_FHEAD + k * SM_ROW;
 }
 
 /* sign-out button rect inside the start menu footer */
@@ -1598,13 +1650,14 @@ static void draw_start_menu(void) {
             if (cxp < qbx + qbw - 4) g_fill(cxp, qby + 5, 2, qbh - 10, COL_ACCENT);
         }
     } else {
-        g_text(qbx + 10, qby + 6, "Search apps...", COL_TEXT_DIM, 1);
+        g_text(qbx + 10, qby + 6, "Search apps and files...", COL_TEXT_DIM, 1);
     }
 
     int mxp = mlx(), myp = mly();
     sm_build_filter();
-    if (sm_nfilt == 0)
-        g_text(x + 18, y + SM_HEAD + 10, "No matching apps", COL_TEXT_DIM, 1);
+    if (sm_nfilt == 0 && sm_nfile == 0)
+        g_text(x + 18, y + SM_HEAD + 10,
+               sm_qlen ? "Nothing matches that" : "No matching apps", COL_TEXT_DIM, 1);
     for (int k = 0; k < sm_nfilt; k++) {
         int i = sm_filt[k];
         int tx, ty; start_menu_tile(k, x, y, &tx, &ty);
@@ -1616,6 +1669,34 @@ static void draw_start_menu(void) {
         while (strlen(lbl) > 1 && g_text_width(lbl, 1) > SM_TW - 12) lbl[strlen(lbl) - 1] = 0;
         int lw = g_text_width(lbl, 1);
         g_text(tx + (SM_TW - lw) / 2, ty + 52, lbl, hot ? COL_TEXT : COL_TEXT_DIM, 1);
+    }
+
+    /* file results */
+    if (sm_nfile) {
+        int hx, hy, hw, hh; sm_row_rect(0, x, y, mw, mh, &hx, &hy, &hw, &hh);
+        g_text(hx + 6, hy - SM_FHEAD + 4, "FILES", COL_TEXT_DIM, 1);
+        for (int k = 0; k < sm_nfile; k++) {
+            int rx, ry, rw, rh; sm_row_rect(k, x, y, mw, mh, &rx, &ry, &rw, &rh);
+            int hot = mxp >= rx && mxp < rx + rw && myp >= ry && myp < ry + rh;
+            if (hot) g_round(rx, ry, rw, rh - 2, 6, 0x2A2A3A, 255);
+            const char *p = sm_fpath[k];
+            const char *leaf = p;
+            for (const char *q = p; *q; q++) if (*q == '/') leaf = q + 1;
+            draw_icon(sm_fdir[k] ? ICON_FOLDER : ICON_FILE, rx + 6, ry + 5, 1,
+                      hot ? COL_ACCENT : COL_TEXT_DIM);
+            g_text(rx + 28, ry + 6, leaf, hot ? COL_TEXT : COL_TEXT_DIM, 1);
+            /* the directory it is in, right-aligned and dropped when it will
+             * not fit -- the name is the part you are looking for */
+            int used = 28 + g_text_width(leaf, 1) + 16;
+            int dirlen = (int)(leaf - p) - 1; if (dirlen < 1) dirlen = 1;
+            if (dirlen * 8 <= rw - used - 8) {
+                char dir[FS_PATH_MAX];
+                int n = dirlen < (int)sizeof(dir) - 1 ? dirlen : (int)sizeof(dir) - 1;
+                for (int i = 0; i < n; i++) dir[i] = p[i];
+                dir[n] = 0;
+                g_text(rx + rw - 8 - g_text_width(dir, 1), ry + 6, dir, 0x6A6A7A, 1);
+            }
+        }
     }
 
     /* footer: current user + a sign-out button */
@@ -2290,7 +2371,7 @@ static void on_left_down(int x, int y) {
 
     /* start button */
     int bx, by; taskbar_btn_rect(-1, &bx, &by);
-    if (x >= bx && x < bx + TB_BTN && y >= by && y < by + TB_BTN) { menu_open = !menu_open; sm_query[0] = 0; sm_qlen = 0; dirty = 1; return; }
+    if (x >= bx && x < bx + TB_BTN && y >= by && y < by + TB_BTN) { menu_open = !menu_open; sm_query[0] = 0; sm_qlen = 0; sm_nfile = 0; dirty = 1; return; }
 
     /* taskbar app buttons (open-or-pinned list) */
     if (y >= H - TASKBAR_H) {
@@ -2312,6 +2393,14 @@ static void on_left_down(int x, int y) {
             for (int k = 0; k < sm_nfilt; k++) {
                 int tx, ty; start_menu_tile(k, mxx, myy, &tx, &ty);
                 if (x >= tx && x < tx + SM_TW && y >= ty && y < ty + SM_TH) { gui_open(&wins[sm_filt[k]]); menu_open = 0; return; }
+            }
+            for (int k = 0; k < sm_nfile; k++) {
+                int rx, ry, rw, rh; sm_row_rect(k, mxx, myy, mw, mh, &rx, &ry, &rw, &rh);
+                if (x < rx || x >= rx + rw || y < ry || y >= ry + rh) continue;
+                fs_node *n = fs_lookup(sm_fpath[k]);
+                menu_open = 0;
+                if (n) files_launch(n);
+                return;
             }
             return;
         }
@@ -2543,7 +2632,7 @@ static void gui_screenshot(void) {
 static void gui_do_action(int a) {
     switch (a) {
     case ACT_START_MENU:
-        menu_open = !menu_open; sm_query[0] = 0; sm_qlen = 0; dirty = 1; break;
+        menu_open = !menu_open; sm_query[0] = 0; sm_qlen = 0; sm_nfile = 0; dirty = 1; break;
     case ACT_CYCLE_WINDOW:      gui_cycle_window(+1); menu_open = 0; break;
     case ACT_CYCLE_WINDOW_BACK: gui_cycle_window(-1); menu_open = 0; break;
     case ACT_CLOSE_WINDOW: {
@@ -2597,12 +2686,18 @@ static void handle_key(char c) {
     /* While the Start menu is open, keystrokes drive its search box. */
     if (menu_open) {
         unsigned char u = (unsigned char)c;
-        if (u == '\b') { if (sm_qlen) sm_query[--sm_qlen] = 0; }
+        if (u == '\b') { if (sm_qlen) sm_query[--sm_qlen] = 0; sm_build_files(); }
         else if (u == '\n') {                       /* Enter opens the first match */
             sm_build_filter();
             if (sm_nfilt > 0) { gui_open(&wins[sm_filt[0]]); menu_open = 0; }
+            else if (sm_nfile > 0) {
+                fs_node *n = fs_lookup(sm_fpath[0]);
+                menu_open = 0;
+                if (n) files_launch(n);
+            }
         } else if (u >= 32 && u < 127 && sm_qlen < (int)sizeof(sm_query) - 1) {
             sm_query[sm_qlen++] = c; sm_query[sm_qlen] = 0;
+            sm_build_files();
         }
         dirty = 1; return;
     }

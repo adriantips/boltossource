@@ -272,8 +272,11 @@ which of these it is rather than failing quietly.
 - [x] 83. Software centre: Available/Installed tabs over the repository index,
         one-click install and remove through the same pkg code the command
         uses, work deferred one tick so the desktop paints before it blocks.
-- [~] 84. Start-menu type-to-search filters the app grid. Searching files
-        from the same box remains.
+- [x] 84. Start-menu search: the app grid filters as you type, and from the
+        second character the same query searches the filesystem -- home first,
+        five results, permission-checked, held as paths rather than nodes the
+        menu could outlive. A file result opens through the explorer's own
+        association table rather than a second copy of it
 
 ## Phase 6 — Peripherals & media
 

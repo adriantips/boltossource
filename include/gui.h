@@ -238,3 +238,4 @@ void matrix_app_init(void);
 void doom_app_init(void);
 void doom_pump(void);    /* advance DOOM one frame slice; called from the desktop loop */
 void files_open_node(struct fs_node *n);   /* open a folder in the explorer / a file in its viewer */
+void files_launch(struct fs_node *n);      /* the same, but honouring file associations */
