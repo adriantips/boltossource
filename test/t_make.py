@@ -131,6 +131,24 @@ def host_tests():
         "a .PHONY target did not run every time:\n" + out
     print("  ok: a .PHONY target runs every time it is asked for")
 
+    # `a b: dep` really is one recipe for two targets.
+    out = drive(exe, "file dep x\n"
+                     "file Makefile all: a b\\na b: dep\\n    gen $@ dep\\n\n"
+                     "make\ncat a\ncat b\n")
+    assert "CAT a x" in out and "CAT b x" in out, \
+        "two targets on one line did not both get the recipe:\n" + out
+
+    # And two rules that merely look alike are not. The first version of this
+    # worked out the sharing afterwards by comparing prerequisite lists, which
+    # cannot tell these apart -- `all` inherited install's recipe and `make`
+    # with no arguments installed things.
+    out = drive(exe, "file prog x\n"
+                     "file Makefile all: prog\\ninstall: prog\\n    gen installed prog\\n\n"
+                     "make\ncat installed\n")
+    assert "CAT installed <missing>" in out, \
+        "the default goal ran a later rule's recipe:\n" + out
+    print("  ok: one line means one shared recipe; two lines mean two rules")
+
     fail = ("file a.txt a\nfile Makefile all: out\\nout: a.txt\\n\\tfail\\n\n"
             "make\ncat out\n")
     out = drive(exe, fail)
