@@ -243,9 +243,12 @@ which of these it is rather than failing quietly.
 
 ## Phase 5 — Desktop UX
 
-- [~] 74. Window snapping: Aero-snap to halves on drag, maximise at the top
-        edge and Win+arrow, all in the base compositor. Quarter tiling and a
-        drop preview remain.
+- [x] 74. Window tiling: halves, quarters and maximise, from a drag to an edge
+        or from Win+arrow, which walks between them the way Windows does. One
+        snap_rect() serves the placement and the preview drawn under the window
+        while you drag, so they cannot disagree. `snap ZONE` is the same thing
+        from a prompt, which is also what makes it testable without
+        synthesising a Win key
 - [x] 75. Four virtual desktops: per-desktop windows, taskbar and Alt+Tab,
         hit tests included, so a hidden window takes no input. Win+1..4,
         Ctrl+Alt+arrows, Win+Shift+arrows, taskbar pips, and `desk`.

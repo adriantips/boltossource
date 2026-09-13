@@ -90,6 +90,22 @@ a line that will not parse is reported and skipped rather than costing you a
 keyboard. Lock and screenshot outrank a modal dialog; the window-management ones
 do not.
 
+### Window tiling
+
+Halves, quarters and maximise. Drag a title bar to the top edge to maximise, to
+a side to take that half, or to a side near the top or bottom for the quarter in
+that corner -- the landing zone is drawn under the window while you hold the
+button, so you can see where it will go before you let go. Win+arrow does the
+same from the keyboard and *walks*: Win+Left gives the left half, Win+Up from
+there the top-left quarter, Win+Down the half below it again, and Win+Left out
+of a right-hand zone puts the window back where it was floating.
+
+One function computes the rectangle for every zone, which is why the preview and
+the placement agree -- they were two expressions of `W / 2` for a while and they
+disagreed by a pixel on an odd width. `snap ZONE` is the shell front end, for a
+session over SSH and for a test that would otherwise be testing the keyboard
+driver.
+
 ### Virtual desktops
 
 Four of them. A window belongs to the desktop it was opened on, and from the
@@ -2205,7 +2221,7 @@ The interactive OS shell supports a wide range of commands:
 - Shell: `sh`, `source`, `.`, `test`, `[`, `true`, `false`, `set`, `unset`; variables, conditions, loops and functions (see [SHELL.md](SHELL.md))
 - SDK & help: `run` (ELF64 programs with arguments and exit status), `man` (pages/search/coverage), `help [COMMAND]`
 - Audio: `play` (a tone, or a WAV file streamed and converted as it goes), `media` (the player's transport: `open`, `play`/`pause`, `next`/`prev`, `track`, `seek`, `vol`, `repeat`, `list`)
-- Desktop: `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window), `keys` (list/rebind/reset global shortcuts), `logs` (the kernel log kept across reboots)
+- Desktop: `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window), `snap` (tile the focused window to a half, a quarter or full screen), `keys` (list/rebind/reset global shortcuts), `logs` (the kernel log kept across reboots)
 - Core: `echo`, `clear`, `mem`
 
 ## Full File Tree
@@ -2252,6 +2268,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- png_enc.c              PNG writer (LZ77 + fixed-Huffman deflate)
 |   +-- screenshot.c  cmd_shot.c  Panel capture -> PNG in ~/Pictures
 |   +-- cmd_desk.c             Virtual desktops from the shell
+|   +-- cmd_snap.c             Window tiling from the shell
 |   +-- keymap.c  cmd_keys.c   Global shortcut table (/etc/keys.conf)
 |   +-- cmd_run.c  manpages.c   Third-party ELF execution and command manual
 |   +-- shline.c  shscript.c    History/completion and the shell interpreter
