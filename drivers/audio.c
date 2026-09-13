@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "audio.h"
+#include "mixer.h"
 #include "kheap.h"
 #include "pcspk.h"
 #include "pit.h"
@@ -18,7 +19,6 @@
  * ===========================================================================*/
 
 static const audio_dev_t *dev;
-static int volume = 80;
 static void (*preempt)(void);          /* stop whatever is streaming */
 
 void audio_set_preempt(void (*stop_streams)(void)) { preempt = stop_streams; }
@@ -26,30 +26,46 @@ void audio_set_preempt(void (*stop_streams)(void)) { preempt = stop_streams; }
 int         audio_present(void) { return 1; }         /* the speaker is always there */
 const char *audio_name(void)    { return dev ? dev->name : "PC speaker"; }
 int         audio_pcm_ok(void)  { return dev != 0; }
-int         audio_volume(void)  { return dev ? volume : 100; }
+int         audio_volume(void)  { return dev ? mixer_volume(MIX_MASTER) : 100; }
+
+/* Hand the codec master*channel for whoever is playing. One gain register is
+ * all the hardware has, and only one stream reaches it at a time, so the
+ * product is the whole mix -- see the note at the top of include/mixer.h. */
+static void apply_gain(int mix_ch) {
+    if (!dev) return;
+    mixer_set_active(mix_ch);
+    dev->volume(mixer_effective(mix_ch));
+}
+
+void audio_gain_changed(void) { apply_gain(mixer_active()); }
 
 void audio_set_volume(int percent) {
-    if (percent < 0) percent = 0;
-    if (percent > 100) percent = 100;
-    volume = percent;
-    if (dev) dev->volume(percent);
+    mixer_set_volume(MIX_MASTER, percent);
+    audio_gain_changed();
+}
+
+void audio_play_async_ch(int mix_ch, const int16_t *interleaved, uint32_t frames) {
+    if (!dev || !interleaved || !frames) return;
+    uint32_t cap = dev->capacity();
+    if (frames > cap) frames = cap;
+    apply_gain(mix_ch);
+    mixer_note_peak(mix_ch, interleaved, frames);
+    dev->submit(interleaved, frames);
 }
 
 void audio_play_async(const int16_t *interleaved, uint32_t frames) {
-    if (!dev || !interleaved || !frames) return;
-    uint32_t cap = dev->capacity();
-    dev->submit(interleaved, frames > cap ? cap : frames);
+    audio_play_async_ch(MIX_APP, interleaved, frames);
 }
 
 int  audio_busy(void) { return dev ? dev->busy() : 0; }
 void audio_stop(void) { if (dev) dev->stop(); }
 
-void audio_play_pcm(const int16_t *interleaved, uint32_t frames) {
+void audio_play_pcm_ch(int mix_ch, const int16_t *interleaved, uint32_t frames) {
     if (!dev || !interleaved || !frames) return;
     if (preempt) preempt();               /* this buffer, not the one already going */
     uint32_t cap = dev->capacity();
     if (frames > cap) frames = cap;
-    audio_play_async(interleaved, frames);
+    audio_play_async_ch(mix_ch, interleaved, frames);
 
     /* Wait on the clock, not on a spin count. The buffer is `frames`/48000 of a
      * second long, so a codec that is working reports itself drained inside
@@ -62,7 +78,11 @@ void audio_play_pcm(const int16_t *interleaved, uint32_t frames) {
     dev->stop();
 }
 
-void audio_tone(uint32_t freq, uint32_t ms) {
+void audio_play_pcm(const int16_t *interleaved, uint32_t frames) {
+    audio_play_pcm_ch(MIX_SYSTEM, interleaved, frames);
+}
+
+void audio_tone_ch(int mix_ch, uint32_t freq, uint32_t ms) {
     /* No preempt here: the fallback path is the PC speaker, which shares
      * nothing with the codec, and the codec path below goes out through
      * audio_play_pcm(), which does it. */
@@ -92,13 +112,16 @@ void audio_tone(uint32_t freq, uint32_t ms) {
         buf[i * 2] = lvl;
         buf[i * 2 + 1] = lvl;
     }
-    audio_play_pcm(buf, frames);
+    audio_play_pcm_ch(mix_ch, buf, frames);
     kfree(buf);
 }
 
+void audio_tone(uint32_t freq, uint32_t ms) { audio_tone_ch(MIX_APP, freq, ms); }
+
 void audio_init(void) {
+    mixer_init();                    /* levels from /etc/mixer.conf, if it exists */
     dev = hda_probe();
     if (!dev) dev = ac97_probe();
     if (!dev) { kprintf("[audio] no PCI codec; PC speaker only\n"); return; }
-    dev->volume(volume);
+    apply_gain(MIX_APP);
 }

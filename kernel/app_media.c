@@ -35,6 +35,7 @@
 #include <stdint.h>
 #include "gui.h"
 #include "audio.h"
+#include "mixer.h"
 #include "wav.h"
 #include "fs.h"
 #include "users.h"
@@ -192,7 +193,7 @@ static int push_chunk(void) {
     chunk_frames = got;
     chunk_pos_ms = pos;
     chunk_tick = pit_ticks();
-    audio_play_async(chunk, got);
+    audio_play_async_ch(MIX_MEDIA, chunk, got);
     return 1;
 }
 
@@ -582,7 +583,7 @@ static void media_click(window_t *w, int lx, int ly) {
         case H_PREV:   media_skip(-1); break;
         case H_NEXT:   media_skip(1); break;
         case H_REPEAT: repeat = !repeat; break;
-        case H_MUTE:   audio_set_volume(audio_volume() > 0 ? 0 : 80); break;
+        case H_MUTE:   mixer_toggle_mute(MIX_MASTER); audio_gain_changed(); break;
         case H_SEEK:   grab = H_SEEK; set_from_slider(H_SEEK, lx); break;
         case H_VOL:    grab = H_VOL;  set_from_slider(H_VOL, lx); break;
         default:       if (h->id >= H_TRACK0) media_select(h->id - H_TRACK0); break;
@@ -617,7 +618,7 @@ static void media_key(window_t *w, char c) {
     case 'p': case 'P': media_skip(-1); break;
     case 's': case 'S': media_stop(); break;
     case 'r': case 'R': repeat = !repeat; break;
-    case 'm': case 'M': audio_set_volume(audio_volume() > 0 ? 0 : 80); break;
+    case 'm': case 'M': mixer_toggle_mute(MIX_MASTER); audio_gain_changed(); break;
     case KEY_RIGHT: media_seek_ms(pos + SEEK_STEP_MS); break;
     case KEY_LEFT:  media_seek_ms(pos > SEEK_STEP_MS ? pos - SEEK_STEP_MS : 0); break;
     case KEY_UP:    audio_set_volume(audio_volume() + 5); break;

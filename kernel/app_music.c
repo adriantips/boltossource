@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include "gui.h"
 #include "audio.h"
+#include "mixer.h"
 #include "keyboard.h"
 #include "string.h"
 
@@ -107,7 +108,7 @@ static void music_play(int song) {
     cur = song; note_idx = 0; playing = 1;
     audio_stop();
     int f = build_batch();
-    if (f > 0) audio_play_async(pcm, f);
+    if (f > 0) audio_play_async_ch(MIX_MEDIA, pcm, f);
 }
 static void music_stop(void) { playing = 0; note_idx = 0; audio_stop(); }
 static void music_toggle(void) {
@@ -123,7 +124,7 @@ static void music_tick(window_t *w) {
     if (!audio_pcm_ok()) { playing = 0; return; }
     if (!audio_busy()) {
         int f = build_batch();
-        if (f > 0) audio_play_async(pcm, f);
+        if (f > 0) audio_play_async_ch(MIX_MEDIA, pcm, f);
         else playing = 0;                             /* finished, loop off */
     }
     vis_phase++;

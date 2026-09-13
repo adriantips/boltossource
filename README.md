@@ -624,6 +624,43 @@ AC'97 (`drivers/ac97.c`) drives the Intel ICH controller over PCI for older
 boards and QEMU's `-device AC97`: PCM-out programmed through a buffer descriptor
 list on the bus-mastering engine, same 48 kHz stereo contract.
 
+### The mixer
+
+What the desktop had was a single number, and mute was spelled
+`audio_set_volume(vol ? 0 : 80)` in four different places — which is not a mute,
+it is a volume change that forgets where you had it. Turn a track down to 15,
+mute, unmute, and you were at 80.
+
+`include/mixer.h` replaces it with named channels: **master**, **media**
+(anything playing a file), **system** (chimes and `play`), **app** (games,
+Piano, ring-3 programs) and **capture** (microphone input gain, which master
+does not scale). Each has a level and a real mute that remembers the level.
+Levels live in `/etc/mixer.conf` and are loaded at boot.
+
+One limit is stated rather than hidden, because it shapes the design: this
+machine plays **one stream at a time** — one DMA engine, one buffer, and
+`audio_set_preempt()` exists precisely because two callers pushing at it produce
+noise. So the mixer does not *sum* streams the way a desktop with a software
+mixing daemon does. A channel's level is applied as the codec's gain for as long
+as that channel owns the device: master times channel, one multiply, no copy and
+no resampling. The knobs behave the way you expect; what you cannot do is hear
+two of them at once, and that is a property of the audio path rather than of the
+mixer.
+
+Peak levels are measured from the PCM on its way past — the buffer is scanned
+where the caller left it, 512 samples spread across it, which catches the peak of
+anything that sounds like music for nothing worth measuring. That is what the
+meters draw, and they decay with wall time so a stopped stream empties instead of
+freezing at its last chunk.
+
+The **Mixer** window (`kernel/app_mixer.c`) is five vertical faders with a mute
+button under each and a meter beside each; a ring marks the fader the keyboard
+moves and a green dot marks the channel the codec is playing right now, which are
+usually not the same one. It opens from the *Mixer* link in the tray's quick
+settings. `mixer` is the same model from a prompt (`mixer media 40`,
+`mixer system mute`), which is what a machine being administered over SSH has
+instead of a window.
+
 WAV playback (`kernel/wav.c`) is the decoder *and* the converter, because
 the two cannot be separated: the codecs are fixed at 48 kHz stereo and almost no
 file on a disk is. It parses RIFF/WAVE (PCM and `WAVE_FORMAT_EXTENSIBLE`, 8- or
@@ -2336,7 +2373,7 @@ The interactive OS shell supports a wide range of commands:
 - Bonus / Unique: `focus`, `snapshot`, `timeline`, `doctor`, `assistant`, `sandbox`, `workspace`, `panic`, `story`
 - Shell: `sh`, `source`, `.`, `test`, `[`, `true`, `false`, `set`, `unset`; variables, conditions, loops and functions (see [SHELL.md](SHELL.md))
 - SDK & help: `run` (ELF64 programs with arguments and exit status), `man` (pages/search/coverage), `help [COMMAND]`
-- Audio: `play` (a tone, or a WAV file streamed and converted as it goes), `media` (the player's transport: `open`, `play`/`pause`, `next`/`prev`, `track`, `seek`, `vol`, `repeat`, `list`)
+- Audio: `play` (a tone, or a WAV file streamed and converted as it goes), `media` (the player's transport: `open`, `play`/`pause`, `next`/`prev`, `track`, `seek`, `vol`, `repeat`, `list`), `mixer` (per-channel levels and real mutes, kept in `/etc/mixer.conf`)
 - Desktop: `notify` (post/list/read/dismiss/clear notifications; the same store the notification centre shows), `screenshot` (capture the screen to a PNG), `desk` (virtual desktops: switch, list, move a window), `snap` (tile the focused window to a half, a quarter or full screen), `display` (panel size, desktop size, display scaling, video mode), `rec` (record the screen to an animated PNG), `power status` (power source, firmware profile and brightness), `keys` (list/rebind/reset global shortcuts), `logs` (the kernel log kept across reboots)
 - Core: `echo`, `clear`, `mem`
 
@@ -2390,6 +2427,7 @@ The interactive OS shell supports a wide range of commands:
 |   +-- record.c               Screen recording: sample, diff, APNG
 |   +-- cmd_rec.c              Screen recording from the shell
 |   +-- keymap.c  cmd_keys.c   Global shortcut table (/etc/keys.conf)
+|   +-- mixer.c    cmd_mixer.c  app_mixer.c   Channel levels (/etc/mixer.conf)
 |   +-- cmd_run.c  manpages.c   Third-party ELF execution and command manual
 |   +-- shline.c  shscript.c    History/completion and the shell interpreter
 |   +-- core.c  cmd_core.c       Core dumps on a ring-3 fault + the post-mortem inspector

@@ -46,6 +46,21 @@ void audio_set_preempt(void (*stop_streams)(void));
 void audio_set_volume(int percent);       /* 0..100 master volume */
 int  audio_volume(void);
 
+/* --- which knob a sound answers to ---------------------------------------
+ *  The calls above are the master channel, kept because half the desktop
+ *  already speaks them. The ones below name the source instead, so Media can
+ *  be turned down without turning the notification chime down with it. See
+ *  include/mixer.h -- including the honest note about one stream at a time.
+ * ------------------------------------------------------------------------*/
+void audio_play_async_ch(int mix_ch, const int16_t *interleaved, uint32_t frames);
+void audio_play_pcm_ch(int mix_ch, const int16_t *interleaved, uint32_t frames);
+void audio_tone_ch(int mix_ch, uint32_t freq, uint32_t ms);
+
+/* Re-apply the gain for whichever channel owns the device. The mixer UI calls
+ * this after moving a slider so the change is heard in the buffer already
+ * playing rather than at the next one. */
+void audio_gain_changed(void);
+
 /* --- codec back end -------------------------------------------------------
  *  A codec driver publishes one of these from its probe. Nothing outside
  *  drivers/audio.c calls through it; the dispatch layer owns the fallbacks,

@@ -28,6 +28,7 @@
 #include "users.h"
 #include "vault.h"
 #include "audio.h"
+#include "mixer.h"
 #include "netif.h"
 #include "wifi.h"
 #include "net.h"
@@ -972,6 +973,16 @@ static void draw_icon(int id, int x, int y, int s, uint32_t c) {
         g_fill(x + s, y + 7 * s, 14 * s, 2 * s, band);
         break;
     }
+    case ICON_MIXER: {                          /* three faders at three heights */
+        uint32_t track = 0x3A3A48, cap = 0x9B6CF2;
+        static const int h[3] = { 4, 9, 6 };     /* where each cap sits, in cells */
+        for (int i = 0; i < 3; i++) {
+            int fx = x + (3 + i * 5) * s;
+            g_fill(fx, y + 2 * s, 2 * s, 12 * s, track);
+            g_round(fx - s, y + h[i] * s, 4 * s, 2 * s, s, cap, 255);
+        }
+        break;
+    }
     case ICON_MEDIA: {                          /* a play triangle on a screen */
         uint32_t body = 0x22304A, tri = 0x5AC8FA;
         g_round(x, y + s, 16 * s, 14 * s, 3 * s, body, 255);
@@ -1157,19 +1168,22 @@ static void draw_volume_tray(void) {
     int mxp = mlx(), myp = mly();
     int hot = mxp >= bx && mxp < bx + 28 && myp >= by && myp < by + 28;
     if (vol_open || hot) g_round(bx, by, 28, 28, 7, 0x2A2A38, 255);
-    draw_speaker(bx + 5, by + 7, audio_volume(), COL_TEXT);
+    draw_speaker(bx + 5, by + 7, mixer_muted(MIX_MASTER) ? 0 : audio_volume(),
+                 mixer_muted(MIX_MASTER) ? COL_BAD : COL_TEXT);
 
     if (!vol_open) return;
     int px, py, pw, ph; vol_popup_rect(&px, &py, &pw, &ph);
     g_round(px - 2, py - 2, pw + 4, ph + 4, 12, 0x000000, 70);
     g_round(px, py, pw, ph, 10, 0x16161E, 250);
     g_text(px + 14, py + 12, "Quick settings", COL_TEXT_DIM, 1);
+    g_text(px + QS_W - 52, py + 12, "Mixer", COL_ACCENT, 1);
 
     int vol = audio_volume(), bri = backlight_get();
     for (int r = 0; r < 2; r++) {
         int v = r == 0 ? vol : bri;
         int tx, ty, tw; qs_slider(r, px, py, &tx, &ty, &tw);
-        if (r == 0) draw_speaker(px + 14, ty - 8, vol, COL_TEXT);
+        if (r == 0) draw_speaker(px + 14, ty - 8, mixer_muted(MIX_MASTER) ? 0 : vol,
+                                 mixer_muted(MIX_MASTER) ? COL_BAD : COL_TEXT);
         else        draw_sun(px + 14, ty - 8, COL_TEXT);
         g_round(tx, ty, tw, 6, 3, 0x33333F, 255);
         g_round(tx, ty, tw * v / 100, 6, 3, COL_ACCENT, 255);
@@ -1210,7 +1224,10 @@ static int volume_popup_click(int x, int y) {
         int tx, ty, tw; qs_slider(r, px, py, &tx, &ty, &tw);
         if (y < ty - 12 || y >= ty + 14) continue;
         if (x < px + 38) {                           /* the glyph is a toggle */
-            if (r == 0) audio_set_volume(audio_volume() > 0 ? 0 : 80);
+            /* A real mute, which remembers the level. It used to be
+             * `set_volume(vol ? 0 : 80)` -- turn the music down to 15, mute,
+             * unmute, and you were at 80 with the neighbours awake. */
+            if (r == 0) { mixer_toggle_mute(MIX_MASTER); audio_gain_changed(); }
             else        backlight_set(backlight_get() > 40 ? 40 : 100);
             return 1;
         }
@@ -1225,6 +1242,14 @@ static int volume_popup_click(int x, int y) {
     if (x >= ix && x < ix + iw && y >= iy && y < iy + ih) {
         vol_open = 0;
         network_app_open();
+        return 1;
+    }
+    /* The title bar of the panel is the way through to the full mixer -- the
+     * five faders do not belong in a flyout, but the flyout is where you are
+     * standing when you discover one knob is not enough. */
+    if (y < py + QS_TOP - 4) {
+        vol_open = 0;
+        mixer_app_open();
         return 1;
     }
     return 1;                      /* anywhere else in the panel: absorbed */
@@ -3170,6 +3195,7 @@ void gui_run(void) {
     logs_app_init();
     security_app_init();
     network_app_init();
+    mixer_app_init();
     settings_app_init();
     /* Every app gets a launcher icon on the desktop; double-click opens it. The
      * taskbar starts empty and only fills with apps as they are opened (or that
