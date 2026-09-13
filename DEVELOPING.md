@@ -28,9 +28,12 @@ Three separate things live under that heading, and they have different rules:
 ## Programs on the machine
 
 BoltOS carries its own compilers: **BoltCC** for C, C++ and C#, and **BoltPy**
-for Python. They are interpreters over a bytecode VM, not native code
-generators — see [What is not there yet](#what-is-not-there-yet) for what that
-costs you.
+for Python. BoltCC has two backends — a bytecode VM, which is the whole
+language, and a native x86-64 one, which is an integer subset and produces
+programs the machine executes directly. `as`, `ld`, `ar` and `make` are here
+too, so a program can be split across files, compiled a file at a time, kept in
+a library and rebuilt by rules. See [What is not there yet](#what-is-not-there-yet)
+for the edges.
 
 The shortest possible loop:
 
@@ -53,6 +56,18 @@ cc app.cs               # C#
 python script.py        # BoltPy, or `python` on its own for a REPL
 js script.js            # BoltJS
 ```
+
+And when you want a program rather than a run:
+
+```sh
+cc -N hello.c           # compile to a native ELF64, then: run ./hello
+cc -S hello.c           # print the x86-64 it would emit
+```
+
+`cc -N` covers integers, functions, control flow, `printf` and `puts`. Anything
+outside that — arrays, structs, the builtin library, strings used as values — is
+refused **by name**, so you find out what to take out rather than that it
+cannot be done.
 
 ### The preprocessor
 
@@ -261,10 +276,96 @@ The ABI version is bumped when a syscall's number, arguments or meaning change �
 never when one is added, because a program that does not call a new syscall
 cannot be broken by it.
 
-**This still needs a host toolchain.** BoltCC does not emit native code yet, so
-a native program cannot be built on the machine it runs on. That is the largest
-remaining gap in the story, and it is [tracked as roadmap items
-52–58](ROADMAP.md).
+You do not need a host for this any more. `sdk/build.sh` is still the way to
+cross-compile from a machine with clang, but everything below builds the same
+kind of file on BoltOS itself.
+
+---
+
+## One file at a time
+
+`cc a.c b.c` preprocesses both files and compiles them as one translation unit.
+That works, and it means rebuilding one file rebuilds everything, and nothing
+can be linked against hand-written assembly or against a library.
+
+Separate compilation is the other way:
+
+```sh
+cc -c main.c -o main.o      # a relocatable object, not a program
+cc -c lib.c  -o lib.o
+ld -o prog main.o lib.o
+run prog
+```
+
+A function this file calls but does not define is declared the way C has always
+declared one, and the linker finds it:
+
+```c
+/* main.c */
+int answer(int n);          /* lives in lib.c */
+int main(void) { return answer(20); }
+```
+
+Only the unit that defines `main()` carries the entry point, so exactly one of
+your objects has one — the same arrangement as `crt0.o` everywhere else.
+
+Assembly works the same way, and mixes freely with C objects:
+
+```sh
+as -c fast.asm -o fast.o
+ld -o prog main.o fast.o
+```
+
+In the assembly, `global` publishes a name and `extern` borrows one.
+
+### Libraries
+
+```sh
+ar r libmine.a a.o b.o      # add or replace members
+ar t libmine.a              # list
+ld -o prog main.o libmine.a
+```
+
+A member joins the link only if it defines a name still missing, and the
+archives are rescanned until a pass adds nothing — so an archive that needs a
+later archive links whichever way round you list them, which is not true of
+`ld(1)`.
+
+### Rules
+
+```make
+OBJS = main.o lib.o
+
+prog: $(OBJS)
+    ld -o $@ $^
+
+%.o: %.c
+    cc -c $< -o $@
+
+.PHONY: clean
+clean:
+    rm prog $(OBJS)
+```
+
+`make` builds the first target; `make clean` builds that one. `-n` prints the
+recipes without running them.
+
+Two things to know. A recipe may be indented with **spaces** — a tab cannot be
+typed into a file from this shell at all, since Tab asks for filename
+completion. And a target is rebuilt when a prerequisite *differs* from what it
+was when that target was last built, not when it is newer: file times here are
+uptime ticks and they are persisted, so after a reboot a source you just edited
+is numerically *older* than the object built from it last week, and a
+timestamp-comparing make would silently skip it. The record lives in
+`.make.stamp` beside the makefile; delete it and the next build does everything
+once.
+
+### What does not work yet
+
+Sharing a *variable* between units. BoltCC skips `extern` as a modifier, so
+`extern int counter;` reads as a definition and the second unit is a duplicate
+symbol. Functions are fine; variables have to live in one unit and be reached
+through a function for now. The linker says so rather than picking one.
 
 ---
 
@@ -320,7 +421,14 @@ Four steps, and the fourth is enforced:
    page**, and `test/t_man.py` fails the build if `man -c` does, so this is part
    of adding a command rather than something to do later.
 
-Then add the file to `SRCS` in `build.sh`.
+Then add the file to `SRCS` in `build.sh` — there is no globbing, and a source
+that is not in that list is a source that silently does not exist.
+
+One trap that only shows up at link time: `build.sh` has a **second** link line
+further up, the BoltRT stub that bakes BoltCC into a Windows `.exe`. Anything
+`kernel/boltcc.c` or `kernel/ccnative.c` calls into has to be on that line too,
+and that link sees only `libc/string.c` — which has `kstrlcat` but *not*
+`strlcpy`/`strlcat`. A single-file compile check will not catch either.
 
 ---
 
@@ -432,10 +540,24 @@ Two habits worth copying from the existing tests:
   everything typed at it, so waiting for a marker just after typing a command
   containing that marker is an assertion that cannot fail.
 
-Code that can run on the host should be tested there too — it is faster and the
-failures are legible. `test/host/storage.c` compiles the real block layer and
-filesystem against a failing allocator; `test/host/png.c` compiles the PNG
-encoder and the test decodes its output with Python's own zlib.
+Code that can run on the host should be tested there too — it is faster, the
+failures are legible, and some cases cannot be staged in a VM at all.
+`test/host/storage.c` compiles the real block layer and filesystem against a
+failing allocator; `test/host/png.c` compiles the PNG encoder and the test
+decodes its output with Python's own zlib.
+
+The strongest version of this is an **external oracle** — something that
+answers the same question and was not written here. `test/host/asm.c` hands
+every instruction to BoltAS and to NASM and compares the bytes.
+`test/host/link.c` gives our objects to GNU `readelf` and to LLVM's `ld.lld`,
+and gives NASM's objects to our linker. `test/host/wpa.c` checks the WPA key
+schedule against Python's `hashlib`, which caught two expected values that had
+been typed in wrong while the C was right.
+
+`test/host/make.c` is the other shape: the real `kernel/make.c` over a
+filesystem of 64 files in an array and a clock that is a variable, because the
+case that matters — an mtime that goes backwards across a reboot — cannot be
+staged in QEMU without rebooting.
 
 ---
 
@@ -443,17 +565,19 @@ encoder and the test decodes its output with Python's own zlib.
 
 The honest list, because it determines what you can actually do:
 
-- **BoltCC does not emit machine code.** It compiles to bytecode and interprets
-  it. Programs written on BoltOS run on BoltOS, under `cc`, and cannot be turned
-  into a standalone ELF. Native codegen, an assembler and a linker are roadmap
-  items 52–58 and they are the difference between this being a development
-  environment and a development *platform*.
-- **BoltOS cannot build BoltOS.** Following from the above, kernel work needs
-  the host toolchain.
-- **No `make`, no static libraries, no separate compilation.**
-- **BoltCC's C is a large subset, not C99.** Structs and pointers are still
-  landing (roadmap item 51).
-- **There is no SSH client**, only a server — you can develop on a BoltOS
-  machine remotely, not from one.
+- **BoltOS cannot build BoltOS.** The toolchain is real now — compiler,
+  assembler, linker, archiver, make — but BoltCC's C is not the C the kernel is
+  written in, and its native backend takes an integer subset. Kernel work still
+  needs the host toolchain. This is the last big one.
+- **`cc -N` and `cc -c` take a subset.** Integers, functions, control flow,
+  `printf` and `puts`. Arrays, structs, the builtin library and strings used as
+  values are refused by name; the VM (`cc` with no flags) runs all of them.
+- **A file-scope variable cannot be shared between objects.** `extern` on a
+  variable is indistinguishable from a definition here, so the second unit is a
+  duplicate symbol. Functions cross object boundaries fine.
+- **BoltCC's C is a large subset, not C99.** Structs landed; pointers, unions,
+  enums, function pointers and floating point have not.
+- **`make` has no conditionals, no `include`, no `$(wildcard)`, no parallel
+  jobs.** Each is absent because nothing has wanted it yet.
 
 [ROADMAP.md](ROADMAP.md) tracks all of it, with what is done and what is not.
