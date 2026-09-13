@@ -127,9 +127,14 @@ int fb_capture(uint32_t *dst) {
 void fb_blit_scaled(const uint32_t *src, uint32_t sw, uint32_t sh,
                     uint32_t dx, uint32_t dy, uint32_t dw, uint32_t dh) {
     if (!fb) return;
-    for (uint32_t y = 0; y < fh; y++) {           /* clear panel -> letterbox bars */
-        volatile uint32_t *d = fb + (uint64_t)y * pitch_px;
-        for (uint32_t x = 0; x < fw; x++) d[x] = 0;
+    /* Letterbox bars, when there are any. Display scaling fills the panel edge
+     * to edge, and clearing 8 million pixels a frame to then overwrite every
+     * one of them was most of the cost of running scaled at 4K. */
+    if (dx || dy || dx + dw < fw || dy + dh < fh) {
+        for (uint32_t y = 0; y < fh; y++) {
+            volatile uint32_t *d = fb + (uint64_t)y * pitch_px;
+            for (uint32_t x = 0; x < fw; x++) d[x] = 0;
+        }
     }
     if (!sw || !sh || !dw || !dh || dx >= fw || dy >= fh) return;
 

@@ -14,7 +14,8 @@
 #include "pit.h"
 
 /* control kinds */
-enum { K_THEME = 1, K_ACCENT, K_WALLSTYLE, K_WALLCOLOR, K_RES, K_AUDIO, K_AUDIOTEST, K_FONT };
+enum { K_THEME = 1, K_ACCENT, K_WALLSTYLE, K_WALLCOLOR, K_RES, K_AUDIO, K_AUDIOTEST, K_FONT,
+       K_SCALE };
 
 static uint64_t beep_off_at;      /* pit tick to silence the test tone, 0 = idle */
 
@@ -123,6 +124,10 @@ static void settings_draw(window_t *w, int cx, int cy, int cw, int ch) {
     y = chip_row(x0, right, y, K_RES, settings_res_count(),
                  settings_res_name, g_settings.res_index);
 
+    y = section(x0, y, "Display scale");
+    y = chip_row(x0, right, y, K_SCALE, settings_scale_count(),
+                 settings_scale_name, g_settings.scale_index);
+
     y = section(x0, y, "Audio device");
     y = chip_row(x0, right, y, K_AUDIO, settings_audio_count(),
                  settings_audio_name, g_settings.audio_device);
@@ -140,9 +145,15 @@ static void settings_draw(window_t *w, int cx, int cy, int cw, int ch) {
     fmt_dims(d, sizeof(d), gui_panel_w(), gui_panel_h());
     line[0] = 0; kstrlcat(line, "Panel    ", sizeof(line)); kstrlcat(line, d, sizeof(line));
     g_text(x0, fy, line, COL_TEXT_DIM, 1);
+    /* The desktop size is the interesting number once scaling is on, and it is
+     * not always the one the scale chip implies -- a scale that would leave
+     * less than 640x480 to work in is declined. */
+    fmt_dims(d, sizeof(d), gui_screen_w(), gui_screen_h());
+    line[0] = 0; kstrlcat(line, "Desktop  ", sizeof(line)); kstrlcat(line, d, sizeof(line));
+    g_text(x0 + 180, fy, line, COL_TEXT_DIM, 1);
     line[0] = 0; kstrlcat(line, "Audio    ", sizeof(line));
     kstrlcat(line, settings_audio_name(g_settings.audio_device), sizeof(line));
-    g_text(x0 + 210, fy, line, COL_TEXT_DIM, 1);
+    g_text(x0 + 360, fy, line, COL_TEXT_DIM, 1);
 }
 
 /* ---- input -------------------------------------------------------------- */
@@ -154,6 +165,7 @@ static void apply_hot(int kind, int val) {
     case K_WALLSTYLE: g_settings.wall_style = val; gui_clear_wallpaper_image(); break;
     case K_WALLCOLOR: g_settings.wall_color = settings_wallcolor(val); gui_clear_wallpaper_image(); break;
     case K_RES:       g_settings.res_index = val; break;
+    case K_SCALE:     g_settings.scale_index = val; break;
     case K_AUDIO:     g_settings.audio_device = val; break;
     case K_FONT:      g_settings.font = val; break;
     case K_AUDIOTEST:

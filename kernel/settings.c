@@ -70,6 +70,21 @@ static const struct { const char *name; int w, h; } res_tab[] = {
 };
 #define NRES ((int)(sizeof(res_tab) / sizeof(res_tab[0])))
 
+/* ---- display scaling ---------------------------------------------------- *
+ * Integer factors are exact: at 200% one logical pixel is a 2x2 block of real
+ * ones and nothing softens. 125% and 150% are not -- the upscale picks nearest,
+ * so some rows double and their neighbours do not. They are here because a
+ * desktop that is slightly too small is worse than one that is slightly uneven,
+ * and the Settings page says which is which. */
+static const struct { const char *name; int pct; } scale_tab[] = {
+    { "Auto", 0 },
+    { "100%", 100 },
+    { "125%", 125 },
+    { "150%", 150 },
+    { "200%", 200 },
+};
+#define NSCALE ((int)(sizeof(scale_tab) / sizeof(scale_tab[0])))
+
 /* ---- audio output device ------------------------------------------------ */
 static const char *audio_names[] = { "PC Speaker", "Muted" };
 #define NAUDIO ((int)(sizeof(audio_names) / sizeof(audio_names[0])))
@@ -112,6 +127,19 @@ void settings_res_dims(int i, int *w, int *h) {
     if (h) *h = rh;
 }
 
+int         settings_scale_count(void)       { return NSCALE; }
+const char *settings_scale_name(int i)       { return (i >= 0 && i < NSCALE) ? scale_tab[i].name : ""; }
+
+/* Auto has one thing to go on: how many pixels the panel has. Nothing reports
+ * its physical size, so this cannot be real DPI and does not pretend to be --
+ * it is the point past which an unscaled desktop is uncomfortable on anything
+ * laptop-sized, and it only ever picks an exact factor. */
+int settings_scale_percent(int i, int panel_w, int panel_h) {
+    (void)panel_h;
+    if (i <= 0 || i >= NSCALE) return panel_w >= 2560 ? 200 : 100;
+    return scale_tab[i].pct;
+}
+
 int         settings_audio_count(void)       { return NAUDIO; }
 const char *settings_audio_name(int i)       { return (i >= 0 && i < NAUDIO) ? audio_names[i] : ""; }
 
@@ -143,6 +171,7 @@ void settings_init(void) {
     g_settings.aspect_index = 0;     /* unused (kept for ABI) */
     g_settings.audio_device = 0;     /* PC Speaker */
     g_settings.font         = 1;     /* Arial (8x16) is the default face */
+    g_settings.scale_index  = 0;     /* Auto: 100% unless the panel is huge */
     settings_apply();
 }
 
