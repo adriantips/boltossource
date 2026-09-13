@@ -444,6 +444,7 @@ static int      nwin;
 static int      ztop;
 static int      focus_id = -1;
 static int      drag_id  = -1, drag_dx, drag_dy;
+static int      snap_hint;                      /* tiling zone the drag is over */
 static int      title_last_id = -1; static uint64_t title_last_tick;  /* title double-click */
 static int      resize_id = -1, resize_edge;    /* window being edge-resized + its edge mask */
 static int      rs_x0, rs_y0, rs_w0, rs_h0, rs_mx, rs_my;  /* rect + mouse at resize start */
@@ -1995,12 +1996,161 @@ static void prompt_confirm(void) {
 }
 static void prompt_cancel(void) { prompt_active = 0; prompt_cb = 0; dirty = 1; }
 
+/* ---- tiling -------------------------------------------------------------- *
+ *  Halves, quarters and maximise, from the keyboard or from a drag to an edge.
+ *  One rect function serves all of it, so the preview you see while dragging is
+ *  computed by the same code that places the window when you let go -- they
+ *  used to be two expressions of W/2 and they disagreed by a pixel on an odd
+ *  width, which is exactly the sort of thing nobody reports and everybody sees.
+ * ---------------------------------------------------------------------------*/
+static void snap_rect(int zone, int *rx, int *ry, int *rw, int *rh) {
+    int avail = H - TASKBAR_H;
+    int hw = W / 2, hh = avail / 2;
+    int x = 0, y = 0, w = W, h = avail;
+    switch (zone) {
+    case SNAP_L:  w = hw; break;
+    case SNAP_R:  x = hw; w = W - hw; break;
+    case SNAP_TL: w = hw; h = hh; break;
+    case SNAP_TR: x = hw; w = W - hw; h = hh; break;
+    case SNAP_BL: w = hw; y = hh; h = avail - hh; break;
+    case SNAP_BR: x = hw; w = W - hw; y = hh; h = avail - hh; break;
+    default: break;                                    /* SNAP_MAX: all of it */
+    }
+    *rx = x; *ry = y; *rw = w; *rh = h;
+}
+
+static int snap_zone_of(const window_t *w) {
+    return w->maximized ? SNAP_MAX : w->snapped;
+}
+
+static void snap_apply(window_t *w, int zone) {
+    if (!w->maximized && !w->snapped) {                /* remember the float rect */
+        w->rx = w->x; w->ry = w->y; w->rw = w->w; w->rh = w->h;
+    }
+    if (zone == SNAP_NONE) {
+        w->x = w->rx; w->y = w->ry; w->w = w->rw; w->h = w->rh;
+        w->maximized = 0; w->snapped = SNAP_NONE;
+        return;
+    }
+    snap_rect(zone, &w->x, &w->y, &w->w, &w->h);
+    w->maximized = (zone == SNAP_MAX);
+    w->snapped   = (zone == SNAP_MAX) ? SNAP_NONE : zone;
+}
+
+static void do_maximize(window_t *w) {
+    snap_apply(w, (w->maximized || w->snapped) ? SNAP_NONE : SNAP_MAX);
+}
+
+/* Where the next arrow takes a window that is already in `cur`. This is the
+ * Windows table and it is a table on purpose: every attempt to derive it from
+ * the current rect got the two-step cases (half, then quarter, then back out)
+ * subtly wrong. -1 means minimise. */
+static int snap_next(int cur, int dir) {
+    switch (dir) {
+    case 0:  /* left  */
+        switch (cur) {
+        case SNAP_R: case SNAP_TL: case SNAP_BL: return SNAP_NONE;
+        case SNAP_TR: return SNAP_TL;
+        case SNAP_BR: return SNAP_BL;
+        default:      return SNAP_L;
+        }
+    case 1:  /* right */
+        switch (cur) {
+        case SNAP_L: case SNAP_TR: case SNAP_BR: return SNAP_NONE;
+        case SNAP_TL: return SNAP_TR;
+        case SNAP_BL: return SNAP_BR;
+        default:      return SNAP_R;
+        }
+    case 2:  /* up    */
+        switch (cur) {
+        case SNAP_L:  return SNAP_TL;
+        case SNAP_R:  return SNAP_TR;
+        case SNAP_BL: return SNAP_L;
+        case SNAP_BR: return SNAP_R;
+        default:      return SNAP_MAX;
+        }
+    default: /* down  */
+        switch (cur) {
+        case SNAP_MAX: case SNAP_BL: case SNAP_BR: return SNAP_NONE;
+        case SNAP_L:  return SNAP_BL;
+        case SNAP_R:  return SNAP_BR;
+        case SNAP_TL: return SNAP_L;
+        case SNAP_TR: return SNAP_R;
+        default:      return -1;
+        }
+    }
+}
+
+static void gui_keysnap(window_t *w, char c) {
+    int dir = (unsigned char)c == KEY_LEFT ? 0 : (unsigned char)c == KEY_RIGHT ? 1 :
+              (unsigned char)c == KEY_UP   ? 2 : 3;
+    int zone = snap_next(snap_zone_of(w), dir);
+    if (zone < 0) w->minimized = 1;
+    else          snap_apply(w, zone);
+    dirty = 1;
+}
+
+/* Which zone the pointer is asking for, or SNAP_NONE. The top edge maximises;
+ * a side edge gives that half, or a quarter when the pointer is also in the top
+ * or bottom quarter of the screen -- a corner, in other words, but a corner
+ * with a target you can hit without being precise about it. */
+#define SNAP_EDGE 2
+static int snap_zone_at(int mx, int my) {
+    int avail = H - TASKBAR_H;
+    int band  = avail / 4;
+    int left  = mx <= SNAP_EDGE, right = mx >= W - 1 - SNAP_EDGE;
+    if (left || right) {
+        if (my <= band)         return left ? SNAP_TL : SNAP_TR;
+        if (my >= avail - band) return left ? SNAP_BL : SNAP_BR;
+        return left ? SNAP_L : SNAP_R;
+    }
+    if (my <= SNAP_EDGE) return SNAP_MAX;
+    return SNAP_NONE;
+}
+
+static void snap_window(window_t *w, int mx, int my) {
+    int zone = snap_zone_at(mx, my);
+    if (zone != SNAP_NONE) snap_apply(w, zone);
+}
+
+/* The translucent rectangle under the window you are dragging. Drawn behind
+ * every window so the one in your hand stays on top of its own preview. */
+static void draw_snap_preview(void) {
+    if (snap_hint == SNAP_NONE) return;
+    int x, y, w, h; snap_rect(snap_hint, &x, &y, &w, &h);
+    g_round(x + 8, y + 8, w - 16, h - 16, RADIUS, COL_ACCENT, 56);
+    g_blend(x + 8, y + 8, w - 16, 2, COL_ACCENT, 190);
+    g_blend(x + 8, y + h - 10, w - 16, 2, COL_ACCENT, 190);
+    g_blend(x + 8, y + 8, 2, h - 16, COL_ACCENT, 190);
+    g_blend(x + w - 10, y + 8, 2, h - 16, COL_ACCENT, 190);
+}
+
+int gui_snap_focused(int zone) {
+    int t = topmost();
+    if (t < 0 || zone < SNAP_NONE || zone > SNAP_MAX) return -1;
+    snap_apply(&wins[t], zone);
+    dirty = 1;
+    return 0;
+}
+
+int gui_focused_rect(char *title, uint32_t cap, int *x, int *y, int *w, int *h, int *zone) {
+    int t = topmost();
+    if (t < 0) return -1;
+    window_t *win = &wins[t];
+    if (title && cap) snprintf(title, cap, "%s", win->title);
+    if (x) *x = win->x;  if (y) *y = win->y;
+    if (w) *w = win->w;  if (h) *h = win->h;
+    if (zone) *zone = snap_zone_of(win);
+    return 0;
+}
+
 static void composite(void) {
     g_clear_clip();
     if (BG) { for (int i = 0; i < W * H; i++) BB[i] = BG[i]; }
     else    render_wallpaper(BB);
 
     draw_desktop_icons();
+    draw_snap_preview();
 
     /* windows back-to-front by z */
     for (int pass = 0; pass <= ztop; pass++)
@@ -2037,51 +2187,6 @@ static void toggle_window_from_taskbar(int i) {
     dirty = 1;
 }
 
-static void do_maximize(window_t *w) {
-    if (w->maximized || w->snapped) {
-        w->x = w->rx; w->y = w->ry; w->w = w->rw; w->h = w->rh;
-        w->maximized = 0; w->snapped = 0;
-    } else {
-        w->rx = w->x; w->ry = w->y; w->rw = w->w; w->rh = w->h;
-        w->x = 0; w->y = 0; w->w = W; w->h = H - TASKBAR_H; w->maximized = 1;
-    }
-}
-
-/* Win+arrow window management: left/right half, maximise, restore-or-minimise. */
-static void gui_keysnap(window_t *w, char c) {
-    int avail = H - TASKBAR_H;
-    if (!w->maximized && !w->snapped) { w->rx = w->x; w->ry = w->y; w->rw = w->w; w->rh = w->h; }
-    switch ((unsigned char)c) {
-    case KEY_LEFT:  w->x = 0; w->y = 0; w->w = W / 2; w->h = avail; w->maximized = 0; w->snapped = 1; break;
-    case KEY_RIGHT: w->x = W / 2; w->y = 0; w->w = W - W / 2; w->h = avail; w->maximized = 0; w->snapped = 1; break;
-    case KEY_UP:    w->x = 0; w->y = 0; w->w = W; w->h = avail; w->maximized = 1; w->snapped = 0; break;
-    case KEY_DOWN:
-        if (w->maximized || w->snapped) {              /* restore */
-            w->x = w->rx; w->y = w->ry; w->w = w->rw; w->h = w->rh;
-            w->maximized = 0; w->snapped = 0;
-        } else w->minimized = 1;                        /* else minimise */
-        break;
-    }
-    dirty = 1;
-}
-
-/* Aero-snap on drag release: pointer at the top edge maximises; at the left or
- * right edge fills that half of the screen. The pre-snap rect is saved so the
- * next drag (or the maximise button) restores it. */
-static void snap_window(window_t *w, int mx, int my) {
-    int avail = H - TASKBAR_H;
-    if (my > 2 && mx > 2 && mx < W - 3) return;        /* not at any edge */
-    if (!w->maximized && !w->snapped) {
-        w->rx = w->x; w->ry = w->y; w->rw = w->w; w->rh = w->h;
-    }
-    if (my <= 2) {                                     /* top -> maximise */
-        w->x = 0; w->y = 0; w->w = W; w->h = avail; w->maximized = 1; w->snapped = 0;
-    } else if (mx <= 2) {                              /* left half */
-        w->x = 0; w->y = 0; w->w = W / 2; w->h = avail; w->maximized = 0; w->snapped = 1;
-    } else {                                           /* right half */
-        w->x = W / 2; w->y = 0; w->w = W - W / 2; w->h = avail; w->maximized = 0; w->snapped = 1;
-    }
-}
 
 static void on_left_down(int x, int y) {
     /* a modal prompt swallows all clicks; only OK/Cancel act */
@@ -2380,8 +2485,12 @@ static void handle_mouse(uint8_t b) {
         }
         if (up & MOUSE_LEFT) resize_id = -1;
     } else if (drag_id >= 0) {                       /* dragging a window */
-        if (b & MOUSE_LEFT) { wins[drag_id].x = x - drag_dx; wins[drag_id].y = y - drag_dy; clamp_window(&wins[drag_id]); }
-        if (up & MOUSE_LEFT) { snap_window(&wins[drag_id], x, y); drag_id = -1; }
+        if (b & MOUSE_LEFT) {
+            wins[drag_id].x = x - drag_dx; wins[drag_id].y = y - drag_dy;
+            clamp_window(&wins[drag_id]);
+            snap_hint = snap_zone_at(x, y);
+        }
+        if (up & MOUSE_LEFT) { snap_window(&wins[drag_id], x, y); drag_id = -1; snap_hint = SNAP_NONE; }
     } else if (client_drag_id >= 0) {                /* held-button drag inside an app's client area */
         window_t *w = &wins[client_drag_id];
         if ((b & MOUSE_LEFT) && w->drag) w->drag(w, x - w->x, y - (w->y + TITLE_H));

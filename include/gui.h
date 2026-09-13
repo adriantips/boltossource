@@ -72,7 +72,7 @@ struct window {
     int      open;                  /* registered + visible                   */
     int      pinned;                /* kept on the taskbar even when closed   */
     int      minimized, maximized;
-    int      snapped;               /* edge-snapped (half screen); restores on drag */
+    int      snapped;               /* SNAP_* zone, 0 = floating; restores on drag */
     int      desk;                  /* which virtual desktop it lives on (0-based) */
     int      rx, ry, rw, rh;        /* saved rect for un-maximise / un-snap   */
     int      z;                     /* stacking order (higher = nearer front) */
@@ -88,6 +88,11 @@ struct window {
     void (*tick) (window_t *);                    /* periodic update (~2 Hz)   */
     void  *st;                       /* app private state                      */
 };
+
+/* Tiling zones. A window's `snapped` holds one of these (SNAP_NONE when it is
+ * floating); SNAP_MAX is the odd one out and lives in `maximized` instead,
+ * because the maximise button and the double-click predate any of this. */
+enum { SNAP_NONE = 0, SNAP_L, SNAP_R, SNAP_TL, SNAP_TR, SNAP_BL, SNAP_BR, SNAP_MAX };
 
 enum { ICON_NONE = 0, ICON_TERMINAL, ICON_TASKMGR, ICON_START, ICON_FILES, ICON_SETTINGS,
        ICON_BROWSER, ICON_FOLDER, ICON_FILE, ICON_TRASH, ICON_CALC, ICON_CLOCK, ICON_NOTES, ICON_CALENDAR, ICON_PIANO, ICON_PAINT, ICON_MINES, ICON_SNAKE, ICON_2048, ICON_STOPWATCH, ICON_SYSINFO, ICON_LIFE, ICON_TTT, ICON_COLOR, ICON_MEMORY, ICON_MATRIX, ICON_CODE, ICON_DOOM, ICON_OLDBROWSER, ICON_SHEETS, ICON_IMAGE, ICON_MUSIC, ICON_TASKS, ICON_CONTACTS, ICON_INSTALL, ICON_SECURITY, ICON_SOFTWARE, ICON_MEDIA, ICON_NETWORK };
@@ -119,6 +124,15 @@ int  gui_desk_current(void);
 int  gui_desk_goto(int d);                            /* 0, or -1 out of range */
 int  gui_desk_send(int d);                            /* move the focused window */
 int  gui_desk_windows(int d, char *out, uint32_t cap); /* count; names into out */
+
+/* ---- tiling -------------------------------------------------------------- *
+ *  Halves, quarters and maximise. The keyboard (Win+arrow) and a drag to an
+ *  edge are how anyone actually tiles a window; these exist so `snap` can do it
+ *  from a prompt -- over SSH there is no Win key to press, and a test that
+ *  synthesises one is mostly testing the keyboard driver.                      */
+int  gui_snap_focused(int zone);        /* SNAP_*; -1 if nothing is focused    */
+int  gui_focused_rect(char *title, uint32_t cap,
+                      int *x, int *y, int *w, int *h, int *zone);
 
 /* Lock the running session behind a password prompt. The desktop is left
  * exactly as it was; only the current user's password gets back in. Armed by

@@ -598,6 +598,29 @@ class BoltVM:
             time.sleep(0.1)
         time.sleep(0.4)
 
+    def drag(self, x0, y0, x1, y1, steps=6, hold=None):
+        """Press at (x0,y0), move to (x1,y1) in steps, release -- unless `hold`
+        is given, in which case it is called with the button still down and the
+        release happens after it returns. That is the only way to see anything
+        the compositor draws *during* a drag, which is where the snap preview
+        lives.
+
+        The pointer is relative (PS/2) and the guest clamps it at the panel
+        edge, so a drag that ends against an edge leaves self.pos optimistic by
+        a pixel or two. Do edge drags last, or re-centre afterwards.
+        """
+        self.move(x0, y0)
+        self._cmd({"execute": "input-send-event", "arguments": {"events": [
+            {"type": "btn", "data": {"button": "left", "down": True}}]}})
+        time.sleep(0.15)
+        for i in range(1, steps + 1):
+            self.move(x0 + (x1 - x0) * i // steps, y0 + (y1 - y0) * i // steps)
+        if hold:
+            hold()
+        self._cmd({"execute": "input-send-event", "arguments": {"events": [
+            {"type": "btn", "data": {"button": "left", "down": False}}]}})
+        time.sleep(0.6)
+
     def screenshot(self, name):
         path = os.path.join(self.workdir, name)
         self._cmd({"execute": "screendump", "arguments": {"filename": path}})

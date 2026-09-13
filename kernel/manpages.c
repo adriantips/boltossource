@@ -264,6 +264,13 @@ static const manpage_t MAN[] = {
   "desktop and opens the result in Photos. It reads the panel back rather than\n"
   "the compositor's buffer, so DOOM, the ring-3 browser and the text console\n"
   "capture correctly too." },
+{ "snap", "snap [ZONE]",
+  "Tile the focused window. ZONE is left, right, top-left, top-right,\n"
+  "bottom-left, bottom-right, max or restore; with no argument it prints the\n"
+  "focused window's zone and outer rectangle. Win+arrow does the same from the\n"
+  "keyboard and walks between halves and quarters -- Win+Left then Win+Up gives\n"
+  "the top-left quarter -- and dragging a title bar to an edge or a corner snaps\n"
+  "on release, with the landing zone previewed while you drag." },
 { "desk", "desk [N] | desk move N | desk list",
   "The virtual desktops. With no argument, lists all four, marks the one you\n"
   "are on and names the windows on each. `desk 2` switches; `desk move 2` sends\n"
