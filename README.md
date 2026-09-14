@@ -2441,6 +2441,74 @@ address and runs from the higher half thereafter, with a direct physical map at
 `PHYS_BASE`. `bootinfo` (framebuffer + E820 map) is handed to the kernel in `RDI`
 and lives at physical `0x0500`.
 
+## Fuzzing the parts a stranger writes
+
+Everything else on the machine parses something the user typed or a disk we
+formatted. Two subsystems parse whatever arrives from outside, and both of them
+do it in ring 0: the network stack (`net/tcp.c` takes segments before any port
+is open; `net/tls.c` and `net/x509.c` run the record layer and the certificate
+parser *before* the certificate has been checked; `net/http.c` and
+`net/inflate.c` take the response afterwards) and the browser (`kernel/html.c`,
+`kernel/dom.c`, `kernel/layout.c`, `kernel/js.c`).
+
+`test/t_fuzz.py` builds three harnesses over those sources and runs 23 targets
+in about a minute. It is the one test in the suite that boots no machine: a
+fuzzer wants millions of inputs and QEMU gives you one boot a minute.
+
+```sh
+python test/t_fuzz.py                   # the default budget, ~1 min
+python test/t_fuzz.py --iters 200000    # a soak
+python test/t_fuzz.py --seed 7 net      # one harness, a different sequence
+```
+
+This clang has neither libFuzzer nor AddressSanitizer — `-fsanitize=fuzzer` is
+"unsupported option for target x86_64-w64-windows-gnu" and the asan runtime is
+not in the mingw package — so `test/host/fuzz.h` supplies both halves:
+
+- **the mutator** — a seed corpus, a splice, and the byte values that break
+  parsers more often than random ones do. Purely random bytes die at the first
+  length check in any of these, so almost every input starts as something that
+  parsed once and is then damaged.
+- **the detector** — a `kmalloc` with a redzone either side of every block,
+  poison on free, a quarantine so a use-after-free is caught rather than
+  tolerated, leak counting, and a switch that makes allocation *start failing
+  partway through a parse*. That last one is not decoration: the machine has
+  64 MB and a page can be bigger than that, and those paths had never run.
+
+What a sanitizer would still give you — traps on undefined behaviour — does come
+from clang: `-fsanitize=undefined,bounds -fsanitize-trap=all` needs no runtime
+library, and catches the signed overflows and the fixed-array overruns a heap
+cannot see. A crash prints the seed, the iteration, the input as hex, and the
+faulting address with the `addr2line` command that resolves it.
+
+Each harness proves itself before it fuzzes anything — known input, known
+answer. That is not ceremony: the network harness's DNS stub had its return
+convention inverted (net/dns.c answers non-zero for success), so every HTTP
+target exited before parsing a byte and reported a clean run at two million
+inputs a second. A broken fuzzer looks exactly like a fuzzer that found nothing.
+
+Fourteen bugs so far, every one reachable from a web page or from the wire. The
+four worst:
+
+- `dechunk()` clamped a chunk size with `r + sz > len`, which wraps. A chunk
+  header of `FFFFFFF0` defeated the clamp entirely and handed `memmove` a
+  four-gigabyte count off a 64 KB buffer — from any server, over plain HTTP.
+- both `Content-Encoding` sniffers loaded `p[1]..p[6]` before checking that
+  `p[0]` was not the string terminator, reading six bytes off the end of a
+  32-byte stack array on every response. They are one `strcasestr` each now.
+- sixteen half-open SYNs took *every* listening port off the network until the
+  machine rebooted: one connection table, sixteen entries, and nothing aged out
+  of it. Stale unclaimed slots are reclaimed when the table is full now, and
+  never a connection `tcp_accept()` has handed to a caller.
+- a script with unbounded recursion ran the kernel stack out. There is a stack
+  budget now (`stack_low()`), and `eval()`'s frame went from 584 bytes to 40:
+  the two call cases were carrying a 512-byte argument vector down the stack
+  for every node in the tree, not just for calls.
+
+The input for each is kept in `test/corpus/`, replayed unmutated before every
+run — a fuzzer that does not remember what it found is a fuzzer that finds it
+again next year.
+
 ## Toolchain (Windows / msys2)
 
 - `nasm` — bootloader, kernel asm, userland `crt0`, and SMP AP trampoline

@@ -16,7 +16,11 @@
 #define ARENA_BLK (64 * 1024)
 #define ARENA_MAX (8 * 1024 * 1024)     /* hard ceiling, runaway backstop */
 
-typedef struct ABlk { struct ABlk *next; uint32_t used; uint8_t mem[ARENA_BLK]; } ABlk;
+/* _Alignas, or mem[] lands at offset 12 and the "8-byte align" below is
+ * aligning offsets into a base that is 4 mod 8. Every Node, JObj and JVal in a
+ * running script was misaligned; x86 shrugs, the standard does not. Same slip
+ * in kernel/dom.c and kernel/layout.c, which grew from this one. */
+typedef struct ABlk { struct ABlk *next; uint32_t used; _Alignas(8) uint8_t mem[ARENA_BLK]; } ABlk;
 
 typedef struct {
     ABlk    *head;
@@ -41,9 +45,17 @@ static void arena_free(Arena *a) {
     for (ABlk *b = a->head; b; ) { ABlk *n = b->next; kfree(b); b = n; }
     a->head = 0; a->total = 0;
 }
+/* An empty string, not a null. Every caller of this puts the result somewhere
+ * a later strcmp() or strlen() will find it, and none of them checked -- the
+ * arena is only ever exhausted by a script big enough to have earned it, and
+ * then the interpreter is about to stop anyway. str_concat() below has always
+ * done this; the tokenizer's strings are the ones that were reaching strcmp as
+ * a null. Writable static rather than a literal: nothing writes through these,
+ * but a const literal in .rodata is a worse thing to be wrong about. */
+static char arena_nothing[1];
 static char *arena_str(Arena *a, const char *s, uint32_t n) {
     char *p = (char *)arena_alloc(a, n + 1);
-    if (!p) return 0;
+    if (!p) return arena_nothing;
     if (n) memcpy(p, s, n);
     p[n] = 0;
     return p;
@@ -86,6 +98,25 @@ static JVal jnum(int64_t n){ JVal v; v.t=T_NUM; v.u.num=n; return v; }
 static JVal jstr(char *s){ JVal v; v.t=T_STR; v.u.str=s; return v; }
 static JVal jobj(JObj *o){ JVal v; v.t=T_OBJ; v.u.obj=o; return v; }
 
+/* Arithmetic that a script cannot make undefined.
+ *
+ * Numbers here are int64 rather than doubles, so everything a real engine
+ * handles by losing precision, this has to handle by wrapping -- and signed
+ * overflow in C is undefined, which the optimiser is entitled to act on. Done
+ * in unsigned, where two's-complement wrap is what the standard says.
+ *
+ * Division is worse than undefined: INT64_MIN / -1 has no representable answer
+ * and x86 raises #DE for it, so `-9223372036854775808 / -1` in a page's script
+ * was a divide-error exception in ring 0. Both it and `% -1` are answered
+ * directly. Division by zero already returned 0 (Infinity is not a number this
+ * interpreter has). */
+static int64_t jadd(int64_t a, int64_t b){ return (int64_t)((uint64_t)a + (uint64_t)b); }
+static int64_t jsub(int64_t a, int64_t b){ return (int64_t)((uint64_t)a - (uint64_t)b); }
+static int64_t jmul(int64_t a, int64_t b){ return (int64_t)((uint64_t)a * (uint64_t)b); }
+static int64_t jdiv(int64_t a, int64_t b){ return !b ? 0 : b == -1 ? jsub(0, a) : a / b; }
+static int64_t jmod(int64_t a, int64_t b){ return (!b || b == -1) ? 0 : a % b; }
+static int64_t jshl(int64_t a, int64_t b){ return (int64_t)((uint64_t)a << (b & 63)); }
+
 /* ----------------------------- environment ----------------------------- */
 struct JEnv { Prop *vars; JEnv *parent; };
 
@@ -110,6 +141,8 @@ struct Node {
 };
 
 /* ----------------------------- lexer ----------------------------------- */
+#define JNUM_MAX ((int64_t)0x7FFFFFFFFFFFFFFFll)
+
 enum {
     TK_EOF, TK_NUM, TK_STR, TK_IDENT,
     TK_PUNCT
@@ -139,6 +172,7 @@ struct Interp {
     int      flow;            /* 0 normal, 1 return, 2 break, 3 continue */
     JVal     retval;
     int      steps;           /* execution budget guard */
+    uintptr_t stack_top;      /* frame address on the way in; see stack_low() */
     uint64_t now_ms;          /* current time, set by js_vm_pump (for timers) */
     /* persistent-VM registries (timers + event listeners) */
     struct { JObj *fn; uint64_t due; uint32_t interval; int active; } timers[32];
@@ -149,6 +183,27 @@ struct Interp {
     struct { JObj *onF, *onR, *rp; int state; JVal val; } microq[128];
     int      mq_head, mq_count;
 };
+
+/* A tree-walking interpreter recurses into C for every node it evaluates and
+ * every level it parses, so how deep the stack goes is the script's decision.
+ * The frames are not small. Measured on the kernel build: eval 96 bytes,
+ * eval_call 608, call_fn 96, parse_block 2160 (it carries a 256-entry array),
+ * and one JS call is five or six of them -- about 1.1 KB a level. The
+ * scheduler gives a thread 64 KB (kernel/sched.c KSTACK) and the compositor is
+ * what lives below it, so half of that is the budget and about thirty frames
+ * is what a script gets. Deep, for a page script; shallow next to a real
+ * engine, and said out loud in DEVELOPING.md rather than discovered.
+ *
+ * Counting frames would mean picking a number that is wrong in one of the two
+ * builds this file is compiled for -- the kernel's and the ring-3 browser's.
+ * Measuring the stack is right in both: remember where it was on the way in
+ * and refuse to go further than the budget past it. */
+#define JS_STACK_BUDGET (32u * 1024u)
+
+static int stack_low(Interp *I) {
+    uintptr_t here = (uintptr_t)__builtin_frame_address(0);
+    return I->stack_top && I->stack_top - here > JS_STACK_BUDGET;
+}
 
 static void seterr(Interp *I, const char *m) {
     if (I->errflag) return;
@@ -180,14 +235,20 @@ static Tok lex(Interp *I) {
     int c = s[I->pos];
 
     if (is_digit(c) || (c=='.' && I->pos+1<n && is_digit(s[I->pos+1]))) {
+        /* Saturating, because these are int64 and a literal is however many
+         * digits someone typed. Real JS would hold 1e30 as a double and lose
+         * precision; here it pins at the largest number the interpreter has,
+         * which is at least a number and not signed overflow. */
         int64_t v = 0;
         if (c=='0' && I->pos+1<n && (s[I->pos+1]=='x'||s[I->pos+1]=='X')) {
             I->pos += 2;
             while (I->pos<n) { int d=s[I->pos];
                 int hv = (d>='0'&&d<='9')?d-'0':(d>='a'&&d<='f')?d-'a'+10:(d>='A'&&d<='F')?d-'A'+10:-1;
-                if (hv<0) break; v = v*16+hv; I->pos++; }
+                if (hv<0) break; if (v <= JNUM_MAX/16) v = v*16+hv; else v = JNUM_MAX; I->pos++; }
         } else {
-            while (I->pos<n && is_digit(s[I->pos])) { v = v*10 + (s[I->pos]-'0'); I->pos++; }
+            while (I->pos<n && is_digit(s[I->pos])) {
+                v = (v <= (JNUM_MAX-9)/10) ? v*10 + (s[I->pos]-'0') : JNUM_MAX;
+                I->pos++; }
             if (I->pos<n && s[I->pos]=='.') { I->pos++; while (I->pos<n && is_digit(s[I->pos])) I->pos++; } /* drop fraction */
             if (I->pos<n && (s[I->pos]=='e'||s[I->pos]=='E')) { I->pos++; if(I->pos<n&&(s[I->pos]=='+'||s[I->pos]=='-'))I->pos++; while(I->pos<n&&is_digit(s[I->pos]))I->pos++; }
         }
@@ -269,9 +330,14 @@ static Node *parse_expr(Interp *I);
 static Node *parse_assign(Interp *I);
 static Node *parse_stmt(Interp *I);
 
-static Node **node_list(Interp *I, Node **tmp, int cnt) {
-    Node **arr = (Node **)arena_alloc(&I->a, sizeof(Node*) * (cnt?cnt:1));
-    for (int i=0;i<cnt;i++) arr[i]=tmp[i];
+/* Takes the count by pointer so a failed allocation can zero it. It used to
+ * return the allocation unchecked and then write through it, and every caller
+ * followed with `->nlist = cnt` -- so a full arena gave the tree a null list
+ * with a positive length on it, which the evaluator walks. */
+static Node **node_list(Interp *I, Node **tmp, int *cnt) {
+    Node **arr = (Node **)arena_alloc(&I->a, sizeof(Node*) * (*cnt ? *cnt : 1));
+    if (!arr) { seterr(I, "out of memory"); *cnt = 0; return 0; }
+    for (int i = 0; i < *cnt; i++) arr[i] = tmp[i];
     return arr;
 }
 
@@ -297,7 +363,7 @@ static Node *parse_primary(Interp *I) {
                 if (!eat_op(I,OP_COMMA)) break;
             }
             if (!eat_op(I,OP_RPAREN)) { seterr(I,"expected )"); return 0; }
-            fn->list = node_list(I,ps,pc); fn->nlist = pc;
+            fn->list = node_list(I,ps,&pc); fn->nlist = pc;
             fn->a = parse_stmt(I);   /* body block */
             return fn;
         }
@@ -318,7 +384,7 @@ static Node *parse_primary(Interp *I) {
             if (!eat_op(I,OP_COMMA)) break;
         }
         eat_op(I,OP_RBRACK);
-        n->list = node_list(I,el,c); n->nlist=c; return n;
+        n->list = node_list(I,el,&c); n->nlist=c; return n;
     }
     if (is_op(t,OP_LBRACE)) {            /* object literal */
         next(I);
@@ -338,9 +404,10 @@ static Node *parse_primary(Interp *I) {
             if (!eat_op(I,OP_COMMA)) break;
         }
         eat_op(I,OP_RBRACE);
-        n->list = node_list(I,vals,c); n->nlist=c;
+        n->list = node_list(I,vals,&c); n->nlist=c;
         n->keys = (char**)arena_alloc(&I->a, sizeof(char*)*(c?c:1));
-        for(int i=0;i<c;i++) n->keys[i]=keys[i];
+        if (!n->keys) { seterr(I,"out of memory"); n->nlist = 0; }
+        else for(int i=0;i<c;i++) n->keys[i]=keys[i];
         return n;
     }
     if (is_kw(t,"new")) {
@@ -353,7 +420,7 @@ static Node *parse_primary(Interp *I) {
             while (!is_op(peek(I),OP_RPAREN)) { Node*e=parse_assign(I); if(ac<32)args[ac++]=e; if(!eat_op(I,OP_COMMA))break; }
             eat_op(I,OP_RPAREN);
         }
-        n->list=node_list(I,args,ac); n->nlist=ac;
+        n->list=node_list(I,args,&ac); n->nlist=ac;
         return n;
     }
     seterr(I,"unexpected token");
@@ -378,7 +445,7 @@ static Node *parse_postfix(Interp *I) {
             Node *args[32]; int ac=0;
             while (!is_op(peek(I),OP_RPAREN)) { Node*a=parse_assign(I); if(ac<32)args[ac++]=a; if(!eat_op(I,OP_COMMA))break; }
             eat_op(I,OP_RPAREN);
-            Node *c=new_node(I,N_CALL); if(!c)break; c->a=e; c->list=node_list(I,args,ac); c->nlist=ac; e=c;
+            Node *c=new_node(I,N_CALL); if(!c)break; c->a=e; c->list=node_list(I,args,&ac); c->nlist=ac; e=c;
         } else if (is_op(peek(I),OP_INC) || is_op(peek(I),OP_DEC)) {
             int op = peek(I)->op; next(I);
             Node *u=new_node(I,N_UPDATE); if(!u)break; u->a=e; u->op=op; u->prefix=0; e=u;
@@ -445,7 +512,12 @@ static Node *parse_cond(Interp *I) {
 static int is_assign_op(int op){
     return op==OP_ASSIGN||op==OP_PLUSEQ||op==OP_MINUSEQ||op==OP_STAREQ||op==OP_SLASHEQ||op==OP_PCTEQ;
 }
+static Node *parse_assign_body(Interp *I);
 static Node *parse_assign(Interp *I) {
+    if (stack_low(I)) { seterr(I,"expression nested too deeply"); return 0; }
+    return parse_assign_body(I);
+}
+static Node *parse_assign_body(Interp *I) {
     Node *l = parse_cond(I);
     Tok *t = peek(I);
     if (t->k==TK_PUNCT && is_assign_op(t->op)) {
@@ -469,7 +541,7 @@ static Node *parse_block(Interp *I) {
         if (I->errflag) break;
     }
     eat_op(I,OP_RBRACE);
-    n->list=node_list(I,st,c); n->nlist=c; return n;
+    n->list=node_list(I,st,&c); n->nlist=c; return n;
 }
 
 static Node *parse_var(Interp *I) {
@@ -484,17 +556,23 @@ static Node *parse_var(Interp *I) {
         if (c<16){ names[c]=nm; inits[c]=init; c++; }
         if (!eat_op(I,OP_COMMA)) break;
     }
-    n->list=node_list(I,names,c); n->nlist=c;
+    n->list=node_list(I,names,&c); n->nlist=c;
     n->keys=0;
     /* stash inits in a parallel Node** via ->d list trick: reuse 'list' for names, store inits in arena */
     Node **iv = (Node**)arena_alloc(&I->a, sizeof(Node*)*(c?c:1));
-    for(int i=0;i<c;i++) iv[i]=inits[i];
+    if (!iv) { seterr(I,"out of memory"); n->nlist = 0; }
+    else for(int i=0;i<c;i++) iv[i]=inits[i];
     n->b = (Node*)0; n->c = (Node*)iv;  /* c holds inits array (cast) */
     eat_op(I,OP_SEMI);
     return n;
 }
 
+static Node *parse_stmt_body(Interp *I);
 static Node *parse_stmt(Interp *I) {
+    if (stack_low(I)) { seterr(I,"nested too deeply"); return 0; }
+    return parse_stmt_body(I);
+}
+static Node *parse_stmt_body(Interp *I) {
     Tok *t = peek(I);
     if (is_op(t,OP_LBRACE)) return parse_block(I);
     if (is_op(t,OP_SEMI)) { next(I); return new_node(I,N_EMPTY); }
@@ -503,12 +581,18 @@ static Node *parse_stmt(Interp *I) {
         if (is_kw(t,"function")) {
             next(I);
             Node *fn=new_node(I,N_FUNDECL); if(!fn)return 0;
-            if (peek(I)->k==TK_IDENT){ next(I); fn->str=I->cur.str; }
+            /* A declaration, not an expression: `function (x) {}` on its own
+             * is a syntax error in every other engine too, and here it left
+             * fn->str null all the way to env_def(), which strcmp()s it. The
+             * expression form is parsed in parse_primary and does not come
+             * through here, so `var a = function (x) {}` is unaffected. */
+            if (peek(I)->k!=TK_IDENT) { seterr(I,"function declaration needs a name"); return 0; }
+            next(I); fn->str=I->cur.str;
             eat_op(I,OP_LPAREN);
             Node *ps[32]; int pc=0;
             while (!is_op(peek(I),OP_RPAREN)) { if(peek(I)->k!=TK_IDENT){seterr(I,"bad param");break;} next(I); Node*p=new_node(I,N_IDENT); if(p)p->str=I->cur.str; if(pc<32)ps[pc++]=p; if(!eat_op(I,OP_COMMA))break; }
             eat_op(I,OP_RPAREN);
-            fn->list=node_list(I,ps,pc); fn->nlist=pc;
+            fn->list=node_list(I,ps,&pc); fn->nlist=pc;
             fn->a=parse_block(I);
             return fn;
         }
@@ -563,6 +647,8 @@ static Node *parse_stmt(Interp *I) {
 /* ----------------------------- interpreter ----------------------------- */
 static JVal eval(Interp *I, Node *n, JEnv *env);
 static JVal call_fn(Interp *I, JObj *fn, JVal thisv, JVal *args, int nargs);
+static JVal eval_call(Interp *I, Node *n, JEnv *env);
+static JVal eval_new(Interp *I, Node *n, JEnv *env);
 static char *val_to_str(Interp *I, JVal v);
 static int   truthy(JVal v);
 
@@ -595,6 +681,11 @@ static JEnv *new_env(Interp *I, JEnv *parent) {
     e->vars=0; e->parent=parent; return e;
 }
 static void env_def(Interp *I, JEnv *e, const char *name, JVal v) {
+    /* new_env() hands back the parent when the arena is out, and the global
+     * environment's parent is nothing at all -- so this is reachable with a
+     * null e on any script whose first allocation fails. env_find() below has
+     * always tolerated it; this did not. */
+    if (!e) return;
     for (Prop *p=e->vars;p;p=p->next) if(strcmp(p->key,name)==0){ p->val=v; return; }
     Prop *p=(Prop*)arena_alloc(&I->a,sizeof(Prop)); if(!p)return;
     p->key=arena_str(&I->a,name,strlen(name)); p->val=v; p->next=e->vars; e->vars=p;
@@ -737,9 +828,49 @@ static void assign_to(Interp *I, Node *target, JVal v, JEnv *env) {
     seterr(I,"invalid assignment target");
 }
 
+/* Out of line, and noinline on purpose. eval() is a switch over every node
+ * type, so its frame is sized for the worst case in it -- and that was these
+ * two `JVal args[32]`, half a kilobyte apiece, carried down the stack by every
+ * addition and every variable lookup as well, because a tree-walker recurses
+ * once per node. Moving them here is most of the recursion depth a script has;
+ * see stack_low() for the other half of the same problem. */
+__attribute__((noinline))
+static JVal eval_call(Interp *I, Node *n, JEnv *env) {
+    /* method call vs plain call */
+    Node *callee=n->a;
+    JVal args[32]; int ac=n->nlist>32?32:n->nlist;
+    for(int i=0;i<ac;i++) args[i]=eval(I,n->list[i],env);
+    if (callee->type==N_MEMBER || callee->type==N_INDEX) {
+        JVal recv=eval(I,callee->a,env);
+        const char *mname = callee->type==N_MEMBER ? callee->str : val_to_str(I,eval(I,callee->b,env));
+        int handled=0;
+        JVal r=method_call(I,recv,mname,args,ac,&handled);
+        if (handled) return r;
+        /* fall back: property is a user function */
+        JVal fn;
+        if (recv.t==T_OBJ && obj_get(recv.u.obj,mname,&fn) && fn.t==T_OBJ && (fn.u.obj->kind==K_FUN||fn.u.obj->kind==K_NATIVE))
+            return call_fn(I,fn.u.obj,recv,args,ac);
+        seterr(I,"not a function"); return jundef();
+    }
+    JVal fn=eval(I,callee,env);
+    if (fn.t==T_OBJ && (fn.u.obj->kind==K_FUN||fn.u.obj->kind==K_NATIVE)) return call_fn(I,fn.u.obj,jundef(),args,ac);
+    seterr(I,"not a function"); return jundef();
+}
+
+__attribute__((noinline))
+static JVal eval_new(Interp *I, Node *n, JEnv *env) {
+    JVal fn=eval(I,n->a,env);
+    JVal args[32]; int ac=n->nlist>32?32:n->nlist;
+    for(int i=0;i<ac;i++) args[i]=eval(I,n->list[i],env);
+    JObj *o=new_obj(I,K_OBJ); if(!o)return jundef();
+    if (fn.t==T_OBJ && (fn.u.obj->kind==K_FUN||fn.u.obj->kind==K_NATIVE)) { JVal r=call_fn(I,fn.u.obj,jobj(o),args,ac); if(r.t==T_OBJ)return r; }
+    return jobj(o);
+}
+
 static JVal eval(Interp *I, Node *n, JEnv *env) {
     if (!n || I->errflag) return jundef();
     if (++I->steps > 50000000) { seterr(I,"script ran too long"); return jundef(); }
+    if (stack_low(I)) { seterr(I,"too much recursion"); return jundef(); }
 
     switch (n->type) {
     case N_NUM:  return jnum(n->num);
@@ -785,41 +916,14 @@ static JVal eval(Interp *I, Node *n, JEnv *env) {
         if (recv.t==T_STR) { int i=(int)to_num(idx); int L=strlen(recv.u.str); if(i>=0&&i<L){ char c[2]={recv.u.str[i],0}; return jstr(arena_str(&I->a,c,1)); } return jundef(); }
         return jundef();
     }
-    case N_CALL: {
-        /* method call vs plain call */
-        Node *callee=n->a;
-        JVal args[32]; int ac=n->nlist>32?32:n->nlist;
-        for(int i=0;i<ac;i++) args[i]=eval(I,n->list[i],env);
-        if (callee->type==N_MEMBER || callee->type==N_INDEX) {
-            JVal recv=eval(I,callee->a,env);
-            const char *mname = callee->type==N_MEMBER ? callee->str : val_to_str(I,eval(I,callee->b,env));
-            int handled=0;
-            JVal r=method_call(I,recv,mname,args,ac,&handled);
-            if (handled) return r;
-            /* fall back: property is a user function */
-            JVal fn;
-            if (recv.t==T_OBJ && obj_get(recv.u.obj,mname,&fn) && fn.t==T_OBJ && (fn.u.obj->kind==K_FUN||fn.u.obj->kind==K_NATIVE))
-                return call_fn(I,fn.u.obj,recv,args,ac);
-            seterr(I,"not a function"); return jundef();
-        }
-        JVal fn=eval(I,callee,env);
-        if (fn.t==T_OBJ && (fn.u.obj->kind==K_FUN||fn.u.obj->kind==K_NATIVE)) return call_fn(I,fn.u.obj,jundef(),args,ac);
-        seterr(I,"not a function"); return jundef();
-    }
-    case N_NEW: {
-        JVal fn=eval(I,n->a,env);
-        JVal args[32]; int ac=n->nlist>32?32:n->nlist;
-        for(int i=0;i<ac;i++) args[i]=eval(I,n->list[i],env);
-        JObj *o=new_obj(I,K_OBJ); if(!o)return jundef();
-        if (fn.t==T_OBJ && (fn.u.obj->kind==K_FUN||fn.u.obj->kind==K_NATIVE)) { JVal r=call_fn(I,fn.u.obj,jobj(o),args,ac); if(r.t==T_OBJ)return r; }
-        return jobj(o);
-    }
+    case N_CALL: return eval_call(I,n,env);
+    case N_NEW:  return eval_new(I,n,env);
     case N_UNARY: {
         if (n->str && strcmp(n->str,"typeof")==0) { JVal v=eval(I,n->a,env); return jstr(arena_str(&I->a,type_name(v),strlen(type_name(v)))); }
         JVal v=eval(I,n->a,env);
         switch(n->op){
             case OP_NOT: return jbool(!truthy(v));
-            case OP_MINUS: return jnum(-to_num(v));
+            case OP_MINUS: return jnum(jsub(0,to_num(v)));
             case OP_PLUS: return jnum(to_num(v));
             case OP_TILDE: return jnum(~to_num(v));
         }
@@ -827,7 +931,7 @@ static JVal eval(Interp *I, Node *n, JEnv *env) {
     }
     case N_UPDATE: {
         JVal old=eval(I,n->a,env); int64_t ov=to_num(old);
-        int64_t nv = n->op==OP_INC? ov+1: ov-1;
+        int64_t nv = n->op==OP_INC? jadd(ov,1): jsub(ov,1);
         assign_to(I,n->a,jnum(nv),env);
         return jnum(n->prefix? nv: ov);
     }
@@ -841,12 +945,12 @@ static JVal eval(Interp *I, Node *n, JEnv *env) {
         switch(n->op){
             case OP_PLUS:
                 if (a.t==T_STR||b.t==T_STR) return jstr(str_concat(I,val_to_str(I,a),val_to_str(I,b)));
-                return jnum(to_num(a)+to_num(b));
-            case OP_MINUS: return jnum(to_num(a)-to_num(b));
-            case OP_STAR:  return jnum(to_num(a)*to_num(b));
-            case OP_SLASH: { int64_t d=to_num(b); return jnum(d? to_num(a)/d : 0); }
-            case OP_PCT:   { int64_t d=to_num(b); return jnum(d? to_num(a)%d : 0); }
-            case OP_SHL: return jnum(to_num(a)<<(to_num(b)&63));
+                return jnum(jadd(to_num(a),to_num(b)));
+            case OP_MINUS: return jnum(jsub(to_num(a),to_num(b)));
+            case OP_STAR:  return jnum(jmul(to_num(a),to_num(b)));
+            case OP_SLASH: return jnum(jdiv(to_num(a),to_num(b)));
+            case OP_PCT:   return jnum(jmod(to_num(a),to_num(b)));
+            case OP_SHL: return jnum(jshl(to_num(a),to_num(b)));
             case OP_SHR: return jnum(to_num(a)>>(to_num(b)&63));
             case OP_AMP: return jnum(to_num(a)&to_num(b));
             case OP_PIPE:return jnum(to_num(a)|to_num(b));
@@ -870,11 +974,11 @@ static JVal eval(Interp *I, Node *n, JEnv *env) {
         else {
             JVal cur=eval(I,n->a,env), r=eval(I,n->b,env);
             switch(n->op){
-                case OP_PLUSEQ: rhs=(cur.t==T_STR||r.t==T_STR)? jstr(str_concat(I,val_to_str(I,cur),val_to_str(I,r))): jnum(to_num(cur)+to_num(r)); break;
-                case OP_MINUSEQ: rhs=jnum(to_num(cur)-to_num(r)); break;
-                case OP_STAREQ: rhs=jnum(to_num(cur)*to_num(r)); break;
-                case OP_SLASHEQ: { int64_t d=to_num(r); rhs=jnum(d?to_num(cur)/d:0); } break;
-                case OP_PCTEQ: { int64_t d=to_num(r); rhs=jnum(d?to_num(cur)%d:0); } break;
+                case OP_PLUSEQ: rhs=(cur.t==T_STR||r.t==T_STR)? jstr(str_concat(I,val_to_str(I,cur),val_to_str(I,r))): jnum(jadd(to_num(cur),to_num(r))); break;
+                case OP_MINUSEQ: rhs=jnum(jsub(to_num(cur),to_num(r))); break;
+                case OP_STAREQ: rhs=jnum(jmul(to_num(cur),to_num(r))); break;
+                case OP_SLASHEQ: rhs=jnum(jdiv(to_num(cur),to_num(r))); break;
+                case OP_PCTEQ: rhs=jnum(jmod(to_num(cur),to_num(r))); break;
                 default: rhs=r;
             }
         }
@@ -972,8 +1076,13 @@ int js_run(const char *src, uint32_t len, js_host *host, char *err, uint32_t err
     Interp *I=(Interp*)kmalloc(sizeof(Interp));
     if (!I) { if(err&&errcap)err[0]=0; return -1; }
     memset(I,0,sizeof(*I));
+    I->stack_top = (uintptr_t)__builtin_frame_address(0);
     I->src=src; I->slen=len; I->host=host;
     I->global=new_env(I,0);
+    if (!I->global) { arena_free(&I->a); kfree(I);
+                      if(err&&errcap) { const char *m="out of memory"; uint32_t i=0;
+                                        for(;m[i]&&i<errcap-1;i++)err[i]=m[i]; err[i]=0; }
+                      return -1; }
     js_install_globals(I);
 
     /* parse + execute top-level statements */
@@ -1004,6 +1113,7 @@ js_vm *js_vm_create(js_host *host) {
     if (!vm) return 0;
     memset(vm, 0, sizeof(*vm));
     vm->I.host = host;
+    vm->I.stack_top = (uintptr_t)__builtin_frame_address(0);
     vm->I.global = new_env(&vm->I, 0);
     js_install_globals(&vm->I);
     return vm;
@@ -1012,6 +1122,7 @@ js_vm *js_vm_create(js_host *host) {
 int js_vm_eval(js_vm *vm, const char *src, uint32_t len, char *err, uint32_t errcap) {
     if (!vm) return -1;
     Interp *I = &vm->I;
+    I->stack_top = (uintptr_t)__builtin_frame_address(0);
     I->src = src; I->slen = len; I->pos = 0; I->has_peek = 0;
     I->errflag = 0; I->flow = 0; I->retval = jundef();
     while (peek(I)->k != TK_EOF && !I->errflag) {
@@ -1028,6 +1139,7 @@ int js_vm_eval(js_vm *vm, const char *src, uint32_t len, char *err, uint32_t err
 int js_vm_pump(js_vm *vm, uint64_t now_ms) {
     if (!vm) return 0;
     Interp *I = &vm->I; I->now_ms = now_ms;
+    I->stack_top = (uintptr_t)__builtin_frame_address(0);
     int fired = 0;
     for (int i = 0; i < I->ntimers; i++) {
         if (!I->timers[i].active || I->timers[i].due > now_ms) continue;
@@ -1046,6 +1158,7 @@ int js_vm_pump(js_vm *vm, uint64_t now_ms) {
 int js_vm_dispatch(js_vm *vm, js_dom_node target, const char *type) {
     if (!vm) return 0;
     Interp *I = &vm->I; int n = 0;
+    I->stack_top = (uintptr_t)__builtin_frame_address(0);
     for (int i = 0; i < I->nlisteners; i++) {
         if (!I->listeners[i].active) continue;
         if (strcmp(I->listeners[i].type, type) != 0) continue;

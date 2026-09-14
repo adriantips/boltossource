@@ -3,6 +3,10 @@
 *.log
 *.o
 *.bin
+# ...except the fuzzer's saved crashers. Those are the regression half of
+# test/t_fuzz.py: without them a fix that gets undone is rediscovered rather
+# than reported.
+!test/corpus/**/*.bin
 *.img
 *.ppm
 *.fd

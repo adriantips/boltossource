@@ -1,0 +1,5 @@
+# The fuzzer's saved crashers are exact byte sequences. Without this, git's
+# autocrlf rewrites the newlines in them on checkout -- which changes the input
+# and quietly turns every saved case into a different one that no longer
+# reproduces the bug it was kept for.
+test/corpus/**/*.bin binary
