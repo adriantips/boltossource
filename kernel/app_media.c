@@ -73,7 +73,19 @@
  *
  * So the budget is work rather than a step count. At 19 passes a second this is
  * 2.8 s of audio a second; where the loop runs faster it simply finishes
- * sooner, and no single pass ever decodes the whole half-second buffer. */
+ * sooner, and no single pass ever decodes the whole half-second buffer.
+ *
+ * It is a ceiling and not a pacing rule, and the difference is not tested.
+ * The refill lands in the three or four passes after each submit rather than
+ * being spread over the nine or ten the device takes to drain, so the work
+ * arrives in bursts. At under a millisecond a pass that should be invisible --
+ * but nothing in the suite plays a track *while* working the compositor: the
+ * six tests that boot with an audio device are all audio tests that leave the
+ * desktop alone, and the ones that drag windows and switch desktops boot with
+ * no audio device at all. So a green suite is evidence this breaks nothing, and
+ * no evidence at all about a hitch under load. If one ever turns up, pacing the
+ * refill against how much of the chunk has already played is the fix, and it is
+ * about six lines. */
 #define AHEAD_MS      150u
 #define AHEAD_FRAMES  (AUDIO_RATE / 1000u * AHEAD_MS)
 
