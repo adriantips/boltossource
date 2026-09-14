@@ -88,6 +88,10 @@ echo "[2/6] kernel asm (boot + isr + syscall + AP trampoline)"
 # SMP application-processor trampoline: flat 16/32/64-bit blob copied to 0x8000
 "$NASM" -f bin kernel/ap_boot.asm -o build/ap_boot.bin
 ( cd build && "$OBJCOPY" -I binary -O elf64-x86-64 ap_boot.bin ap_boot_blob.o )
+# The S3 resume trampoline: the same real->long mode climb, for a processor
+# woken by the firmware rather than by a SIPI.
+"$NASM" -f bin kernel/s3_wake.asm -o build/s3_wake.bin
+( cd build && "$OBJCOPY" -I binary -O elf64-x86-64 s3_wake.bin s3_wake_blob.o )
 
 echo "[2b/6] user program (user/hello.c) -> static ELF64 -> embed blob"
 UCFLAGS=(--target=x86_64-elf -ffreestanding -fno-stack-protector -fno-pic -fno-pie
@@ -184,7 +188,7 @@ SRCS=(
     net/tcp.c net/dns.c net/crypto.c net/tls.c net/p256.c net/p384.c net/rsa.c net/x509.c net/inflate.c net/http.c
     net/ip6.c net/icmp6.c net/nd6.c
     net/wifi.c net/wpa.c net/wifi_sta.c net/firmware.c net/firewall.c net/dhcp.c net/netcfg.c net/ntp.c
-    drivers/e1000.c drivers/virtio_net.c drivers/wifi_sim.c drivers/backlight.c kernel/power.c
+    drivers/e1000.c drivers/virtio_net.c drivers/wifi_sim.c drivers/backlight.c kernel/power.c kernel/sleep.c
     kernel/socket.c net/ssh.c kernel/cmd_ssh.c kernel/cmd_edit.c kernel/cmd_netcfg.c kernel/cmd_serve.c kernel/cmd_fs.c kernel/cmd_sys.c kernel/cmd_proc.c kernel/cmd_net.c kernel/cmd_extra.c kernel/cmd_hw.c kernel/cmd_user.c
     kernel/html.c kernel/dom.c kernel/layout.c kernel/image.c kernel/ttf.c
     kernel/gui.c kernel/app_terminal.c kernel/app_taskmgr.c kernel/app_settings.c kernel/app_browser.c kernel/app_files.c
@@ -205,7 +209,7 @@ LIBC_SRCS=(
     libc/string.c libc/string_ext.c libc/malloc.c libc/printf.c libc/scanf.c
     libc/stdlib.c libc/support.c libc/math.c libc/stdio_file.c libc/time.c
 )
-KOBJS=(build/kboot.o build/isr.o build/sc_entry.o build/ap_boot_blob.o build/hello_blob.o build/js_blob.o build/browser_blob.o build/winhello_blob.o build/boltrt_blob.o build/crashme_blob.o build/netget_blob.o
+KOBJS=(build/kboot.o build/isr.o build/sc_entry.o build/ap_boot_blob.o build/s3_wake_blob.o build/hello_blob.o build/js_blob.o build/browser_blob.o build/winhello_blob.o build/boltrt_blob.o build/crashme_blob.o build/netget_blob.o
        build/stage1_blob.o build/stage2_blob.o build/bootx64_blob.o)
 # libc non-local jump (asm); clang's integrated assembler handles the .S
 "$CLANG" --target=x86_64-elf -mcmodel=kernel -c libc/setjmp.S -o build/setjmp.o

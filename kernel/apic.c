@@ -75,6 +75,9 @@ static void ioapic_write(uint32_t reg, uint32_t val) {
     mmio_write32(g_ioapic, 0x10, val);
 }
 
+uint32_t ioapic_read_entry_lo(uint8_t irq) { return g_ioapic ? ioapic_read(0x10 + irq * 2) : 0xDEAD; }
+uint32_t ioapic_read_entry_hi(uint8_t irq) { return g_ioapic ? ioapic_read(0x11 + irq * 2) : 0xDEAD; }
+
 void ioapic_route_irq(uint8_t irq, uint8_t vector) {
     if (!g_ioapic) return;
     uint16_t flags = 0;

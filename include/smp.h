@@ -26,3 +26,8 @@ void  smp_init(void);
 int   smp_cpu_count(void);          /* CPUs successfully brought online (incl. BSP) */
 struct percpu *this_cpu(void);      /* per-CPU block of the calling core */
 uint32_t smp_cpu_index(void);
+
+/* Put GS_BASE back after something reloaded the segment registers. Loading the
+ * GS selector in long mode zeroes GS_BASE, so gdt_init() destroys it; anything
+ * that calls gdt_init() a second time has to call this after. */
+void  smp_reload_gs_base(void);

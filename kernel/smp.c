@@ -26,11 +26,22 @@ static int            g_cpu_count = 1;  /* BSP counts immediately */
 static volatile int   g_online    = 1;
 static volatile int   g_ap_ack    = 0;  /* handshake for the AP currently booting */
 
+/* Re-point GS at this CPU's per-CPU block.
+ *
+ * Needed by the S3 resume path, and needed for a reason that is easy to miss:
+ * loading the GS *selector* in long mode -- which gdt_init() does, along with
+ * every other segment register -- sets GS_BASE from the descriptor, which is
+ * zero. So any code that reloads the segments has silently thrown away the
+ * MSR, and the next thing to read gs:0 faults. It is not a resume problem; it
+ * is a "reloading the GDT does this" problem that resume is the first caller
+ * to hit, because it is the first code to run gdt_init() twice. */
 static void set_gs_base(void *p) {
     uint64_t v = (uint64_t)p;
     /* IA32_GS_BASE = 0xC0000101 */
     __asm__ volatile("wrmsr" :: "a"((uint32_t)v), "d"((uint32_t)(v >> 32)), "c"(0xC0000101u));
 }
+
+void smp_reload_gs_base(void) { set_gs_base(&g_cpus[0]); }
 
 struct percpu *this_cpu(void) {
     struct percpu *p;

@@ -94,6 +94,20 @@ static void wr64(uint32_t off, uint64_t v) {          /* low then high dword */
     wr32(off + 4, (uint32_t)(v >> 32));
 }
 
+/* Put a queue back to the state alloc_queue() left it in, without allocating
+ * anything: the rings are still in RAM and still where the controller is about
+ * to be told they are. The completion ring has to be *zeroed*, not merely
+ * rewound -- the phase bit is how a driver tells a fresh completion from last
+ * session's, and stale entries with the phase already flipped are read as
+ * completions that never happened. */
+static void requeue(struct nvme_queue *q) {
+    if (!q->sqes) return;
+    memset((void *)q->cqes, 0, QDEPTH * 16);
+    memset((void *)q->sqes, 0, QDEPTH * 64);
+    q->sq_tail = q->cq_head = 0;
+    q->phase   = 1;
+}
+
 static int alloc_queue(struct nvme_queue *q, uint32_t qid) {
     if (dma_alloc(QDEPTH * 64, &q->sq_buf) != 0) return -1;
     if (dma_alloc(QDEPTH * 16, &q->cq_buf) != 0) return -1;
@@ -211,9 +225,10 @@ static int identify_ns(void) {
     return 0;
 }
 
-static int create_io_queues(void) {
-    if (alloc_queue(&nv.io, 1) != 0) return -1;
-
+/* Tell the controller about the I/O queue pair. Separated from allocating it,
+ * because a resume has to do the first without the second -- the memory
+ * survived the sleep and only the controller forgot about it. */
+static int register_io_queues(void) {
     uint32_t cmd[16];
     /* Create I/O Completion Queue (qid 1) */
     memset(cmd, 0, sizeof cmd);
@@ -233,6 +248,68 @@ static int create_io_queues(void) {
     cmd[11] = (1u << 16) | 1;                   /* CQID=1, PC=1        */
     if (submit(&nv.admin, cmd) != 0) return -1;
     return 0;
+}
+
+static int create_io_queues(void) {
+    if (alloc_queue(&nv.io, 1) != 0) return -1;
+    return register_io_queues();
+}
+
+/* --- bringing the controller up, twice ------------------------------------
+ *  Shared by the probe and by the resume, because they are the same sequence:
+ *  reset, hand over the admin queue, enable, wait for ready. Having written it
+ *  once and then written it again for the resume path, the second copy was
+ *  wrong within the hour -- so there is one.
+ * ------------------------------------------------------------------------*/
+static int controller_start(void) {
+    wr32(REG_CC, 0);                                     /* clear CC.EN */
+    for (uint64_t t = 0; t < 5000000ull; t++) { if (!(rd32(REG_CSTS) & CSTS_RDY)) break; }
+    if (!nv.irq_ok) wr32(REG_INTMS, 0xFFFFFFFFu);        /* polled: mask completions */
+
+    wr32(REG_AQA, ((QDEPTH - 1) << 16) | (QDEPTH - 1));
+    wr64(REG_ASQ, nv.admin.sq_phys);
+    wr64(REG_ACQ, nv.admin.cq_phys);
+
+    /* CC: IOSQES=6 (64B), IOCQES=4 (16B), MPS=0 (4KB), CSS=0, EN=1 */
+    wr32(REG_CC, (6u << 16) | (4u << 20) | (0u << 7) | CC_EN);
+
+    for (uint64_t t = 0; t < 5000000ull; t++) {
+        uint32_t s = rd32(REG_CSTS);
+        if (s & CSTS_CFS) { kprintf("[nvme] controller fatal status\n"); return -1; }
+        if (s & CSTS_RDY) return 0;
+    }
+    kprintf("[nvme] controller not ready\n");
+    return -1;
+}
+
+/* Everything about a PCI device that S3 takes away: the BAR assignment, bus
+ * mastering, and the MSI capability's vector and enable bit. All of it lives
+ * in configuration space, and configuration space is reset on the way back. */
+static int pci_reattach(void) {
+    struct pci_dev pd;
+    if (!pci_find_by_class(0x01, 0x08, &pd)) return -1;
+    struct pci_bar bar;
+    if (pci_bar(&pd, 0, &bar) != 0 || !bar.is_mmio) return -1;
+    volatile void *regs = pci_map_bar(&bar);
+    if (!regs) return -1;
+    nv.regs = regs;
+    pci_enable_bus_master(&pd);
+    if (nv.irq_ok && pci_msi_enable(&pd, NVME_MSI_VECTOR) != 0) nv.irq_ok = 0;
+    if (!nv.irq_ok) pci_write16(&pd, 0x04, pci_read16(&pd, 0x04) | (1u << 10));
+    return 0;
+}
+
+static int nvme_blk_resume(blkdev_t *b) {
+    (void)b;
+    if (!nv.present) return 0;
+    if (pci_reattach() != 0) return -1;
+    requeue(&nv.admin);
+    requeue(&nv.io);
+    if (controller_start() != 0) return -1;
+    /* The queue memory is unchanged; the controller simply has to be told
+     * about it again. No second allocation, which is what create_io_queues()
+     * would have done -- a megabyte of leaked rings per suspend. */
+    return register_io_queues();
 }
 
 void nvme_init(void) {
@@ -261,27 +338,8 @@ void nvme_init(void) {
     uint64_t cap = (uint64_t)rd32(REG_CAP) | ((uint64_t)rd32(REG_CAP + 4) << 32);
     nv.dstrd = (cap >> 32) & 0xF;
 
-    /* reset: clear CC.EN, wait until not ready */
-    wr32(REG_CC, 0);
-    for (uint64_t t = 0; t < 5000000ull; t++) { if (!(rd32(REG_CSTS) & CSTS_RDY)) break; }
-    if (!nv.irq_ok) wr32(REG_INTMS, 0xFFFFFFFFu);   /* polled: mask completions */
-
     if (alloc_queue(&nv.admin, 0) != 0) { kprintf("[nvme] admin queue OOM\n"); return; }
-    wr32(REG_AQA, ((QDEPTH - 1) << 16) | (QDEPTH - 1));
-    wr64(REG_ASQ, nv.admin.sq_phys);
-    wr64(REG_ACQ, nv.admin.cq_phys);
-
-    /* CC: IOSQES=6 (64B), IOCQES=4 (16B), MPS=0 (4KB), CSS=0, EN=1 */
-    uint32_t cc = (6u << 16) | (4u << 20) | (0u << 7) | CC_EN;
-    wr32(REG_CC, cc);
-
-    int ready = 0;
-    for (uint64_t t = 0; t < 5000000ull; t++) {
-        uint32_t s = rd32(REG_CSTS);
-        if (s & CSTS_CFS) { kprintf("[nvme] controller fatal status\n"); return; }
-        if (s & CSTS_RDY) { ready = 1; break; }
-    }
-    if (!ready) { kprintf("[nvme] controller not ready\n"); return; }
+    if (controller_start() != 0) return;
 
     if (dma_alloc(4096, &nv.bounce) != 0) { kprintf("[nvme] bounce OOM\n"); return; }
 
@@ -302,6 +360,7 @@ void nvme_init(void) {
     b.read  = nvme_blk_read;
     b.write = nvme_blk_write;
     b.flush = nvme_blk_flush;
+    b.resume = nvme_blk_resume;
     strncpy(b.name,  "nvme0n1",   sizeof b.name - 1);
     strncpy(b.model, "QEMU NVMe",  sizeof b.model - 1);
     blk_register(&b);

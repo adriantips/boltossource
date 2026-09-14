@@ -183,6 +183,52 @@ static int ahci_blk_flush(blkdev_t *b) {
     return port_exec((struct ahci_port *)b->drv, ATA_FLUSH_EX, 0, 0, 0, 0, 0);
 }
 
+/* --- back from S3 ---------------------------------------------------------
+ *  The command list, received-FIS area and command table are all still where
+ *  they were -- S3 keeps the RAM -- and every port register that pointed at
+ *  them is zero, along with the controller's AHCI-enable bit and the PCI
+ *  command register's bus-master bit. So: reattach the device, re-enable AHCI,
+ *  and hand each port its own addresses back. Nothing is reallocated, because
+ *  nothing was lost.
+ * ------------------------------------------------------------------------*/
+static int ahci_blk_resume(blkdev_t *b) {
+    struct ahci_port *p = (struct ahci_port *)b->drv;
+    if (!p || !p->used) return -1;
+
+    struct pci_dev pd;
+    if (!pci_find_by_class(0x01, 0x06, &pd)) return -1;
+    struct pci_bar bar;
+    if (pci_bar(&pd, 5, &bar) != 0 || !bar.is_mmio) return -1;
+    volatile void *abar = pci_map_bar(&bar);
+    if (!abar) return -1;
+    g_abar  = (volatile uint8_t *)abar;
+    p->regs = g_abar + PORT_BASE(p->portno);
+    pci_enable_bus_master(&pd);
+    pci_write16(&pd, 0x04, pci_read16(&pd, 0x04) | (1u << 10));   /* INTx off */
+
+    hw_(HBA_GHC, hr(HBA_GHC) | GHC_AE);
+
+    /* The link has to have come back before the port is worth programming. A
+     * disk that is still negotiating reads as "no device present", and
+     * starting a port in that state gets you a command that never completes. */
+    int up = 0;
+    for (int t = 0; t < 2000000 && !up; t++) up = (pr(p, PxSSTS) & 0x0F) == 3;
+    if (!up) return -1;
+
+    port_stop(p);
+    pw(p, PxCLB,  (uint32_t)p->clb.phys);
+    pw(p, PxCLBU, (uint32_t)(p->clb.phys >> 32));
+    pw(p, PxFB,   (uint32_t)p->fb.phys);
+    pw(p, PxFBU,  (uint32_t)(p->fb.phys >> 32));
+    pw(p, PxSERR, 0xFFFFFFFFu);      /* the sleep itself logs PHY errors */
+    pw(p, PxIE,   0);
+    port_start(p);
+
+    /* One real command, because every register above can read back correct on
+     * a port that will not actually move a sector. */
+    return port_exec(p, ATA_IDENTIFY, 0, 0, 0, p->bounce.phys, 512);
+}
+
 static void extract_model(const uint16_t *id, char *out) {
     /* ATA IDENTIFY words 27..46: model, byte-swapped per word */
     for (int i = 0; i < 20; i++) {
@@ -237,6 +283,7 @@ static int port_init(int portno) {
     b.read  = ahci_blk_read;
     b.write = ahci_blk_write;
     b.flush = ahci_blk_flush;
+    b.resume = ahci_blk_resume;
     int idx = 0;
     for (int i = 0; i < portno; i++) if (g_ports[i].used) idx++;
     b.name[0] = 's'; b.name[1] = 'd'; b.name[2] = (char)('a' + idx); b.name[3] = 0;

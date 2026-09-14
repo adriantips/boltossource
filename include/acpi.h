@@ -85,6 +85,20 @@ const struct acpi_sdt_header *acpi_find(const char *sig);
  * debug-exit ports, 0xCF9, 8042) if ACPI is unavailable. Neither returns on
  * success. */
 void acpi_poweroff(void);
+
+/* --- sleep states ---------------------------------------------------------
+ *  The SLP_TYP values the firmware's DSDT names for each \_Sn_ state, already
+ *  shifted into position for the PM1 control register. 1 if this machine
+ *  declares that state at all, which is the only way to know: there is no
+ *  capability bit for S3 anywhere, only the presence of a \_S3_ package.
+ * ------------------------------------------------------------------------*/
+int  acpi_sleep_type(int n, uint16_t *slp_a, uint16_t *slp_b);
+void acpi_pm1_ports(uint16_t *a, uint16_t *b);
+
+/* Leave `phys` in the FACS for the firmware to jump to on wake. Returns -1 if
+ * there is no FACS to leave it in, which means suspending would be a one-way
+ * trip. Must be below 1 MiB: the CPU comes back in real mode. */
+int  acpi_set_waking_vector(uint32_t phys);
 void acpi_reboot(void);
 
 /* Translate a legacy ISA IRQ to its Global System Interrupt via MADT overrides
