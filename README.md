@@ -2506,9 +2506,12 @@ from the wire. The four worst:
   the two call cases were carrying a 512-byte argument vector down the stack
   for every node in the tree, not just for calls.
 
-The input for each is kept in `test/corpus/`, replayed unmutated before every
-run — a fuzzer that does not remember what it found is a fuzzer that finds it
-again next year.
+The input that found each one is kept in `test/corpus/` and replayed unmutated
+before every run — a fuzzer that does not remember what it found is a fuzzer
+that finds it again next year. Two have no single input to keep: a misaligned
+arena is every well-formed document, and starving the connection table takes
+sixteen segments in a row. Those are assertions in the harnesses' own
+selftests, which run before any fuzzing.
 
 ## Toolchain (Windows / msys2)
 

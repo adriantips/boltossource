@@ -467,8 +467,11 @@ which of these it is rather than failing quietly.
             node, layout box and JS value in the system was 4 mod 8
           * four allocation-failure paths in the JS engine that wrote through
             the null they had just been handed
-        Each of those has its input kept in `test/corpus/`, replayed unmutated
-        before every run
+        The input that found each one is kept in `test/corpus/` and replayed
+        unmutated before every run. Two of them have no single input to keep --
+        a misaligned arena is every well-formed document, and starving the
+        connection table takes sixteen segments in a row -- so those are
+        assertions in the harnesses' own selftests instead
 - [x] 100. User guide (GUIDE.md: install, daily use, troubleshooting, and an
         honest list of what the OS cannot do) and developer guide
         (DEVELOPING.md: the on-machine toolchain, projects, debugging,
