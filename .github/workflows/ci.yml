@@ -1,0 +1,75 @@
+name: ci
+
+# Every push and every pull request. The point of this file is that the part of
+# the suite which needs no machine runs on every change rather than when
+# somebody remembers -- roughly two minutes for the fuzzers plus eleven
+# host-only tests, against forty for the QEMU half.
+on:
+  push:
+  pull_request:
+
+jobs:
+  host:
+    name: host tests (no QEMU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # clang builds every harness; nasm, ld.lld and binutils are the external
+      # oracles several of the tests hold our own output up against -- when one
+      # is missing the test says SKIP and passes, which is worth knowing about
+      # rather than installing our way past.
+      - name: toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends clang lld nasm binutils
+
+      # First, because it is the one that reads bytes nobody chose. It builds
+      # three harnesses over the shipping parsers and runs 23 targets; each one
+      # replays the saved crashers in test/corpus/ before it mutates anything.
+      - name: fuzzers
+        run: python3 test/t_fuzz.py
+
+      # The rest of what runs without a machine. Each is a real kernel source
+      # compiled on the host with a substituted substrate -- a failing
+      # allocator, a filesystem in an array, a clock that is a variable.
+      - name: host-only tests
+        run: |
+          set -e
+          for t in t_asm t_fat t_heap t_ipv6 t_kbd t_make t_rec t_shot \
+                   t_storage t_toolchain t_wifi; do
+            echo "::group::$t"
+            python3 "test/$t.py" --host-only
+            echo "::endgroup::"
+          done
+
+      # A crash saves the exact input it died on. Without this the log tells you
+      # a seed and an iteration, and the mutator may have changed by the time
+      # anybody looks.
+      - name: keep the crashers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: test/out/crash-*.bin
+          if-no-files-found: ignore
+
+  qemu:
+    # The other forty minutes: boot, the filesystem surviving a power cut, DHCP
+    # and a TLS handshake, the desktop, the compilers. It needs a runner this
+    # repository does not have -- build.sh wants msys2 at /c/msys64 and refuses
+    # to start without it, so a GitHub-hosted Linux runner cannot even build
+    # the image. Set the BOLTOS_QEMU_RUNNER variable on a self-hosted Windows
+    # runner with msys2 and QEMU and this comes to life; leave it unset and the
+    # job is skipped rather than queued forever against a label nobody has.
+    name: QEMU suite (self-hosted)
+    if: ${{ vars.BOLTOS_QEMU_RUNNER != '' }}
+    runs-on: ${{ vars.BOLTOS_QEMU_RUNNER }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: build
+        shell: bash
+        run: ./build.sh
+      - name: suite
+        shell: bash
+        run: python test/run_all.py
