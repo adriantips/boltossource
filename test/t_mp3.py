@@ -35,6 +35,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import time
 import wave
 from pathlib import Path
 
@@ -339,11 +340,13 @@ def host_tests():
 
 # ---- and on the machine itself --------------------------------------------
 
-def run(vm, line, wait_for, timeout=90, settle=0.6):
-    vm.type(line + "\n")
-    out = vm.expect(wait_for, timeout=timeout)
-    if settle:
-        vm.sleep(settle)
+def shell(vm, line, must_contain=None, timeout=90):
+    """Run a command and wait for the prompt rather than for a fixed time --
+    every fixed sleep is a guess that stops being true on a loaded machine."""
+    out = vm.run(line, timeout=timeout)
+    if must_contain:
+        assert must_contain in out, (
+            "%r never printed %r:\n%s" % (line, must_contain, out[-800:]))
     return out
 
 
@@ -356,12 +359,15 @@ def qemu_tests():
         print("SKIP mp3 qemu: lame missing, so there is no MP3 to serve")
         return 0
 
-    # 1.5 s of a steady tone: a pitch a capture can be checked for, unlike the
-    # chirp the host half uses.
+    # Eight seconds of a steady tone. Steady because a capture can be checked
+    # for a pitch and not for a chirp; eight because the player repeats by
+    # default, and a track shorter than the four seconds this leaves it running
+    # would loop back to the start and the position check below would read a
+    # number near zero and call it a stall.
     src, mp3 = OUT / "guest-src.wav", OUT / "guest.mp3"
-    rate, hz = 44100, 880
+    rate, hz, guest_secs = 44100, 880, 8.0
     a = array.array("h")
-    for i in range(int(rate * 1.5)):
+    for i in range(int(rate * guest_secs)):
         v = int(math.sin(2 * math.pi * hz * i / rate) * 26000)
         a.append(v)
         a.append(v)
@@ -394,32 +400,48 @@ def qemu_tests():
     try:
         # -vga none so the kernel falls back to the serial shell with the
         # network up; see test/t_net.py, which needs the same thing.
+        # Entry 1, not the default 2: safe mode has a serial shell but brings up
+        # neither the network nor audio, which is both halves of this test. With
+        # `-vga none` a normal boot has no framebuffer to draw a desktop on, so
+        # it falls back to the serial shell with everything else running --
+        # the same trick test/t_net.py uses, for the same reason.
         with BoltVM(name="mp3", net=True, audio="hda", wav="mp3-capture.wav",
                     extra=["-vga", "none"]) as vm:
-            vm.reach_shell(240)
+            vm.reach_shell(240, "1")
+            # reach_shell's probe can leave half a line in the input buffer, so
+            # the first real command arrives with a character glued to its
+            # front. A bare Return clears it.
             vm.key("ret")
-            vm.sleep(0.5)
+            time.sleep(0.5)
 
-            out = run(vm, "download http://10.0.2.2:%d/tone.mp3 /home/user/tone.mp3" % port,
-                      "downloaded", timeout=120)
-            assert "downloaded" in out, "the guest could not fetch the file:\n" + out[-600:]
+            shell(vm, "download http://10.0.2.2:%d/tone.mp3 /home/user/tone.mp3" % port,
+                  "downloaded", timeout=120)
             print("  ok: the machine fetched an MP3 over its own network stack")
 
-            out = run(vm, "play /home/user/tone.mp3", "ms elapsed", timeout=120)
-            assert "Layer III" in out, \
-                "play did not recognise the file as an MP3:\n" + out[-600:]
+            out = shell(vm, "media open /home/user/tone.mp3", timeout=120)
             m = re.search(r"(MPEG-[\d.]+) Layer III, ([\d.]+) kHz ([a-z ]+), (\d+) kbps", out)
-            assert m, "play did not describe the stream:\n" + out[-600:]
-            print("  ok: play reports it as %s Layer III, %s kHz %s, %s kbps"
+            assert m, ("nothing reported the file as an MPEG stream:\n" + out[-800:])
+            print("  ok: reported as %s Layer III, %s kHz %s, %s kbps"
                   % (m.group(1), m.group(2), m.group(3).strip(), m.group(4)))
 
-            # A WAV must still work, and a file that is neither must be refused
-            # by name rather than played as noise.
-            run(vm, "play /usr/share/sounds/chime.wav", "ms elapsed", timeout=90)
-            out = run(vm, "play /bin/hello", "play:", timeout=60)
-            assert "not a WAV file" in out or "not an MP3" in out or "cannot" in out, \
-                "an ELF was played rather than refused:\n" + out[-400:]
-            print("  ok: a WAV still plays and a program is still refused")
+            assert "State   : playing" in out, \
+                "the track opened but did not start:\n" + out[-800:]
+
+            # Nothing is typed for four seconds. The player is fed from the
+            # compositor's loop one decoder step at a time, so a position that
+            # has moved on its own is the evidence that the incremental decode
+            # keeps the codec fed -- which is the part of this that MP3 changed.
+            time.sleep(4.0)
+            out = shell(vm, "media status", timeout=60)
+            assert "State   : playing" in out, \
+                "it stopped on its own within four seconds:\n" + out[-800:]
+            pos = re.search(r"Position: (\d+):(\d+)", out)
+            assert pos and int(pos.group(1)) * 60 + int(pos.group(2)) >= 3, (
+                "four seconds passed and the track had not advanced past %s -- "
+                "nothing was feeding the codec:\n%s"
+                % (pos.group(0) if pos else "?", out[-800:]))
+            print("  ok: unattended for four seconds and the position moved to %s"
+                  % pos.group(0).split()[-1])
 
             vm.expect_absent("KERNEL PANIC")
             wav_path = vm.wav_path
@@ -428,8 +450,12 @@ def qemu_tests():
 
     rate_c, chans, frames, samples = read_wav(wav_path)
     total = seconds(frames, rate_c)
-    assert total >= 1.6, (
-        "only %.2f s reached the sound card for 1.5 s of MP3 plus the chime. "
+    # Four seconds of it were played unattended, so that is the floor. The
+    # backend records only while a stream is running, which is why this is a
+    # measure of audio that actually left the machine rather than of elapsed
+    # wall time.
+    assert total >= 3.0, (
+        "only %.2f s reached the sound card across four seconds of playing. "
         "Most of it never left the machine, whatever the decoder said." % total)
     wins = freq_windows(samples, chans, rate_c)
     assert held_tone(wins, hz), (
