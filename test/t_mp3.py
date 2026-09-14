@@ -400,7 +400,13 @@ def classifying(exe, lame):
                       ("build/*.EFI", "PE32+"),
                       ("esp/EFI/BOOT/*.EFI", "PE32+")):
         for p in sorted(Path(ROOT).glob(pat))[:2]:
-            if p.is_file():
+            # build.sh copies BOOTX64.EFI from build/ to esp/, so the same
+            # binary matches two patterns. A listing that is going to be read as
+            # evidence must not count one file twice -- that is the same kind of
+            # small lie as the glob that matched nothing.
+            if p.is_file() and not any(q.name == p.name and
+                                       q.stat().st_size == p.stat().st_size
+                                       for q, _ in negatives):
                 negatives.append((p, what))
 
     # Before trusting the planted file as a negative, prove it is a real one.
