@@ -10,10 +10,8 @@
  *  Dispatch between the decoders. See sound.h for why this exists.
  *
  *  Nearly every function here is three lines and a switch. The one with an
- *  opinion is snd_open(), which decides what a file is: MP3 first, because
- *  mp3_sniff() insists on either an ID3 tag or two frame headers that agree
- *  with each other, and WAV second, because "RIFF....WAVE" is four bytes of
- *  evidence and would happily claim a file that merely started that way.
+ *  opinion is snd_open(), which decides what a file is -- and the order it
+ *  asks in is the whole of that opinion. See the comment on it.
  * ===========================================================================*/
 
 #define MAX_FILE (64u * 1024 * 1024)
@@ -72,18 +70,23 @@ int snd_open(const char *path, snd_t *s, const char **err) {
     const char *why = "not a sound file";
     if (slurp(path, &s->bytes, &s->len, err) != 0) return -1;
 
+    /* WAV first, and the order is the point. "RIFF" at 0 and "WAVE" at 8 are
+     * eight bytes at fixed offsets and cannot be an accident; an MP3 is
+     * recognised by scanning for a frame header, which ordinary PCM can
+     * produce by chance. Ask the format that can prove itself. */
+    if (wav_open(s->bytes, s->len, &s->wav, &why) == 0) { s->kind = SND_WAV; return 0; }
+
+    /* Sniffing an MP3 means scanning for frame headers, which is a guess, so a
+     * failure to open one is not the end of the question -- it used to be. The
+     * reason it stopped: ordinary PCM contains byte pairs that look like frame
+     * syncs, two of five real WAVs on this machine scanned as MP3s, and a guess
+     * that returns "not a sound file" for a file that is plainly a sound file
+     * is worse than one that is merely wrong about the format. Nothing is
+     * decided here until a decoder has actually accepted the bytes. */
     if (mp3_sniff(s->bytes, s->len)) {
         s->mp3 = mp3_open(s->bytes, s->len, &why);
         if (s->mp3) { s->kind = SND_MP3; return 0; }
-        /* Sniffed as one and would not open: say what the decoder said rather
-         * than falling through and reporting it as a bad WAV. */
-        kfree(s->bytes);
-        s->bytes = 0;
-        if (err) *err = why;
-        return -1;
     }
-
-    if (wav_open(s->bytes, s->len, &s->wav, &why) == 0) { s->kind = SND_WAV; return 0; }
 
     kfree(s->bytes);
     s->bytes = 0;

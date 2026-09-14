@@ -81,7 +81,14 @@ def build_harness():
     subprocess.run([host_cc(), "-std=c11", "-O2", "-g", "-Wall", "-Wextra", "-Werror",
                     "-fno-builtin", "-Wno-inconsistent-dllimport", "-Wno-macro-redefined",
                     "-iquote", str(Path(ROOT) / "include"),
-                    str(Path(ROOT) / "test" / "host" / "mp3.c"), "-o", str(exe)],
+                    str(Path(ROOT) / "test" / "host" / "mp3.c"),
+                    # Linked rather than included, so their statics stay their
+                    # own and nothing in the shipping sources has to be renamed
+                    # to suit a test. What is under test here is the dispatch a
+                    # player goes through, not only the decoder beneath it.
+                    str(Path(ROOT) / "kernel" / "sound.c"),
+                    str(Path(ROOT) / "kernel" / "wav.c"),
+                    "-o", str(exe)],
                    check=True)
     return exe
 
@@ -314,6 +321,62 @@ def seeking(exe, lame):
         print("  ok: seeks land within %.0f ms over 30 s (%s)" % (worst, what))
 
 
+def classifying(exe, lame):
+    """What snd_open() decides a file is.
+
+    A sniffer is a classifier, and a classifier can only be tested with negative
+    examples that came from somewhere other than the positives. Every WAV this
+    suite had ever fed the decoder was one it had just written, and every MP3
+    was one LAME had just written, so it could not have caught what actually
+    happened: Layer III has no magic of its own beyond eleven set bits, ordinary
+    PCM contains byte pairs that look like a frame sync, and two of five real
+    WAV files on this machine were being opened as MP3s and played as static.
+
+    So the negatives here are dragged in from the rest of the repository --
+    PNGs, TrueType, ELF, a disk image, source, whatever is lying about -- on the
+    principle that the full negative set for this classifier is every other
+    format the machine can open, and a 5 MB font has far more chances to contain
+    an accidental sync than a 22 KB chime does.
+    """
+    seeds = Path(ROOT) / "test" / "seeds" / "mp3"
+    positives = sorted(seeds.glob("*.mp3")) if seeds.is_dir() else []
+
+    # Real WAVs: the build's own system sounds, plus whatever this run wrote.
+    negatives = [p for p in [Path(ROOT) / "assets" / "audio" / "chime.wav",
+                             Path(ROOT) / "assets" / "audio" / "blip.wav"] if p.exists()]
+    if lame:
+        for rate, chans, kind in ((44100, 2, "noise"), (22050, 1, "chirp"),
+                                  (48000, 2, "clicks")):
+            p = OUT / ("neg-%d-%d-%s.wav" % (rate, chans, kind))
+            make_wav(p, rate, chans, kind, secs=4.0)   # long enough to get lucky
+            negatives.append(p)
+
+    # Everything else the machine can open, in whatever sizes the repo has.
+    for pat in ("assets/wallpapers/*.png", "assets/wallpapers/*.jpg",
+                "assets/fonts/*.ttf", "esp/*.EFI", "build/kernel.elf",
+                "kernel/mp3.c", "README.md", "iso/boltos.iso"):
+        negatives += [p for p in Path(ROOT).glob(pat) if p.is_file()][:2]
+
+    assert positives, "no seeds in test/seeds/mp3 -- nothing to check the yes side with"
+    for p in positives:
+        out = subprocess.run([exe, "--which", str(p)], capture_output=True, text=True)
+        assert out.returncode == 0 and out.stdout.startswith("MP3"), (
+            "%s is an MP3 and was not opened as one: %s"
+            % (p.name, (out.stdout + out.stderr).strip()))
+
+    wrong = []
+    for p in negatives:
+        out = subprocess.run([exe, "--which", str(p)], capture_output=True, text=True)
+        if out.stdout.startswith("MP3"):
+            wrong.append("%s (%d bytes) -> %s" % (p.name, p.stat().st_size,
+                                                  out.stdout.strip()))
+    assert not wrong, (
+        "files that are not MP3s were opened as MP3s, which is how a .wav comes "
+        "out as static:\n  " + "\n  ".join(wrong))
+    print("  ok: %d MP3s and %d files of other kinds, every one classified right"
+          % (len(positives), len(negatives)))
+
+
 def host_tests():
     exe = build_harness()
     lame, mpg123 = tool("lame"), tool("mpg123")
@@ -329,10 +392,13 @@ def host_tests():
     subprocess.run([str(exe), "--selftest"] + ([sample] if sample else []), check=True)
 
     if not (lame and mpg123):
+        # Classifying needs no reference decoder, only files -- run it anyway.
+        classifying(str(exe), lame)
         print("  SKIP the differential half: %s missing. Nothing below this line "
               "has been checked against another decoder."
               % (" and ".join(n for n, p in (("lame", lame), ("mpg123", mpg123)) if not p)))
         return
+    classifying(str(exe), lame)
     differential(str(exe), lame, mpg123)
     shipping_path(str(exe), lame)
     seeking(str(exe), lame)
