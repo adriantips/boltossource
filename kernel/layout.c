@@ -184,10 +184,10 @@ static void parse_decls(const char *d, uint32_t n, decls *o) {
         char *v=val; while(*v==' ')v++;
         if(ieq(prop,"color")){uint32_t c=css_color(v);if(c){o->color=c;o->set|=SET_COLOR;}}
         else if(ieq(prop,"background")||ieq(prop,"background-color")){uint32_t c=css_color(v);o->bg=c;o->set|=SET_BG;}
-        /* b only if there is an a: the value came out of a 96-byte buffer and v
-         * can point at its last byte, in which case v[1] is off the end of the
-         * array. `display:` followed by ninety spaces and then the word found
-         * exactly that. */
+        /* b is read only if there is an a: the value came out of a 96-byte
+         * buffer and v can point at its last byte, in which case v[1] is off
+         * the end of the array. `display:` followed by ninety spaces and then
+         * the word found exactly that. */
         else if(ieq(prop,"display")){o->set|=SET_DISP; char a=lc(v[0]),b=a?lc(v[1]):0;
             o->disp = a=='n'?DISP_NONE : (a=='g')?DISP_GRID : (a=='f'&&b=='l')?DISP_FLEX : a=='i'?(ieq(v,"inline-block")?DISP_INLINE_BLOCK:DISP_INLINE) : DISP_BLOCK;}
         else if(ieq(prop,"text-align")){o->set|=SET_TA; char a=lc(v[0]); o->ta=a=='c'?TA_CENTER:a=='r'?TA_RIGHT:TA_LEFT;}

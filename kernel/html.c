@@ -240,11 +240,9 @@ static void hsl_to_rgb(int h, int s, int l, int *R, int *G, int *B) {
     *R = clamp255(r + m); *G = clamp255(g + m); *B = clamp255(b + m);
 }
 
-/* read an int; supports trailing '%' (scaled 0..100 -> 0..255 when pct!=0). p
- * advanced past the number. */
-/* Digits, with a ceiling. Same reason as the twin in kernel/layout.c: a
- * number in a stylesheet is attacker-supplied and `v = v*10 + d` in a loop is
- * signed overflow as soon as it is a long one. */
+/* Digits, with a ceiling. Same reason as the twin in kernel/layout.c: a number
+ * in a stylesheet is attacker-supplied and `v = v*10 + d` in a loop is signed
+ * overflow as soon as it is a long one. -1 means there were no digits. */
 #define HCSS_NUM_MAX 100000
 static int dec_run(const char **pp) {
     const char *p = *pp; int v = 0, any = 0;
@@ -253,6 +251,8 @@ static int dec_run(const char **pp) {
     return any ? (v > HCSS_NUM_MAX ? HCSS_NUM_MAX : v) : -1;
 }
 
+/* read an int; supports trailing '%' (scaled 0..100 -> 0..255 when pct!=0). p
+ * advanced past the number. */
 static int read_num(const char **pp, int as_pct_of_255) {
     const char *p = *pp;
     while (*p == ' ' || *p == ',' || *p == '\t') p++;
