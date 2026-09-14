@@ -23,6 +23,8 @@
 #include "ext2.h"
 #include "users.h"
 #include "gui.h"
+#include "sleep.h"
+#include "fs.h"
 #include "framebuffer.h"
 
 /* ===========================================================================
@@ -86,6 +88,45 @@ static void power_status(void) {
     kprintf("       firmware profile: %s\n",
             power_is_mobile() ? "portable" : "not portable");
     kprintf("       brightness %d%% via the %s\n", backlight_get(), backlight_name());
+    if (sleep_s3_ok())
+        kprintf("       suspend to RAM (S3): available\n");
+    else
+        kprintf("       suspend to RAM (S3): no -- %s\n", sleep_why());
+    if (sleep_count())
+        kprintf("       resumed from S3 %u time%s this boot\n",
+                (unsigned)sleep_count(), sleep_count() == 1 ? "" : "s");
+}
+
+/* `suspend` -- stop, keep the RAM, come back where you were.
+ *
+ * The commit before sleeping is not belt-and-braces. A suspended machine is
+ * one power cut away from a machine that never woke, and the filesystem tree
+ * lives in RAM: an S3 that loses power is exactly as lossy as pulling the plug
+ * on a running machine, so the disk is brought up to date first, the same way
+ * `poweroff` does it. What is different from poweroff is that the filesystem
+ * is NOT marked clean -- the machine is still, as far as the next boot is
+ * concerned, running. */
+int cmd_suspend(int argc, char **argv) {
+    (void)argc; (void)argv;
+    if (!sleep_s3_ok()) {
+        kprintf("suspend: this machine cannot suspend to RAM.\n"
+                "         %s\n", sleep_why());
+        return 1;
+    }
+    kprintf("suspend: committing the filesystem first -- a sleeping machine\n"
+            "         that loses power has lost whatever was only in RAM.\n");
+    if (fs_persist_active() && !fs_persist_readonly() && fs_sync() != 0)
+        kprintf("suspend: WARNING - the commit failed; changes may be only in RAM.\n");
+    fat32_flush();
+    kprintf("suspend: going to sleep. Wake it with a key, the power button,\n"
+            "         or whatever your firmware calls a wake event.\n");
+
+    if (sleep_suspend() != 0) {
+        kprintf("suspend: did not sleep. %s\n", sleep_why());
+        return 1;
+    }
+    kprintf("suspend: awake again.\n");
+    return 0;
 }
 
 int cmd_power(int argc, char **argv) {
@@ -95,8 +136,10 @@ int cmd_power(int argc, char **argv) {
     if (strcmp(sub, "reboot") == 0 || strcmp(sub, "restart") == 0)
         return cmd_reboot(argc, argv);
     if (strcmp(sub, "status") == 0) { power_status(); return 0; }
+    if (strcmp(sub, "suspend") == 0 || strcmp(sub, "sleep") == 0)
+        return cmd_suspend(argc, argv);
     power_status();
-    kprintf("usage: power status | off | reboot\n");
+    kprintf("usage: power status | off | reboot | suspend\n");
     return argc > 1 ? 1 : 0;
 }
 

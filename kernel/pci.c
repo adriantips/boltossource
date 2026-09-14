@@ -297,3 +297,81 @@ int pci_msi_enable(const struct pci_dev *d, uint8_t vector) {
 
     return -1;
 }
+
+/* ===========================================================================
+ *  Configuration space across a suspend.
+ *
+ *  S3 keeps the RAM and resets everything else, and "everything else" includes
+ *  every PCI device's configuration space: the BAR assignments, the bus-master
+ *  bit, the interrupt line, the MSI capability. The firmware does not put them
+ *  back -- SeaBIOS jumps to the OS's waking vector long before it would do any
+ *  PCI enumeration -- so on the way back every device is sitting at address
+ *  zero with its decoders off.
+ *
+ *  The symptom is worth describing because it is so unhelpful. Reads from an
+ *  unassigned BAR return all-ones, so a driver that checks a status register
+ *  sees every bit set: NVMe reported CSTS.CFS, "controller fatal status", and
+ *  a controller that had never been touched looked like one that had failed.
+ *
+ *  The fix is the one every OS uses and it is not clever: copy the first 64
+ *  bytes of each device's configuration space before sleeping, write them back
+ *  afterwards. Header type 0 is the only layout here (no bridges to walk), and
+ *  64 bytes covers the command register, all six BARs, the interrupt line and
+ *  the capability pointer -- everything a driver's own resume then builds on.
+ *
+ *  The command register is written LAST, deliberately. It is what switches the
+ *  device's memory and I/O decoders on, and switching them on before the BARs
+ *  say where they decode is a device answering at whatever address it had at
+ *  power-on, which on a busy machine is somebody else's.
+ * ===========================================================================*/
+
+#define PCI_SAVE_MAX   32
+#define PCI_SAVE_WORDS 16          /* 64 bytes: header type 0 up to the caps */
+
+static struct {
+    uint8_t  bus, slot, func, used;
+    uint32_t cfg[PCI_SAVE_WORDS];
+} g_saved[PCI_SAVE_MAX];
+static int g_saved_n;
+
+void pci_save_state(void) {
+    struct pci_dev devs[PCI_SAVE_MAX];
+    int n = pci_scan(devs, PCI_SAVE_MAX);
+    g_saved_n = 0;
+    for (int i = 0; i < n && g_saved_n < PCI_SAVE_MAX; i++) {
+        struct pci_dev *d = &devs[i];
+        /* Header type 0 only. A bridge's layout differs from word 4 onward and
+         * restoring a device's BARs into one would be worse than leaving it. */
+        uint8_t hdr = pci_cfg_read8(d->bus, d->slot, d->func, 0x0E) & 0x7F;
+        if (hdr != 0) continue;
+        g_saved[g_saved_n].bus  = d->bus;
+        g_saved[g_saved_n].slot = d->slot;
+        g_saved[g_saved_n].func = d->func;
+        g_saved[g_saved_n].used = 1;
+        for (int w = 0; w < PCI_SAVE_WORDS; w++)
+            g_saved[g_saved_n].cfg[w] =
+                pci_cfg_read32(d->bus, d->slot, d->func, (uint8_t)(w * 4));
+        g_saved_n++;
+    }
+}
+
+int pci_restore_state(void) {
+    int n = 0;
+    for (int i = 0; i < g_saved_n; i++) {
+        if (!g_saved[i].used) continue;
+        uint8_t b = g_saved[i].bus, s = g_saved[i].slot, f = g_saved[i].func;
+
+        /* Still the same device? A slot that has changed identity across a
+         * sleep is not one to write a stale BAR map into. */
+        uint32_t id = pci_cfg_read32(b, s, f, 0x00);
+        if (id != g_saved[i].cfg[0]) continue;
+
+        /* Everything except the command/status word (offset 4), which goes
+         * last; word 0 is read-only vendor/device and is skipped. */
+        for (int w = 2; w < PCI_SAVE_WORDS; w++)
+            pci_cfg_write32(b, s, f, (uint8_t)(w * 4), g_saved[i].cfg[w]);
+        pci_cfg_write32(b, s, f, 0x04, g_saved[i].cfg[1]);
+        n++;
+    }
+    return n;
+}

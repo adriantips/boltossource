@@ -356,6 +356,22 @@ static const manpage_t MAN[] = {
   "The knobs do what you expect; two of them at once is not something the\n"
   "audio path can do. Levels live in /etc/mixer.conf and are loaded at boot.\n"
   "The Mixer window is the same model with faders and meters." },
+{ "suspend", "suspend",
+  "Suspend to RAM (ACPI S3): the memory is kept refreshed and everything else\n"
+  "is powered down. Waking is the firmware's business -- a key, the power\n"
+  "button, a lid switch, or `system_wakeup` on a QMP monitor.\n"
+  "The filesystem is committed first, and that is not belt-and-braces: a\n"
+  "sleeping machine that loses power has lost whatever was only in RAM, which\n"
+  "is the whole filesystem tree. It is NOT marked clean, because as far as the\n"
+  "next boot is concerned this machine is still running.\n"
+  "What does not come back: the application processors. They slept too and\n"
+  "need a fresh INIT-SIPI-SIPI, and nothing sends one, so a resumed machine\n"
+  "runs on the boot processor alone until it is rebooted. On this scheduler\n"
+  "that costs nothing -- the others idle in a hlt loop and no thread is ever\n"
+  "placed on one -- but it is true and worth knowing.\n"
+  "`power status` says whether S3 is available and, when it is not, which of\n"
+  "the two reasons applies: no \\_S3_ in the firmware's DSDT, or no FACS to\n"
+  "leave a waking vector in. `power suspend` is the same command." },
 { "usb", "usb | usb mount [NAME] | usb umount | usb format NAME --yes [LABEL]",
   "USB storage: what is attached, how big it is, and which volume is mounted.\n"
   "A stick is enumerated at boot, appears in the block layer as usb0, usb1 and\n"

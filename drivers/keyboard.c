@@ -80,6 +80,26 @@ static char ctrl_shortcut(char c) {
     }
 }
 
+/* --- the 8042, minimally ---------------------------------------------------
+ *  Only what keyboard_init() needs, and with real waits on the status
+ *  register: writing a command byte to a controller whose input buffer is
+ *  still full is a command that goes nowhere and a config byte that stays
+ *  whatever it was. Bounded, because a controller that never clears its
+ *  status should not stop the boot -- the machine already survives having no
+ *  keyboard, and it does not survive hanging here.
+ * ------------------------------------------------------------------------*/
+static int ctl_wait_write(void) {
+    for (int i = 0; i < 100000; i++) if (!(inb(0x64) & 0x02)) return 0;
+    return -1;
+}
+static int ctl_wait_read(void) {
+    for (int i = 0; i < 100000; i++) if (inb(0x64) & 0x01) return 0;
+    return -1;
+}
+static void ctl_cmd(uint8_t c)   { if (ctl_wait_write() == 0) outb(0x64, c); }
+static void ctl_write(uint8_t v) { if (ctl_wait_write() == 0) outb(0x60, v); }
+static int  ctl_read(void)       { return ctl_wait_read() == 0 ? inb(0x60) : -1; }
+
 static void push(char c) {
     if (win) win_used = 1;                          /* a key fired during Win -> combo, not a tap */
     uint8_t n = (uint8_t)(rtail + 1);
@@ -292,4 +312,40 @@ void keyboard_init(void) {
     for (int i = 0; i < 64 && (inb(0x64) & 1); i++) inb(0x60);
     irq_install(1, on_key);
     for (int i = 0; i < 64 && (inb(0x64) & 1); i++) inb(0x60);
+
+    /* Turn our own interrupt on, rather than assuming the firmware did.
+     *
+     * It always had. Every BIOS on earth enables the keyboard port and its
+     * IRQ before handing over, so this driver never bothered -- until S3
+     * resume, where the firmware jumps straight to the waking vector without
+     * re-initialising anything, and the machine came back with a working
+     * everything and a dead keyboard. A driver that depends on a bit it never
+     * sets and never checks is a driver that works by luck.
+     *
+     * Read-modify-write, because drivers/mouse.c owns bit 1 of the same byte
+     * and both have to compose. */
+    ctl_cmd(0xAE);                       /* enable the first PS/2 port */
+
+    /* Drain again before asking for the config byte. A byte left in the output
+     * buffer is the byte ctl_read() will hand back, and then the config byte
+     * written down is whatever a keyboard happened to say -- which is how this
+     * produced a controller with translation switched off, and a keyboard
+     * sending scancode set 2 into a driver whose tables are set 1. The symptom
+     * was wonderful: 'a' arrived as 0x1C, and index 0x1C of the set-1 table is
+     * Enter, so every letter typed submitted the line. */
+    for (int i = 0; i < 64 && (inb(0x64) & 1); i++) inb(0x60);
+
+    ctl_cmd(0x20);                       /* read the controller config byte */
+    int cfg = ctl_read();
+    if (cfg >= 0) {
+        cfg |=  0x01;                    /* IRQ1 on                          */
+        cfg |=  0x40;                    /* translate to scancode set 1      */
+        cfg &= ~0x10;                    /* first-port clock on              */
+        ctl_cmd(0x60);
+        ctl_write((uint8_t)cfg);
+    }
+
+    /* Whatever that exchange stirred up is not a keystroke anybody made. */
+    for (int i = 0; i < 64 && (inb(0x64) & 1); i++) inb(0x60);
+    rhead = rtail = 0;
 }

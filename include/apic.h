@@ -19,6 +19,8 @@ uint8_t lapic_id(void);          /* this CPU's local APIC id */
 
 /* Route a legacy ISA IRQ (0..15) to an IDT vector on the boot CPU via the
  * IO-APIC, unmasked. Applies MADT interrupt-source overrides. */
+uint32_t ioapic_read_entry_lo(uint8_t irq);
+uint32_t ioapic_read_entry_hi(uint8_t irq);
 void ioapic_route_irq(uint8_t irq, uint8_t vector);
 /* The same, for a legacy PCI INTx line: level-triggered and active low, which
  * is not what the MADT's absence of an entry would imply. */

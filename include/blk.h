@@ -28,6 +28,13 @@ typedef struct blkdev {
      * past the commit that is supposed to follow it -- which is exactly the
      * ordering BoltFS's atomic commit depends on. */
     int (*flush)(struct blkdev *);
+    /* Put the controller back after the machine has slept. S3 keeps the RAM
+     * and nothing else: the queues, descriptor rings and buffers a driver
+     * allocated are all still where they were, and every register that pointed
+     * at them is zero. A driver whose transport genuinely survives (ATA PIO is
+     * port I/O and no more) leaves this null and blk_resume_all() treats that
+     * as success. Returns 0 if the device can be used again. */
+    int (*resume)(struct blkdev *);
 } blkdev_t;
 
 /* Register a device (the struct is copied into the table). Returns its index
@@ -52,6 +59,13 @@ int  blk_write(blkdev_t *d, uint64_t lba, uint32_t count, const void *buf);
  * 0 on success (including "device needs no flush"), -1 if the device reported
  * a failure -- a caller ordering a commit around it must treat that as fatal. */
 int  blk_flush(blkdev_t *d);
+
+/* Bring every registered device back after a suspend. Returns the number that
+ * could NOT be resumed; those are left in the table and will fail their next
+ * read or write rather than pretending. The caller is expected to say so --
+ * a filesystem quietly writing into a dead controller is worse than one that
+ * has been told it cannot. */
+int  blk_resume_all(void);
 
 /* MBR partition table (LBA 0), transport-agnostic (drives blk_read/write). */
 #define BLK_MBR_SIG_OFF   510

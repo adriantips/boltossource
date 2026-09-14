@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include "blk.h"
 #include "string.h"
+#include "kprintf.h"
 
 /* ===========================================================================
  *  Generic block layer: a small registry plus transport-agnostic MBR helpers.
@@ -170,4 +171,29 @@ int blk_write_mbr_single(blkdev_t *d, uint8_t type, uint64_t start) {
     sec[BLK_MBR_SIG_OFF + 1] = 0xAA;
 
     return blk_write(d, 0, 1, sec);
+}
+
+/* ---------------------------------------------------------------- resume --
+ *  Called once on the way back from S3, before anything tries to use a disk.
+ *  Each driver knows what its own controller lost; this only orders the work,
+ *  says what happened, and counts what did not come back.
+ *
+ *  A device with no hook is a device whose transport survives on its own --
+ *  ATA PIO is port I/O and nothing else -- and that is success, not a gap.
+ * ------------------------------------------------------------------------*/
+int blk_resume_all(void) {
+    int failed = 0;
+    for (int i = 0; i < g_n; i++) {
+        blkdev_t *d = &g_dev[i];
+        if (!d->resume) continue;
+        if (d->resume(d) == 0) {
+            kprintf("[ok] %s is back after the suspend\n", d->name);
+        } else {
+            kprintf("[!!] %s did NOT come back after the suspend. Reads and\n"
+                    "     writes to it fail from here; nothing is going to\n"
+                    "     pretend otherwise. A reboot gets it back.\n", d->name);
+            failed++;
+        }
+    }
+    return failed;
 }

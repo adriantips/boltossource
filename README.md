@@ -430,6 +430,79 @@ application processors: the BSP writes the trampoline to low memory, sends an
 IPI, and each AP runs its own idle loop. The HPET provides a cross-core
 synchronised time base. The CPU count is reported in `sysinfo`.
 
+## Suspend to RAM (ACPI S3)
+
+`suspend` stops the machine with its memory kept refreshed and everything else
+powered off. Shutting down is easy because nothing has to work afterwards; S3 is
+the state where the interesting half is the return. The CPU comes back in 16-bit
+real mode with paging off, long mode off, no usable GDT, every device at its
+power-on defaults, and a kernel image sitting in RAM that believes none of it
+happened.
+
+So `kernel/sleep.c` splits the job in three. **Getting out:** save the C world's
+resume point (a `jmp_buf` is exactly the right shape — callee-saved registers,
+the stack pointer, the return address), leave a real-mode waking vector in the
+FACS, quiesce anything still doing DMA, then write `SLP_TYP|SLP_EN` to PM1a.
+**Getting back:** `kernel/s3_wake.asm` climbs real → protected → long mode using
+the page tables that survived in RAM, and calls into C. **Putting it right:**
+re-run the initialisation of everything that forgot — GDT, IDT, PCI
+configuration space, the PICs, the PIT, the local APIC and IO-APIC, the HPET,
+the syscall MSRs, the PS/2 controller, the disks, the video mode.
+
+That last part is re-initialisation rather than register restoration on purpose.
+Every subsystem already has an `init()` that reaches a known state from nothing,
+which is precisely the situation after a wake; a second path that replays a
+saved copy of the same registers is a second thing to keep correct.
+
+Four things had to be right, none of which announce themselves:
+
+* **CMOS index 0x0F must be 0xFE before sleeping.** Waking from S3 is, to the
+  hardware, a reset — the firmware runs from the reset vector with no memory of
+  anything. That byte is how it is told this reset is a resume and it should
+  read the FACS and jump, rather than do a full POST. Without it the machine
+  wakes, forgets, and boots from disk again, which looks exactly like a suspend
+  that never came back.
+* **CR4 comes back with SSE off**, and the kernel is compiled `-msse`. The first
+  C function to zero a struct executed an SSE store on a CPU where SSE did not
+  exist: `#UD`, no IDT yet, triple fault, reboot.
+* **`gdt_init()` destroys the per-CPU pointer it is restoring.** Loading the GS
+  *selector* in long mode sets `GS_BASE` from the descriptor, which is zero, so
+  the next read of `gs:0` triple-faults. `smp_reload_gs_base()` goes immediately
+  after.
+* **PCI configuration space must be restored before any driver reads a
+  register.** Every device came back at address zero with its decoders off, and
+  a status word read off an unassigned BAR is all-ones — which NVMe reports as
+  `CSTS.CFS`, "controller fatal status", for a controller nobody had touched.
+  `blk_resume_all()` then puts the queues and command lists back, without which
+  the machine suspends beautifully once and hangs on the next commit.
+
+The trampoline writes a letter to the serial port at each stage (`3PLgG…R`),
+because when a resume fails that line is the only diagnosis there is: where the
+sequence stops is where the machine died.
+
+**What does not come back, stated rather than discovered:** the application
+processors. They slept too and need a fresh INIT-SIPI-SIPI; nothing here sends
+one, so a resumed machine runs on the boot processor alone until it is rebooted.
+On this scheduler that costs nothing functional — the APs idle in a `hlt` loop
+and no thread is ever placed on one — but it is true and the man page says so.
+
+`suspend` (or `power suspend`) commits the filesystem first. That is not
+belt-and-braces: the tree lives in RAM, so a sleeping machine that loses power
+has lost exactly what pulling the plug on a running one would. It is *not*
+marked clean, because as far as the next boot is concerned this machine is still
+running. `power status` reports whether S3 is available — and when it is not,
+which of the two reasons applies: no `\_S3_` in the firmware's DSDT, or no FACS
+to leave a waking vector in — plus a count of the resumes this boot, which is
+the cheapest way to tell a resumed machine from a rebooted one.
+
+`test/t_s3.py` is careful about that distinction, because a failed resume looks
+identical to a successful one from a distance. It asserts QEMU's own run state
+says `suspended` (the VCPUs are stopped; the guest cannot fake it), that the
+boot banner does *not* appear again, that the tick count does not go backwards,
+that every trampoline marker arrived in order, and then does it a second time —
+a resume that works once and corrupts something is a resume that fails on the
+next one.
+
 ## UEFI boot
 
 `boot/uefi_boot.c` is a **UEFI boot loader** (BOOTX64.EFI) that boots BoltOS on
@@ -2648,7 +2721,7 @@ The interactive OS shell supports a wide range of commands:
 - **File & Directory:** `ls` (`-l` for mode + owner), `tree`, `cd`, `mkdir`, `rm`, `cp`, `mv`, `find`, `trash`, `recover`, `pwd`, `touch`, `write` (`-a` appends), `edit` (full-screen editor), `chmod`, `chown`
 - File Inspection: `cat`, `head`, `tail`, `hex`, `meta`, `diff`, `grep`, `checksum`, `preview`, `count`
 - System Information: `sysinfo`, `cpuinfo`, `meminfo`, `diskinfo`, `sync`, `fsck`, `uptime`, `battery`, `sensors`, `devices`, `version`, `health`
-- Power: `poweroff`, `reboot` (both commit the filesystem and mark it clean before ACPI S5 / reset), `power off|reboot` (alias)
+- Power: `poweroff`, `reboot` (both commit the filesystem and mark it clean before ACPI S5 / reset), `suspend` (sleep to RAM via ACPI S3 and resume; commits the filesystem but leaves it mounted), `power off|reboot|suspend|status` (alias)
 - Install: `install` (write a bootable BoltOS onto another disk; also a desktop app)
 - Diagnostics: `dmesg` (kernel log ring), `crashlog` (persisted crash reports), `core` (post-mortem inspector: registers, a named backtrace and the stack of a ring-3 crash), `crash ring3 [mode]` (fault a ring-3 process on purpose)
 - Process Management: `ps`, `kill`, `top`, `freeze`, `resume`, `services`, `service`, `jobs`, `priority`, `monitor`

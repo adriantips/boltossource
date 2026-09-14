@@ -386,7 +386,28 @@ which of these it is rather than failing quietly.
         registers or an ACPI method, neither of which exists on a display QEMU
         provides -- include/backlight.h is the seam one arrives through, in the
         same shape as the Wi-Fi radio's
-- [ ] 93. Suspend (S3) and resume
+- [x] 93. Suspend (S3) and resume. Out is the easy half: a jmp_buf for the C
+        world, a real-mode waking vector in the FACS, DMA quiesced, SLP_EN
+        written. Back is kernel/s3_wake.asm climbing real -> protected -> long
+        mode on the page tables that survived in RAM, and then re-running every
+        init() rather than replaying saved registers -- the machine after a wake
+        is in exactly the state those functions already know how to start from.
+        Four that do not announce themselves: CMOS 0x0F must be 0xFE or the
+        firmware does a full POST and boots from disk, which is indistinguishable
+        from a suspend that never returned; CR4 loses SSE and the kernel is
+        -msse, so the first struct zeroed is a #UD with no IDT behind it;
+        gdt_init() reloads the GS selector and so zeroes the per-CPU pointer it
+        is restoring; and PCI config space has to be back before a driver reads
+        any register, or an unassigned BAR reads all-ones and NVMe calls it
+        CSTS.CFS. The trampoline reports each stage as a letter on the serial
+        line, because a failed wake has no other diagnosis.
+        Not there, and said out loud rather than found later: the application
+        processors do not come back -- they need a fresh INIT-SIPI-SIPI and
+        nothing sends one, so a resumed machine is the boot processor alone.
+        Costs nothing on this scheduler, which never places a thread elsewhere.
+        t_s3.py separates a resume from a reboot the only ways that work: QEMU's
+        own run state, a banner that must not reappear, a tick count that must
+        not go backwards, and a second suspend afterwards
 - [x] 94. USB mass storage: bulk-only transport carrying SCSI, registered as
         a blkdev_t like any other disk, so diskinfo lists it and the
         filesystems, the installer and fsck reach it without knowing what a

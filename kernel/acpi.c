@@ -74,13 +74,31 @@ struct fadt {
     /* remaining fields unused */
 } __attribute__((packed));
 
+/* Firmware ACPI Control Structure. The only field anyone here needs is the
+ * waking vector, but the signature and length are worth reading to be sure
+ * the FADT's pointer is aimed at what it says it is. */
+struct facs {
+    char     signature[4];
+    uint32_t length;
+    uint32_t hardware_signature;
+    uint32_t firmware_waking_vector;      /* 32-bit, real mode */
+    uint32_t global_lock;
+    uint32_t flags;
+    uint64_t x_firmware_waking_vector;    /* 64-bit, protected mode */
+    uint8_t  version;
+    uint8_t  reserved[31];
+} __attribute__((packed));
+
 static struct acpi_info g_acpi;
 static const struct fadt *g_fadt;
 
-/* SLP_TYPa/b extracted from \_S5_ in the DSDT, plus the PM1 control ports. */
-static int      s5_valid;
-static uint16_t slp_typa, slp_typb;
+/* SLP_TYPa/b for each sleep state named in the DSDT, plus the PM1 ports.
+ * S5 was the only one anybody wanted until suspend arrived; the parse was
+ * always general and only the storage was not. */
+#define NSTATE 6
+static struct { int valid; uint16_t a, b; } sstate[NSTATE];
 static uint16_t pm1a_cnt_port, pm1b_cnt_port;
+static const struct facs *g_facs;
 
 static int sdt_checksum_ok(const struct acpi_sdt_header *h) {
     uint8_t sum = 0;
@@ -137,7 +155,16 @@ int acpi_pm_profile(void) {
     return g_fadt ? (int)g_fadt->preferred_pm_profile : 0;
 }
 
-static void parse_s5(const struct fadt *f) {
+/* Every \_Sn_ package in the DSDT, not just S5.
+ *
+ * The pattern after the four-character name is a small PackageOp:
+ *   12 <pkglen> 04 <a> <b> ...
+ * where <a>/<b> are either a BytePrefix (0x0A v) or a constant op (Zero, One,
+ * or a small integer). This is pattern-matching on AML rather than executing
+ * it, which is enough for the sleep types -- they are constants in every
+ * firmware there is -- and is emphatically not enough for a battery, which is
+ * why include/power.h says what it says. */
+static void parse_sstates(const struct fadt *f) {
     /* The 64-bit X_DSDT field only exists in the extended (ACPI 2.0+) FADT.
      * On a 1.0 FADT (length ~116) reading it walks off the end of the table, so
      * fall back to the 32-bit DSDT pointer unless the table is long enough. */
@@ -149,27 +176,52 @@ static void parse_s5(const struct fadt *f) {
     uint32_t len = d->length > sizeof(*d) ? d->length - sizeof(*d) : 0;
 
     for (uint32_t i = 0; i + 6 < len; i++) {
-        if (aml[i] == '_' && aml[i+1] == 'S' && aml[i+2] == '5' && aml[i+3] == '_') {
-            const uint8_t *p = aml + i + 4;
-            if (*p != 0x12) continue;          /* PackageOp */
-            p++;
-            /* pkglength: top 2 bits of first byte give #following length bytes */
-            uint8_t lead = *p;
-            p += 1 + (lead >> 6);
-            p++;                                /* numelements */
-            int a = -1, b = -1;
-            if (*p == 0x0A) { a = p[1]; p += 2; }   /* BytePrefix */
-            else if (*p <= 0x09) { a = *p; p += 1; } /* small const */
-            if (*p == 0x0A) { b = p[1]; }
-            else if (*p <= 0x09) { b = *p; }
-            if (a >= 0) {
-                slp_typa = (uint16_t)(a << 10);
-                slp_typb = (uint16_t)((b < 0 ? 0 : b) << 10);
-                s5_valid = 1;
-            }
-            return;
-        }
+        if (aml[i] != '_' || aml[i+1] != 'S' || aml[i+3] != '_') continue;
+        if (aml[i+2] < '0' || aml[i+2] > '5') continue;
+        int n = aml[i+2] - '0';
+        const uint8_t *p = aml + i + 4;
+        if (*p != 0x12) continue;              /* PackageOp */
+        p++;
+        /* pkglength: top 2 bits of the first byte give #following length bytes */
+        uint8_t lead = *p;
+        p += 1 + (lead >> 6);
+        p++;                                    /* numelements */
+        int a = -1, b = -1;
+        if (*p == 0x0A) { a = p[1]; p += 2; }   /* BytePrefix */
+        else if (*p <= 0x09) { a = *p; p += 1; } /* small const */
+        if (*p == 0x0A) { b = p[1]; }
+        else if (*p <= 0x09) { b = *p; }
+        if (a < 0) continue;
+        sstate[n].a = (uint16_t)(a << 10);
+        sstate[n].b = (uint16_t)((b < 0 ? 0 : b) << 10);
+        sstate[n].valid = 1;
     }
+}
+
+int acpi_sleep_type(int n, uint16_t *a, uint16_t *b) {
+    if (n < 0 || n >= NSTATE || !sstate[n].valid) return 0;
+    if (a) *a = sstate[n].a;
+    if (b) *b = sstate[n].b;
+    return 1;
+}
+
+void acpi_pm1_ports(uint16_t *a, uint16_t *b) {
+    if (a) *a = pm1a_cnt_port;
+    if (b) *b = pm1b_cnt_port;
+}
+
+/* Where to leave the address the firmware jumps to on wake. NULL if the FADT
+ * does not point at a FACS this machine can find -- which means no S3, and it
+ * is better to say so than to sleep with nowhere to come back to. */
+int acpi_set_waking_vector(uint32_t phys) {
+    if (!g_facs) return -1;
+    struct facs *f = (struct facs *)(uintptr_t)g_facs;
+    f->firmware_waking_vector = phys;
+    /* The 64-bit vector takes precedence when it is non-zero, and it means a
+     * *protected-mode* entry with no paging -- a different trampoline than the
+     * one that exists. Zero it so the real-mode vector above is the one used. */
+    if (f->length >= 32 && f->version >= 1) f->x_firmware_waking_vector = 0;
+    return 0;
 }
 
 void acpi_init(void) {
@@ -200,7 +252,14 @@ void acpi_init(void) {
     if (g_fadt) {
         pm1a_cnt_port = (uint16_t)g_fadt->pm1a_cnt_blk;
         pm1b_cnt_port = (uint16_t)g_fadt->pm1b_cnt_blk;
-        parse_s5(g_fadt);
+        parse_sstates(g_fadt);
+
+        uint64_t facs_phys = (g_fadt->h.length > 140 && g_fadt->x_firmware_ctrl)
+                           ? g_fadt->x_firmware_ctrl : (uint64_t)g_fadt->firmware_ctrl;
+        if (facs_phys) {
+            const struct facs *fa = (const struct facs *)P2V(facs_phys);
+            if (memcmp(fa->signature, "FACS", 4) == 0 && fa->length >= 24) g_facs = fa;
+        }
     }
 
     /* MADT: APIC topology. */
@@ -280,10 +339,11 @@ static void legacy_poweroff(void) {
 
 void acpi_poweroff(void) {
     cli();
-    if (s5_valid && pm1a_cnt_port) {
-        outw(pm1a_cnt_port, (uint16_t)(slp_typa | (1 << 13)));   /* SLP_EN */
+    uint16_t a, b;
+    if (acpi_sleep_type(5, &a, &b) && pm1a_cnt_port) {
+        outw(pm1a_cnt_port, (uint16_t)(a | (1 << 13)));           /* SLP_EN */
         if (pm1b_cnt_port)
-            outw(pm1b_cnt_port, (uint16_t)(slp_typb | (1 << 13)));
+            outw(pm1b_cnt_port, (uint16_t)(b | (1 << 13)));
     }
     legacy_poweroff();
     /* If still alive, park. */

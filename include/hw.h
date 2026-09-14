@@ -44,6 +44,18 @@ int         pci_scan(struct pci_dev *buf, int max);
 const char *pci_class_name(uint8_t cls);
 
 /* Config-space access (mechanism #1). off is byte offset; 16/32 must be aligned. */
+/* --- configuration space across a suspend ---------------------------------
+ *  S3 resets every device's configuration space -- BARs, bus mastering, the
+ *  interrupt line, the MSI capability -- and the firmware does not put it
+ *  back: it jumps to the OS's waking vector long before it would re-enumerate
+ *  anything. So the OS saves it and restores it, which is what every OS does.
+ *  Call save before writing SLP_EN and restore before any driver touches a
+ *  register, or a driver will read all-ones off an unassigned BAR and conclude
+ *  its controller has died.
+ * ------------------------------------------------------------------------*/
+void        pci_save_state(void);
+int         pci_restore_state(void);      /* -> devices restored */
+
 uint32_t    pci_cfg_read32 (uint8_t bus, uint8_t slot, uint8_t func, uint8_t off);
 uint16_t    pci_cfg_read16 (uint8_t bus, uint8_t slot, uint8_t func, uint8_t off);
 uint8_t     pci_cfg_read8  (uint8_t bus, uint8_t slot, uint8_t func, uint8_t off);
