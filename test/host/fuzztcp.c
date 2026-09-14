@@ -347,10 +347,11 @@ int fz_selftest(void) {
 
 /* tcp.c waits by halting the processor. That is correct in ring 0 and a
  * privileged-instruction fault in a host process, so the choice was to fuzz
- * only the input path or to step over the instruction. `hlt` is one byte, the
- * fault reports the address, and a vectored handler can move RIP past it and
- * carry on -- which turns every wait in tcp.c into a spin and makes the whole
- * file, client paths included, runnable here. */
+ * only the input path or to step over the instruction. `hlt` is one byte and
+ * the fault hands over the machine state, so a handler can move RIP past it
+ * and carry on -- which turns every wait in tcp.c into a spin and makes the
+ * whole file, client paths included, runnable here. Windows and Linux deliver
+ * that fault by different routes; both are below. */
 #ifdef _WIN32
 #define CTX_RIP 0xF8                       /* Rip's offset in the x86-64 CONTEXT */
 static uint64_t hlts_stepped;
@@ -367,12 +368,43 @@ static long __stdcall fz_step_over_hlt(fz_exc_ptrs *ep) {
     }
     return 0;                               /* EXCEPTION_CONTINUE_SEARCH */
 }
+static void step_over_hlt_init(void) { AddVectoredExceptionHandler(1, fz_step_over_hlt); }
+
+#elif defined(__linux__)
+/* The same trick where the fault arrives as a signal instead. Linux delivers a
+ * privileged instruction in user mode as SIGSEGV with the machine state in the
+ * ucontext, so RIP is writable from the handler.
+ *
+ * Untested on Linux: this project is developed and tested on Windows, and the
+ * CI workflow added alongside it is what will say whether this half is right.
+ * It is here rather than a #error because a harness that only builds on one
+ * operating system is a harness that stops being run. */
+#include <signal.h>
+#include <ucontext.h>
+static uint64_t hlts_stepped;
+static void fz_step_over_hlt(int sig, siginfo_t *si, void *uc) {
+    (void)si;
+    greg_t *rip = &((ucontext_t *)uc)->uc_mcontext.gregs[REG_RIP];
+    if (*(const unsigned char *)(uintptr_t)*rip == 0xF4) { (*rip)++; hlts_stepped++; return; }
+    signal(sig, SIG_DFL);                   /* a real fault: let it be one */
+}
+static void step_over_hlt_init(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = fz_step_over_hlt;
+    sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+    sigaction(SIGSEGV, &sa, NULL);
+}
+
+#else
+static void step_over_hlt_init(void) {
+    fprintf(stderr, "no way to step over tcp.c's `hlt` on this platform\n");
+    exit(2);
+}
 #endif
 
 int main(int argc, char **argv) {
-#ifdef _WIN32
-    AddVectoredExceptionHandler(1, fz_step_over_hlt);
-#endif
+    step_over_hlt_init();
     memset(&the_nif, 0, sizeof the_nif);
     build_corpus();
 

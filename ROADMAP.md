@@ -421,7 +421,14 @@ which of these it is rather than failing quietly.
         `logs` reads it back, with `logs save` for the boot that ends badly
 - [x] 97. GUI log viewer: this boot's ring, earlier boots and the crash log,
         tagged and scrollable
-- [x] 98. QEMU regression suite runnable headless
+- [x] 98. QEMU regression suite runnable headless, and wired to run on every
+        change: .github/workflows/ci.yml runs the half that needs no machine --
+        the fuzzers and eleven host-only tests, about two minutes -- on every
+        push and pull request. The QEMU half is a second job that stays skipped
+        until a self-hosted Windows runner is named in BOLTOS_QEMU_RUNNER,
+        because build.sh wants msys2 at /c/msys64 and a GitHub-hosted Linux
+        runner cannot build the image at all. Making build.sh portable is what
+        it would take, and it has not been done
 - [x] 99. Fuzzers for the network stack and the HTML/CSS/JS parsers. Three
         harnesses over the shipping sources (`test/host/fuzz{web,net,tcp}.c`,
         23 targets, `test/t_fuzz.py`, about a minute). This toolchain has

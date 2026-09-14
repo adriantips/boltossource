@@ -531,6 +531,14 @@ Each test is a standalone `test/t_*.py`. `test/boltvm.py` is the harness: it
 boots a guest, types at it through QMP, waits for output, takes screenshots and
 can pull the power out from under it.
 
+`.github/workflows/ci.yml` runs the half that needs no machine on every push:
+the fuzzers and the eleven tests that take `--host-only`, about two minutes
+against forty for the full suite. The QEMU half is a second job that stays
+skipped until a self-hosted Windows runner is named in the `BOLTOS_QEMU_RUNNER`
+repository variable — `build.sh` wants msys2 at `/c/msys64` and refuses to
+start without it, so a GitHub-hosted Linux runner cannot build the image at
+all. Making `build.sh` portable is what would change that.
+
 Two habits worth copying from the existing tests:
 
 - **Wait for a prompt, never for a fixed time.** `vm.run()` blocks until the
