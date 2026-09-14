@@ -489,6 +489,13 @@ def shell(vm, line, wait_for, timeout=90):
     return vm.serial()
 
 
+def position_s(status_out):
+    """`media status`'s Position field, in seconds."""
+    m = re.search(r"Position: (\d+):(\d+)", status_out)
+    assert m, "no Position line in:\n" + status_out[-700:]
+    return int(m.group(1)) * 60 + int(m.group(2))
+
+
 def qemu_tests():
     """Decoding on the host proves the arithmetic. This proves the OS can get an
     MP3 off a network, off a disk and out of a sound card, which is the part a
@@ -498,13 +505,13 @@ def qemu_tests():
         print("SKIP mp3 qemu: lame missing, so there is no MP3 to serve")
         return 0
 
-    # Eight seconds of a steady tone. Steady because a capture can be checked
-    # for a pitch and not for a chirp; eight because the player repeats by
-    # default, and a track shorter than the four seconds this leaves it running
-    # would loop back to the start and the position check below would read a
-    # number near zero and call it a stall.
+    # Sixteen seconds of a steady tone. Steady because a capture can be checked
+    # for a pitch and not for a chirp; sixteen because the player repeats by
+    # default and everything below has to finish inside one pass of the track --
+    # a loop back to zero reads exactly like a stall. At 96 kbps that is about
+    # 190 KB, which fits in cmd_download's 256 KB buffer with room to spare.
     src, mp3 = OUT / "guest-src.wav", OUT / "guest.mp3"
-    rate, hz, guest_secs = 44100, 880, 8.0
+    rate, hz, guest_secs = 44100, 880, 16.0
     a = array.array("h")
     for i in range(int(rate * guest_secs)):
         v = int(math.sin(2 * math.pi * hz * i / rate) * 26000)
@@ -515,7 +522,7 @@ def qemu_tests():
         f.setsampwidth(2)
         f.setframerate(rate)
         f.writeframes(a.tobytes())
-    subprocess.run([lame, "-b", "128", "--quiet", str(src), str(mp3)], check=True)
+    subprocess.run([lame, "-b", "96", "--quiet", str(src), str(mp3)], check=True)
 
     import http.server
     import threading
@@ -575,6 +582,41 @@ def qemu_tests():
                 % (pos.group(0) if pos else "?", out[-800:]))
             print("  ok: unattended for four seconds and the position moved to %s"
                   % pos.group(0).split()[-1])
+
+            # And now the case nothing else in the suite covers. Every test that
+            # boots with an audio device is an audio test that leaves the
+            # desktop alone, and every test that works the compositor boots with
+            # no audio device -- so "a track playing while the screen is busy"
+            # is untested in both directions. It is also exactly where the
+            # decode budget could go wrong: the refill is a ceiling rather than
+            # a pacing rule, so it arrives in bursts, and a compositor that is
+            # already behind is what would turn that into a gap you can hear.
+            #
+            # Driven from the shell rather than by synthesising drags: `snap`
+            # and `display` each repaint the whole screen and print their state
+            # back, and neither takes the keyboard away from the Terminal the
+            # way switching desktops would.
+            before = position_s(out)
+            t0 = time.time()
+            for zone, bright in (("left", 55), ("right", 100), ("max", 70),
+                                 ("top-left", 100), ("restore", 85)):
+                shell(vm, "snap " + zone, "floating" if zone == "restore" else zone,
+                      timeout=60)
+                shell(vm, "display brightness %d" % bright, "brightness", timeout=60)
+            worked = time.time() - t0
+            out = shell(vm, "media status", "Device  :", timeout=60)
+            after = position_s(out)
+
+            assert "State   : playing" in out, \
+                "the track stopped while the desktop was busy:\n" + out[-800:]
+            # A second of slack for the status commands themselves, and the
+            # position only has one-second resolution either end.
+            assert after - before >= worked - 2.0, (
+                "%.0f s of compositor work passed and the track advanced %d s "
+                "(%d -> %d). The decode is not keeping up when the screen is "
+                "busy:\n%s" % (worked, after - before, before, after, out[-800:]))
+            print("  ok: %d s of audio across %.0f s of snapping and repainting"
+                  % (after - before, worked))
 
             vm.expect_absent("KERNEL PANIC")
             wav_path = vm.wav_path
