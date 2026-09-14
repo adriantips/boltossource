@@ -60,6 +60,23 @@
 #define PLMAX         64
 #define SEEK_STEP_MS  5000u
 
+/* How much audio one pass of the compositor's loop may decode.
+ *
+ * This used to be "one decoder step", which for MP3 is one MPEG frame: 1152
+ * samples, 26 ms. Sustaining real time on 26 ms a pass needs 38 passes a
+ * second, and a software compositor doing a full redraw under emulation manages
+ * about 19 -- so a track played at half speed no matter how fast the decoder
+ * was, and the decoder is 187 times real time. A WAV never showed it because
+ * wav_read fills the whole request in one call, 500 ms of it, and needs two
+ * passes a second: the same code, a nineteenfold difference in the pass rate it
+ * demands, decided by the format.
+ *
+ * So the budget is work rather than a step count. At 19 passes a second this is
+ * 2.8 s of audio a second; where the loop runs faster it simply finishes
+ * sooner, and no single pass ever decodes the whole half-second buffer. */
+#define AHEAD_MS      150u
+#define AHEAD_FRAMES  (AUDIO_RATE / 1000u * AHEAD_MS)
+
 static window_t *win;
 
 /* ---- the open track ------------------------------------------------------ */
@@ -187,16 +204,24 @@ static void measure(const int16_t *pcm, uint32_t frames) {
     }
 }
 
-/* One decoder step into the staging buffer -- bounded work, whatever the
- * format. Called on every pass of the compositor's loop while the codec is
- * busy, which is how half a second gets decoded without any one pass doing
- * more than a frame of it. */
+/* Decode into the staging buffer, up to AHEAD_MS worth. Called on every pass
+ * of the compositor's loop while the codec plays what it already has, which is
+ * how half a second gets decoded without any one pass decoding half a second.
+ * The loop is what makes it a budget rather than a step: snd_step gives back
+ * one MPEG frame at a time for an MP3 and the whole ask for a WAV, and neither
+ * caller should have to know which. */
 static void decode_ahead(void) {
-    if (!have || !chunk || drained || fill >= CHUNK_FRAMES) return;
-    if (!fill) fill_pos_ms = snd_position_ms(&trk);
-    uint32_t got = snd_step(&trk, chunk + (uint64_t)fill * 2, CHUNK_FRAMES - fill);
-    if (!got) drained = 1;
-    else      fill += got;
+    if (!have || !chunk || drained) return;
+    uint32_t budget = AHEAD_FRAMES;
+    while (fill < CHUNK_FRAMES && budget) {
+        if (!fill) fill_pos_ms = snd_position_ms(&trk);
+        uint32_t want = CHUNK_FRAMES - fill;
+        if (want > budget) want = budget;
+        uint32_t got = snd_step(&trk, chunk + (uint64_t)fill * 2, want);
+        if (!got) { drained = 1; return; }
+        fill   += got;
+        budget -= (got < budget) ? got : budget;
+    }
 }
 
 /* Hand the staged audio to the codec. Returns 0 when there was none. */
@@ -244,7 +269,7 @@ void media_pump(void) {
     if (win && !win->open) { media_halt(); return; }
     if (!audio_pcm_ok()) { playing = 0; problem = "no PCM audio device"; return; }
     if (audio_busy()) {
-        decode_ahead();          /* the next buffer, a frame at a time */
+        decode_ahead();          /* the next buffer, a slice at a time */
         /* A stream engine that never reports itself drained would otherwise
          * park the track forever, silently. Wait the length of the buffer it
          * was given plus half a second, then move on regardless -- the same
