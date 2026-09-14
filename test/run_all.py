@@ -14,8 +14,11 @@ import os, subprocess, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Cheapest and most fundamental first, so a broken boot is reported in a minute
-# rather than after the slow durability runs.
-ORDER = ["t_boot.py", "t_bootmenu.py", "t_uefi.py", "t_fs.py", "t_persist.py"]
+# rather than after the slow durability runs. t_fuzz.py leads because it boots
+# nothing at all -- it is the only one here that can fail before QEMU has
+# started.
+ORDER = ["t_fuzz.py", "t_boot.py", "t_bootmenu.py", "t_uefi.py", "t_fs.py",
+         "t_persist.py"]
 
 
 def discover(filters):
