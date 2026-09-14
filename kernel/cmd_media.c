@@ -76,7 +76,7 @@ static void print_status(void) {
 static void print_list(void) {
     const char *nm = "";
     int n = media_list(0, 0), cur = media_index();
-    if (n == 0) { kprintf("media: no .wav files in %s\n", media_folder()); return; }
+    if (n == 0) { kprintf("media: nothing playable in %s\n", media_folder()); return; }
     for (int i = 0; i < n; i++) {
         media_list(i, &nm);
         kprintf("%c %2d  %s\n", i == cur ? '*' : ' ', i + 1, nm);
@@ -95,7 +95,7 @@ int cmd_media(int argc, char **argv) {
     if (strcmp(sub, "list") == 0)   { print_list(); return 0; }
 
     if (strcmp(sub, "open") == 0) {
-        if (argc < 3) { kprintf("usage: media open FILE.wav\n"); return 1; }
+        if (argc < 3) { kprintf("usage: media open FILE (.wav or .mp3)\n"); return 1; }
         media_open_path_bg(argv[2]);   /* the window, not the keyboard */
         if (!media_loaded()) { kprintf("media: %s: %s\n", argv[2], media_status()); return 1; }
         print_status();

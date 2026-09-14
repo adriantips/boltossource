@@ -19,9 +19,18 @@
  *  keeps playing while the window is minimised or on another desktop, while the
  *  session is locked, and while a ring-3 program owns the panel.
  *
- *  Half a second of audio is decoded at a time, straight out of the file's own
- *  bytes (wav.c converts as it reads), so a track is never held twice and a
- *  seek is a move of a cursor rather than a re-decode.
+ *  Half a second of audio is handed over at a time, decoded straight out of
+ *  the file's own bytes (the decoders convert as they read), so a track is
+ *  never held twice and a seek is a move of a cursor rather than a re-decode.
+ *
+ *  That half second is not decoded in one go, though, and MP3 is why. A WAV
+ *  costs a multiply a sample and could be converted in a single pass of the
+ *  loop without anyone noticing; an MPEG frame costs a Huffman decode, an
+ *  IMDCT and a polyphase synthesis, and twenty of them in one pass is a
+ *  dropped frame of compositing you can see. So the buffer is filled one
+ *  decoder step at a time -- about 26 ms of audio per pass of a loop that runs
+ *  every millisecond -- while the codec is still playing the last one, and
+ *  handed over whole when it drains.
  *
  *  The level meter is drawn from the samples that were actually submitted, not
  *  from a random number generator: each chunk is measured in sixteen slices on
@@ -36,7 +45,7 @@
 #include "gui.h"
 #include "audio.h"
 #include "mixer.h"
-#include "wav.h"
+#include "sound.h"
 #include "fs.h"
 #include "users.h"
 #include "kheap.h"
@@ -54,8 +63,7 @@
 static window_t *win;
 
 /* ---- the open track ------------------------------------------------------ */
-static wav_t    trk;
-static uint8_t *file;                 /* the file's bytes; trk decodes in place */
+static snd_t    trk;                  /* WAV or MP3; sound.c decides which      */
 static char     name[FS_NAME_MAX];
 static int      have;                 /* a track is open and decodable          */
 static int      playing;
@@ -68,6 +76,9 @@ static uint32_t chunk_frames;
 static uint32_t chunk_pos_ms;         /* track position of its first sample     */
 static uint64_t chunk_tick;           /* pit_ticks() when it was handed over    */
 static uint32_t chunk_slice0;         /* peak_head before its slices went in    */
+static uint32_t fill;                 /* frames staged but not yet handed over  */
+static uint32_t fill_pos_ms;          /* track position of the staged buffer    */
+static int      drained;              /* the source has no more to give         */
 
 /* ---- level history ------------------------------------------------------- */
 static uint8_t  peaks[PEAKS];
@@ -82,15 +93,6 @@ static int  picked;                   /* the start folder has been chosen once *
 static int load_index(int i);
 
 /* ---- helpers ------------------------------------------------------------- */
-static int is_audio_name(const char *n) {
-    int ln = (int)strlen(n);
-    if (ln < 5) return 0;
-    const char *p = n + ln - 4;
-    char e[4];
-    for (int i = 0; i < 4; i++) { char c = p[i]; e[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
-    return e[0] == '.' && e[1] == 'w' && e[2] == 'a' && e[3] == 'v';
-}
-
 static void basename_of(const char *path, char *out, uint32_t cap) {
     const char *b = path;
     for (const char *s = path; *s; s++) if (*s == '/') b = s + 1;
@@ -140,13 +142,18 @@ static void utoa_small(uint32_t v, char *out) {
 static void release_device(void) {
     audio_stop();
     chunk_frames = 0;
+    /* Whatever was staged was decoded for a position we are about to leave --
+     * every caller of this either pauses (and rewinds to what was audible) or
+     * seeks. Keeping it would play half a second of the old place first. */
+    fill = 0;
+    drained = 0;
 }
 
 static void drop_track(void) {
     playing = 0;
     have = 0;
     release_device();
-    if (file) { kfree(file); file = 0; }
+    snd_close(&trk);
     name[0] = 0;
     /* The level history is deliberately not cleared. It is a rolling window of
      * what came out of the speakers, and the speakers do not stop between one
@@ -180,21 +187,38 @@ static void measure(const int16_t *pcm, uint32_t frames) {
     }
 }
 
-/* Decode the next half second and hand it over. Returns 0 when the track has
- * nothing left to give. */
-static int push_chunk(void) {
-    if (!have || !chunk) return 0;
-    uint32_t pos = wav_position_ms(&trk);
-    uint32_t got = wav_read(&trk, chunk, CHUNK_FRAMES);
-    if (!got) return 0;
+/* One decoder step into the staging buffer -- bounded work, whatever the
+ * format. Called on every pass of the compositor's loop while the codec is
+ * busy, which is how half a second gets decoded without any one pass doing
+ * more than a frame of it. */
+static void decode_ahead(void) {
+    if (!have || !chunk || drained || fill >= CHUNK_FRAMES) return;
+    if (!fill) fill_pos_ms = snd_position_ms(&trk);
+    uint32_t got = snd_step(&trk, chunk + (uint64_t)fill * 2, CHUNK_FRAMES - fill);
+    if (!got) drained = 1;
+    else      fill += got;
+}
 
+/* Hand the staged audio to the codec. Returns 0 when there was none. */
+static int push_chunk(void) {
+    if (!have || !chunk || !fill) return 0;
     chunk_slice0 = peak_head;
-    measure(chunk, got);
-    chunk_frames = got;
-    chunk_pos_ms = pos;
+    measure(chunk, fill);
+    chunk_frames = fill;
+    chunk_pos_ms = fill_pos_ms;
     chunk_tick = pit_ticks();
-    audio_play_async_ch(MIX_MEDIA, chunk, got);
+    audio_play_async_ch(MIX_MEDIA, chunk, fill);
+    fill = 0;
     return 1;
+}
+
+/* Fill the buffer now and hand it over. For the moments where waiting for the
+ * loop to trickle it in would be heard as a gap: opening a track, resuming,
+ * and landing a seek. */
+static int prime_chunk(void) {
+    if (!have || !chunk) return 0;
+    while (fill < CHUNK_FRAMES && !drained) decode_ahead();
+    return push_chunk();
 }
 
 /* The end of a track: the next one, the top of the list, or silence. */
@@ -203,11 +227,12 @@ static void track_finished(void) {
     if (pl_n > 1 && pl_cur >= 0 && pl_cur + 1 < pl_n) { load_index(pl_cur + 1); return; }
     if (repeat) {
         if (pl_n > 1) { load_index(0); return; }
-        wav_seek_ms(&trk, 0);
-        if (push_chunk()) return;
+        snd_seek_ms(&trk, 0);
+        drained = 0;
+        if (prime_chunk()) return;
     }
     playing = 0;
-    if (have) wav_seek_ms(&trk, 0);
+    if (have) snd_seek_ms(&trk, 0);
 }
 
 void media_pump(void) {
@@ -219,6 +244,7 @@ void media_pump(void) {
     if (win && !win->open) { media_halt(); return; }
     if (!audio_pcm_ok()) { playing = 0; problem = "no PCM audio device"; return; }
     if (audio_busy()) {
+        decode_ahead();          /* the next buffer, a frame at a time */
         /* A stream engine that never reports itself drained would otherwise
          * park the track forever, silently. Wait the length of the buffer it
          * was given plus half a second, then move on regardless -- the same
@@ -226,7 +252,7 @@ void media_pump(void) {
         uint32_t span = chunk_frames / (AUDIO_RATE / 1000u);
         if (pit_ticks() - chunk_tick < (uint64_t)span + 500u) return;
     }
-    if (!push_chunk()) track_finished();
+    if (!push_chunk() && !prime_chunk()) track_finished();
 }
 
 /* Hand the codec back -- to the Music app, or to a blocking `play`. Cheap when
@@ -249,7 +275,7 @@ static void scan_dir(const char *dir) {
     fs_node *d = fs_lookup(dir);
     if (!d || !d->is_dir) return;
     for (fs_node *c = d->child; c && pl_n < PLMAX; c = c->next) {
-        if (c->is_dir || !is_audio_name(c->name)) continue;
+        if (c->is_dir || !snd_is_audio_name(c->name)) continue;
         int at = pl_n;
         while (at > 0 && strcmp(pl[at - 1], c->name) > 0) {
             strlcpy(pl[at], pl[at - 1], FS_NAME_MAX);
@@ -266,11 +292,11 @@ static int open_file(const char *path) {
     basename_of(path, name, sizeof name);
 
     const char *err = "cannot open";
-    if (wav_load(path, &trk, &file, &err) != 0) { problem = err; file = 0; return -1; }
+    if (snd_open(path, &trk, &err) != 0) { problem = err; return -1; }
 
     if (!chunk) {
         chunk = (int16_t *)kmalloc((uint64_t)CHUNK_FRAMES * 4);
-        if (!chunk) { kfree(file); file = 0; problem = "out of memory"; return -1; }
+        if (!chunk) { snd_close(&trk); problem = "out of memory"; return -1; }
     }
     have = 1;
     if (!audio_pcm_ok()) problem = "no PCM audio device";
@@ -285,7 +311,7 @@ static int load_index(int i) {
     if (open_file(path) != 0) { playing = 0; return -1; }
     music_halt();                        /* one codec, one stream */
     playing = audio_pcm_ok();
-    if (playing && !push_chunk()) playing = 0;
+    if (playing && !prime_chunk()) playing = 0;
     return 0;
 }
 
@@ -312,7 +338,7 @@ static void open_path(const char *path, int focus) {
             pl_n = 0; pl_cur = -1;
             music_halt();
             playing = audio_pcm_ok();
-            if (playing && !push_chunk()) playing = 0;
+            if (playing && !prime_chunk()) playing = 0;
         }
     }
     if (win) { if (focus) gui_open(win); else gui_show_unfocused(win); }
@@ -337,20 +363,20 @@ void media_toggle(void) {
         uint32_t audible = media_position_ms();
         playing = 0;
         release_device();
-        wav_seek_ms(&trk, audible);
+        snd_seek_ms(&trk, audible);
         return;
     }
     if (!audio_pcm_ok()) { problem = "no PCM audio device"; return; }
     music_halt();
     playing = 1;
-    if (wav_done(&trk)) wav_seek_ms(&trk, 0);
-    if (!push_chunk()) playing = 0;
+    if (snd_done(&trk)) { snd_seek_ms(&trk, 0); drained = 0; }
+    if (!prime_chunk()) playing = 0;
 }
 
 void media_stop(void) {
     playing = 0;
     release_device();
-    if (have) wav_seek_ms(&trk, 0);
+    if (have) snd_seek_ms(&trk, 0);
 }
 
 int media_skip(int delta) {
@@ -365,13 +391,13 @@ int media_select(int i) { return load_index(i); }
 
 void media_seek_ms(uint32_t ms) {
     if (!have) return;
-    uint32_t dur = wav_duration_ms(&trk);
+    uint32_t dur = snd_duration_ms(&trk);
     if (ms > dur) ms = dur;
-    wav_seek_ms(&trk, ms);
+    snd_seek_ms(&trk, ms);
     /* Drop what the device is holding: it is the old position, and playing it
      * out first is exactly the lag that makes a seek bar feel broken. */
     release_device();
-    if (playing && !push_chunk()) playing = 0;
+    if (playing && !prime_chunk()) playing = 0;
     gui_request_redraw();
 }
 
@@ -379,14 +405,14 @@ void media_seek_ms(uint32_t ms) {
  * one chunk ahead of what has actually reached the speakers. */
 uint32_t media_position_ms(void) {
     if (!have) return 0;
-    if (!chunk_frames) return wav_position_ms(&trk);
+    if (!chunk_frames) return snd_position_ms(&trk);
     uint32_t span = chunk_frames / (AUDIO_RATE / 1000u);
     uint64_t el = pit_ticks() - chunk_tick;
     if (el > span) el = span;
     return chunk_pos_ms + (uint32_t)el;
 }
 
-uint32_t    media_duration_ms(void) { return have ? wav_duration_ms(&trk) : 0; }
+uint32_t    media_duration_ms(void) { return have ? snd_duration_ms(&trk) : 0; }
 int         media_playing(void)     { return playing; }
 int         media_loaded(void)      { return have; }
 const char *media_track(void)       { return have ? name : ""; }
@@ -478,18 +504,15 @@ static void media_draw(window_t *w, int cx, int cy, int cw, int ch) {
     if (!have && problem[0]) {
         g_text(cx + 16, y, problem, COL_BAD, 1);
     } else if (have) {
-        char n1[12], n2[12];
-        utoa_small(trk.rate, n1);
-        utoa_small(trk.bits, n2);
-        strlcat(sub, n1, sizeof sub);
-        strlcat(sub, " Hz ", sizeof sub);
-        strlcat(sub, trk.channels > 1 ? "stereo " : "mono ", sizeof sub);
-        strlcat(sub, n2, sizeof sub);
-        strlcat(sub, "-bit  -  ", sizeof sub);
+        /* Whatever the file turned out to be, in its own words -- the two
+         * formats have nothing in common to tabulate (an MP3 has no bit depth
+         * and a WAV has no bitrate), so each names itself. */
+        strlcat(sub, snd_describe(&trk), sizeof sub);
+        strlcat(sub, "  -  ", sizeof sub);
         strlcat(sub, problem[0] ? problem : audio_name(), sizeof sub);
         g_text(cx + 16, y, sub, problem[0] ? COL_WARN : COL_TEXT_DIM, 1);
     } else {
-        g_text(cx + 16, y, "Open a .wav from File Explorer, or pick one below", COL_TEXT_DIM, 1);
+        g_text(cx + 16, y, "Open a .wav or .mp3 from File Explorer, or pick one below", COL_TEXT_DIM, 1);
     }
     y += 22;
 
