@@ -422,7 +422,45 @@ which of these it is rather than failing quietly.
 - [x] 97. GUI log viewer: this boot's ring, earlier boots and the crash log,
         tagged and scrollable
 - [x] 98. QEMU regression suite runnable headless
-- [ ] 99. Fuzzers for the network stack and the HTML/CSS/JS parsers
+- [x] 99. Fuzzers for the network stack and the HTML/CSS/JS parsers. Three
+        harnesses over the shipping sources (`test/host/fuzz{web,net,tcp}.c`,
+        23 targets, `test/t_fuzz.py`, about a minute). This toolchain has
+        neither libFuzzer nor AddressSanitizer, so both halves are written out:
+        a corpus-driven mutator, and a kmalloc with redzones, poison, a
+        quarantine, leak counting and a switch that makes allocation start
+        failing partway through a parse. clang's `-fsanitize-trap` needs no
+        runtime library and supplies the rest.
+        Fourteen bugs, every one of them reachable from a web page or from the
+        network:
+          * `dechunk()` clamped a chunk with `r + sz > len`, which wraps -- a
+            chunk header of `FFFFFFF0` handed `memmove` a four-gigabyte count
+            off a 64 KB buffer. Any server could send it
+          * both Content-Encoding sniffers loaded `p[1]..p[6]` before checking
+            `p[0]` was not the terminator: six bytes past a stack array, on
+            every response. They are one `strcasestr` each now
+          * sixteen half-open SYNs took every listening port on the machine off
+            the network until it rebooted -- one table, no aging. Stale,
+            unclaimed slots are reclaimed when the table is full now
+          * `car25519()` left-shifted a negative limb, which is undefined, on
+            every X25519 key exchange the machine has ever done
+          * an `<img>` run left `html_run.elid` uninitialised, and
+            `getElementById` `strcmp`s it in ring 0
+          * unbounded recursion in a page's script ran the kernel stack out;
+            there is a stack budget now, and `eval()`'s frame went from 584
+            bytes to 40 because the two call cases were carrying a 512-byte
+            argument vector through every node in the tree
+          * `INT64_MIN / -1` in a script was a #DE in ring 0
+          * `display:` followed by ninety spaces read past its own 96-byte
+            buffer
+          * signed overflow in eight decimal accumulators -- the HTTP status
+            code, Content-Length, a URL's port, `atoi`, a CSS length, a colour
+            component, a JS numeric literal, and JS arithmetic
+          * three bump arenas whose `mem[]` sat at offset 12, so every DOM
+            node, layout box and JS value in the system was 4 mod 8
+          * four allocation-failure paths in the JS engine that wrote through
+            the null they had just been handed
+        Each of those has its input kept in `test/corpus/`, replayed unmutated
+        before every run
 - [x] 100. User guide (GUIDE.md: install, daily use, troubleshooting, and an
         honest list of what the OS cannot do) and developer guide
         (DEVELOPING.md: the on-machine toolchain, projects, debugging,

@@ -242,16 +242,26 @@ static void hsl_to_rgb(int h, int s, int l, int *R, int *G, int *B) {
 
 /* read an int; supports trailing '%' (scaled 0..100 -> 0..255 when pct!=0). p
  * advanced past the number. */
+/* Digits, with a ceiling. Same reason as the twin in kernel/layout.c: a
+ * number in a stylesheet is attacker-supplied and `v = v*10 + d` in a loop is
+ * signed overflow as soon as it is a long one. */
+#define HCSS_NUM_MAX 100000
+static int dec_run(const char **pp) {
+    const char *p = *pp; int v = 0, any = 0;
+    for (; *p >= '0' && *p <= '9'; p++) { any = 1; if (v <= HCSS_NUM_MAX) v = v*10 + (*p - '0'); }
+    *pp = p;
+    return any ? (v > HCSS_NUM_MAX ? HCSS_NUM_MAX : v) : -1;
+}
+
 static int read_num(const char **pp, int as_pct_of_255) {
     const char *p = *pp;
     while (*p == ' ' || *p == ',' || *p == '\t') p++;
     int neg = 0; if (*p == '-') { neg = 1; p++; } else if (*p == '+') p++;
-    int v = 0, any = 0;
-    while (*p >= '0' && *p <= '9') { v = v*10 + (*p - '0'); p++; any = 1; }
+    int v = dec_run(&p);
     if (*p == '.') { p++; while (*p >= '0' && *p <= '9') p++; }   /* drop fraction */
     int pct = 0; if (*p == '%') { pct = 1; p++; }
     *pp = p;
-    if (!any) return -1;
+    if (v < 0) return -1;
     if (neg) v = -v;
     if (pct && as_pct_of_255) v = v * 255 / 100;
     return v;
@@ -383,10 +393,10 @@ static int cls_has(const char *cls, const char *name) {
 static uint8_t css_fontsize_scale(const char *v) {
     while (*v == ' ') v++;
     if ((*v >= '0' && *v <= '9') || *v == '.') {
-        int num = 0, any = 0; const char *p = v;
-        while (*p >= '0' && *p <= '9') { num = num*10 + (*p - '0'); p++; any = 1; }
+        const char *p = v; int num = dec_run(&p);
         if (*p == '.') { p++; while (*p >= '0' && *p <= '9') p++; }   /* drop fraction */
-        if (!any && *v != '.') return 0;
+        if (num < 0 && *v != '.') return 0;
+        if (num < 0) num = 0;
         if (*p == '%')                              return num >= 200 ? 3 : num >= 125 ? 2 : 1;
         if ((p[0]|32) == 'e' && (p[1]|32) == 'm')   return num >= 2   ? 3 : num >= 1   ? 2 : 1;
         return num >= 30 ? 3 : num >= 19 ? 2 : 1;   /* px / pt / unitless */
@@ -851,6 +861,14 @@ static html_doc *html_parse_impl(const char *src, uint32_t len, const char *xcss
                         r->brk = (uint8_t)pending_brk; r->kind = HRUN_IMG; r->align = CUR_ALIGN;
                         r->indent = CUR_INDENT; r->color = CUR_COLOR; r->bg = CUR_BG; r->img = d->nimgs;
                         r->iw = iw; r->ih = ih; r->pix = 0; r->name = 0; r->fscale = 0;
+                        /* The one run built by hand instead of through
+                         * push_full(), and the one field it forgot. d->runs
+                         * comes straight from kmalloc, which does not zero, so
+                         * an uninitialised elid is whatever the heap held --
+                         * and app_browser's getElementById strcmp()s it. Any
+                         * page with an <img> and a script was one stale
+                         * pointer away from a ring-0 fault. */
+                        r->elid = d->cur_id;
                         d->nimgs++; pending_brk = 0;
                     }
                 }

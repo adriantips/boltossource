@@ -72,9 +72,18 @@ char *strrchr(const char *s, int c) {
     return (char *)last;
 }
 int atoi(const char *s) {
-    int sign = 1, v = 0;
+    /* Saturating, the way strtol is specified to be. It used to be a plain
+     * v = v*10 + d, which is signed overflow the moment the digits run past
+     * ten of them -- undefined behaviour, and reachable from anywhere a number
+     * arrives from outside: <img width=4888888888888888888> is where the
+     * fuzzer found it. */
+    int sign = 1;
+    long long v = 0;
     while (*s == ' ' || *s == '\t') s++;
     if (*s == '-') { sign = -1; s++; } else if (*s == '+') s++;
-    while (*s >= '0' && *s <= '9') { v = v * 10 + (*s - '0'); s++; }
-    return v * sign;
+    for (; *s >= '0' && *s <= '9'; s++) {
+        if (v <= 2147483647LL) v = v * 10 + (*s - '0');
+    }
+    if (v > 2147483647LL) return sign < 0 ? -2147483647 - 1 : 2147483647;
+    return (int)(v * sign);
 }

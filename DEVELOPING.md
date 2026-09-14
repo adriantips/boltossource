@@ -559,6 +559,39 @@ filesystem of 64 files in an array and a clock that is a variable, because the
 case that matters — an mtime that goes backwards across a reboot — cannot be
 staged in QEMU without rebooting.
 
+### Fuzzing
+
+`test/t_fuzz.py` is the third shape: the shipping parsers, a substituted
+allocator, and inputs nobody would write on purpose. It covers the network
+stack and the browser's HTML/CSS/JS parsers — the two places where the bytes
+are chosen by someone else — and it boots no machine, because a fuzzer wants
+millions of inputs and QEMU gives you one boot a minute.
+
+```sh
+python test/t_fuzz.py                   # 23 targets, about a minute
+python test/t_fuzz.py --iters 200000    # a soak
+python test/t_fuzz.py --seed 7 web      # one harness, a different sequence
+```
+
+To add a target, write a function that takes bytes and hand `fz_main` a
+`fz_target` naming it, with a seed corpus of things that already parse. Two
+rules, both learned the hard way:
+
+- **Add the check to `fz_selftest()` first.** A harness that is not reaching
+  the code it names reports a clean run at enormous speed, which is
+  indistinguishable from a clean run that found nothing. The network harness's
+  DNS stub had its return convention backwards and every HTTP target exited
+  before parsing a byte.
+- **Do not keep state between iterations.** The guarded heap is wiped between
+  inputs, so anything held across them is read after free by the fuzzer itself
+  — and a fuzzer that reports its own bug is worse than none.
+
+When it finds something, the report names the file it saved the input to.
+Rename that file for the bug and put it in `test/corpus/<harness>/<target>/`;
+every run replays it unmutated before fuzzing anything. A name ending
+`.oomN.bin` is replayed with the heap set to start refusing after N
+allocations, which several of the saved cases need.
+
 ---
 
 ## What is not there yet
@@ -579,5 +612,12 @@ The honest list, because it determines what you can actually do:
   enums, function pointers and floating point have not.
 - **`make` has no conditionals, no `include`, no `$(wildcard)`, no parallel
   jobs.** Each is absent because nothing has wanted it yet.
+- **A script gets about thirty frames of recursion, not thousands.** BoltJS is
+  a tree-walker: it recurses into C once per node evaluated, and the thread it
+  runs on has a 64 KB kernel stack (`kernel/sched.c` `KSTACK`). Half of that is
+  the budget, checked by measuring the stack rather than counting frames, and a
+  script that goes past it gets "too much recursion" instead of taking the
+  compositor down with it. Deep enough for a page script; a long way short of a
+  real engine, which has megabytes to spend.
 
 [ROADMAP.md](ROADMAP.md) tracks all of it, with what is done and what is not.

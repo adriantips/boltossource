@@ -7,14 +7,12 @@
 #include "kheap.h"
 #include "inflate.h"
 
-/* True if a header value names gzip (case-insensitive substring match). */
-static int hv_has_gzip(const char *v) {
-    for (const char *p = v; *p; p++) {
-        if ((p[0]=='g'||p[0]=='G') && (p[1]=='z'||p[1]=='Z') && (p[2]=='i'||p[2]=='I') && (p[3]=='p'||p[3]=='P'))
-            return 1;
-    }
-    return 0;
-}
+/* True if a header value names gzip (case-insensitive substring match).
+ * This and hv_has_deflate() below were each a hand-rolled search that loaded
+ * p[1] onwards before checking p[0] was not the terminator -- so
+ * "Content-Encoding: d" read six bytes past the end of a 32-byte array on the
+ * stack. strcasestr is in libc/string_ext.c and is exactly what they meant. */
+static int hv_has_gzip(const char *v) { return strcasestr(v, "gzip") != 0; }
 
 /* Decompress a gzip body in place (via a scratch copy). Returns the new length;
  * on any failure the buffer is left untouched and the original length returned. */
@@ -30,14 +28,8 @@ static uint32_t body_gunzip(char *out, uint32_t blen, uint32_t cap) {
     return blen;
 }
 
-/* True if a header value names deflate (case-insensitive substring match). */
-static int hv_has_deflate(const char *v) {
-    for (const char *p = v; *p; p++) {
-        char a=p[0]|32,b=p[1]|32,c=p[2]|32,d=p[3]|32,e=p[4]|32,f=p[5]|32,g=p[6]|32;
-        if (a=='d'&&b=='e'&&c=='f'&&d=='l'&&e=='a'&&f=='t'&&g=='e') return 1;
-    }
-    return 0;
-}
+/* True if a header value names deflate. See hv_has_gzip above. */
+static int hv_has_deflate(const char *v) { return strcasestr(v, "deflate") != 0; }
 
 /* Inflate a Content-Encoding: deflate body in place. HTTP "deflate" is meant to
  * be zlib-wrapped (RFC 1950) but many servers send raw DEFLATE, so try raw,
@@ -182,8 +174,12 @@ static int parse_url(const char *url, char *host, uint32_t hcap, uint16_t *port,
 
     *port = *secure ? 443 : 80;
     if (*s == ':') {
+        /* Stops climbing once the number is already too big for a port, so a
+         * URL saying :80000000000000000000 is an ignored port rather than
+         * signed overflow. The URL is not ours -- it comes off a page, out of
+         * a redirect's Location header, or from a script. */
         s++; int p = 0;
-        while (*s >= '0' && *s <= '9') p = p * 10 + (*s++ - '0');
+        while (*s >= '0' && *s <= '9') { if (p < 65536) p = p * 10 + (*s - '0'); s++; }
         if (p > 0 && p < 65536) *port = (uint16_t)p;
     }
 
@@ -214,7 +210,9 @@ static int parse_status(const char *resp) {       /* "HTTP/1.x NNN ..." */
     while (*p && *p != ' ') p++;
     while (*p == ' ') p++;
     int code = 0;
-    while (*p >= '0' && *p <= '9') code = code * 10 + (*p++ - '0');
+    /* Stops climbing at four digits. A status line is three, and the alternative
+     * is signed overflow on a server that sends thirty. */
+    while (*p >= '0' && *p <= '9') { if (code < 10000) code = code * 10 + (*p - '0'); p++; }
     return code;
 }
 
@@ -258,12 +256,19 @@ static int dechunk(char *buf, uint32_t len) {
                    : (ch >= 'a' && ch <= 'f') ? ch - 'a' + 10
                    : (ch >= 'A' && ch <= 'F') ? ch - 'A' + 10 : -1;
             if (dv < 0) break;
-            sz = sz * 16 + (uint32_t)dv; r++; any = 1;
+            /* Saturating, and it matters: the clamp below used to be
+             * `r + sz > len`, which wraps when sz is near 2^32 and then does
+             * not clamp at all -- a chunk header of FFFFFFF0 handed memmove a
+             * four-gigabyte count off a 64 KB buffer. Any server could send
+             * that. The comparison is written against the space left instead,
+             * which cannot wrap. */
+            if (sz <= len) sz = sz * 16 + (uint32_t)dv;
+            r++; any = 1;
         }
         while (r < len && buf[r] != '\n') r++;     /* skip extensions + CR */
         if (r < len) r++;                          /* the \n */
         if (!any || sz == 0) break;                /* malformed or last chunk */
-        if (r + sz > len) sz = len - r;
+        if (sz > len - r) sz = len - r;
         memmove(buf + w, buf + r, sz); w += sz; r += sz;
         if (r < len && buf[r] == '\r') r++;
         if (r < len && buf[r] == '\n') r++;
@@ -384,7 +389,11 @@ int http_fetch(struct http_conn *c, const char *url, char *out, uint32_t cap,
                 if (status) *status = parse_status(out);
                 if (location) find_header(out, "Location", location, loc_cap);
                 char cl[24]; find_header(out, "Content-Length", cl, sizeof(cl));
-                if (cl[0]) { clen = 0; for (char *p = cl; *p >= '0' && *p <= '9'; p++) clen = clen*10 + (*p - '0'); }
+                /* Capped at the buffer we are reading into: a Content-Length
+                 * larger than that cannot be satisfied anyway, and letting it
+                 * climb is signed overflow on a number the server chose. */
+                if (cl[0]) { clen = 0; for (char *p = cl; *p >= '0' && *p <= '9'; p++)
+                                 if (clen <= (long)cap) clen = clen*10 + (*p - '0'); }
                 char te[32]; find_header(out, "Transfer-Encoding", te, sizeof(te));
                 for (char *p = te; *p; p++) { char a = *p; if (a>='A'&&a<='Z') a += 32;
                     if (a=='c' && (p==te || p[-1]==' ' || p[-1]==',')) { chunked = 1; break; } }

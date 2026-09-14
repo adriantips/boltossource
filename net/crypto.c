@@ -490,7 +490,13 @@ static void car25519(gf o) {
         o[i] += (1LL << 16);
         int64_t c = o[i] >> 16;
         o[(i+1) * (i < 15)] += c - 1 + 37 * (c - 1) * (i == 15);
-        o[i] -= c << 16;
+        /* Shifted as unsigned. c comes from an arithmetic right shift of a
+         * limb that A() and Z() are free to leave negative, and `c << 16` on a
+         * negative value is undefined behaviour -- not theoretical: every
+         * X25519 key exchange the machine does runs through here, and the
+         * fuzzer's very first TLS input trapped on it. Two's complement is
+         * what was meant and what the unsigned form guarantees. */
+        o[i] -= (int64_t)((uint64_t)c << 16);
     }
 }
 static void sel25519(gf p, gf q, int b) {

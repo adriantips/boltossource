@@ -10,7 +10,7 @@
 /* ----------------------------- arena ----------------------------------- */
 #define LBLK (64 * 1024)
 #define LMAX (8 * 1024 * 1024)
-typedef struct LBk { struct LBk *next; uint32_t used; uint8_t mem[LBLK]; } LBk;
+typedef struct LBk { struct LBk *next; uint32_t used; _Alignas(8) uint8_t mem[LBLK]; } LBk;  /* see kernel/dom.c */
 typedef struct { LBk *head; uint32_t total; int oom; } LAr;
 static void *la_alloc(LAr *a, uint32_t n) {
     n = (n + 7) & ~7u; if (n > LBLK) { a->oom = 1; return 0; }
@@ -38,13 +38,27 @@ static void hsl2rgb(int h, int s, int l, int *R, int *G, int *B) {
     else if(h<240){r=0;g=x;b=c;}else if(h<300){r=x;g=0;b=c;}else{r=c;g=0;b=x;}
     *R=clamp255(r+m);*G=clamp255(g+m);*B=clamp255(b+m);
 }
+/* A run of decimal digits, saturating instead of wrapping. Every one of these
+ * started out as `n = n*10 + (*p - '0')` with nothing to stop it, and
+ * `width: 99999999999px` in a stylesheet is then signed overflow -- undefined,
+ * not merely a silly number. The ceiling is far enough under INT_MAX that what
+ * happens next (n*16 for an em, v*255/100 for a percentage, -num for an fr)
+ * cannot overflow either. -1 means there were no digits at all. */
+#define CSS_NUM_MAX 100000
+static int dec(const char **pp) {
+    const char *p = *pp; int v = 0, any = 0;
+    for (; *p >= '0' && *p <= '9'; p++) { any = 1; if (v <= CSS_NUM_MAX) v = v*10 + (*p - '0'); }
+    *pp = p;
+    return any ? (v > CSS_NUM_MAX ? CSS_NUM_MAX : v) : -1;
+}
+
 static int rdnum(const char **pp, int pct255) {
     const char *p=*pp; while(*p==' '||*p==','||*p=='\t')p++;
     int neg=0; if(*p=='-'){neg=1;p++;}else if(*p=='+')p++;
-    int v=0,any=0; while(*p>='0'&&*p<='9'){v=v*10+(*p-'0');p++;any=1;}
+    int v=dec(&p);
     if(*p=='.'){p++;while(*p>='0'&&*p<='9')p++;}
     int pct=0; if(*p=='%'){pct=1;p++;}
-    *pp=p; if(!any)return -1; if(neg)v=-v; if(pct&&pct255)v=v*255/100; return v;
+    *pp=p; if(v<0)return -1; if(neg)v=-v; if(pct&&pct255)v=v*255/100; return v;
 }
 uint32_t css_color(const char *v) {
     while(*v==' ')v++;
@@ -83,16 +97,16 @@ static int css_px(const char *v) {
     while(*v==' ')v++;
     if(lc(v[0])=='a') return -1;                       /* auto */
     int neg=0; if(*v=='-'){neg=1;v++;}
-    int n=0,any=0; while(*v>='0'&&*v<='9'){n=n*10+(*v-'0');v++;any=1;}
+    int n=dec(&v);
     if(*v=='.'){v++;while(*v>='0'&&*v<='9')v++;}
-    if(!any) return -1;
+    if(n<0) return -1;
     if((v[0]|32)=='e'&&(v[1]|32)=='m') n*=16;
     if(neg)n=-n;
     return n;
 }
 static uint8_t fs_scale(const char *v) {
     while(*v==' ')v++;
-    if((*v>='0'&&*v<='9')||*v=='.'){int n=0,any=0;const char*p=v;while(*p>='0'&&*p<='9'){n=n*10+(*p-'0');p++;any=1;}if(*p=='.'){p++;while(*p>='0'&&*p<='9')p++;}if(!any)return 0;
+    if((*v>='0'&&*v<='9')||*v=='.'){const char*p=v;int n=dec(&p);if(*p=='.'){p++;while(*p>='0'&&*p<='9')p++;}if(n<0)return 0;
         if(*p=='%')return n>=200?3:n>=125?2:1; if((p[0]|32)=='e'&&(p[1]|32)=='m')return n>=2?3:n>=1?2:1; return n>=30?3:n>=19?2:1;}
     char a=v[0]|32; if(a=='x')return 3; if(a=='l')return 2; if(a=='s'||a=='m')return 1; return 0;
 }
@@ -117,12 +131,12 @@ static void parse_tracks(const char *v, int16_t out[GRID_MAX_COLS], uint8_t *nou
         if (!*p) break;
         if (ieq(p, "repeat") || (lc(p[0])=='r'&&lc(p[1])=='e'&&lc(p[2])=='p')) {
             while (*p && *p != '(') p++; if (*p=='(') p++;
-            int cnt = 0; while (*p>='0'&&*p<='9') { cnt=cnt*10+(*p-'0'); p++; }
+            int cnt = dec(&p); if (cnt < 0) cnt = 0;
             while (*p && *p != ',') p++; if (*p==',') p++;
             while (*p == ' ') p++;
             const char *ts = p; while (*p && *p != ')') p++;            /* single track in repeat */
             char tok[16]; uint32_t k=0; for (const char*q=ts;q<p&&k<15;q++) if(*q!=' ')tok[k++]=*q; tok[k]=0;
-            int val; if ((tok[0]>='0'&&tok[0]<='9')) { int num=0; const char*r=tok; while(*r>='0'&&*r<='9'){num=num*10+(*r-'0');r++;} val=((r[0]|32)=='f'&&(r[1]|32)=='r')? -num : num; }
+            int val; if ((tok[0]>='0'&&tok[0]<='9')) { const char*r=tok; int num=dec(&r); if(num<0)num=0; val=((r[0]|32)=='f'&&(r[1]|32)=='r')? -num : num; }
             else val = -1;
             for (int c=0;c<cnt && n<GRID_MAX_COLS;c++) out[n++]=(int16_t)val;
             if (*p==')') p++;
@@ -132,7 +146,7 @@ static void parse_tracks(const char *v, int16_t out[GRID_MAX_COLS], uint8_t *nou
         char tok[16]; uint32_t k=0; for(const char*q=ts;q<p&&k<15;q++)tok[k++]=*q; tok[k]=0;
         int val;
         if (ieq(tok,"auto")) val = -1;
-        else if (tok[0]>='0'&&tok[0]<='9') { int num=0; const char*r=tok; while(*r>='0'&&*r<='9'){num=num*10+(*r-'0');r++;} val = ((r[0]|32)=='f'&&(r[1]|32)=='r') ? -num : num; }
+        else if (tok[0]>='0'&&tok[0]<='9') { const char*r=tok; int num=dec(&r); if(num<0)num=0; val = ((r[0]|32)=='f'&&(r[1]|32)=='r') ? -num : num; }
         else val = -1;
         out[n++] = (int16_t)val;
     }
@@ -170,7 +184,11 @@ static void parse_decls(const char *d, uint32_t n, decls *o) {
         char *v=val; while(*v==' ')v++;
         if(ieq(prop,"color")){uint32_t c=css_color(v);if(c){o->color=c;o->set|=SET_COLOR;}}
         else if(ieq(prop,"background")||ieq(prop,"background-color")){uint32_t c=css_color(v);o->bg=c;o->set|=SET_BG;}
-        else if(ieq(prop,"display")){o->set|=SET_DISP; char a=lc(v[0]),b=lc(v[1]);
+        /* b only if there is an a: the value came out of a 96-byte buffer and v
+         * can point at its last byte, in which case v[1] is off the end of the
+         * array. `display:` followed by ninety spaces and then the word found
+         * exactly that. */
+        else if(ieq(prop,"display")){o->set|=SET_DISP; char a=lc(v[0]),b=a?lc(v[1]):0;
             o->disp = a=='n'?DISP_NONE : (a=='g')?DISP_GRID : (a=='f'&&b=='l')?DISP_FLEX : a=='i'?(ieq(v,"inline-block")?DISP_INLINE_BLOCK:DISP_INLINE) : DISP_BLOCK;}
         else if(ieq(prop,"text-align")){o->set|=SET_TA; char a=lc(v[0]); o->ta=a=='c'?TA_CENTER:a=='r'?TA_RIGHT:TA_LEFT;}
         else if(ieq(prop,"font-size")){uint8_t s=fs_scale(v);if(s){o->fs=s;o->set|=SET_FS;}}
@@ -199,8 +217,8 @@ static void parse_decls(const char *d, uint32_t n, decls *o) {
                        ieq(v,"flex-start")||ieq(v,"start")?ALIGN_START : ALIGN_STRETCH;}
         else if(ieq(prop,"gap")||ieq(prop,"grid-gap")||ieq(prop,"grid-column-gap")||ieq(prop,"row-gap")||ieq(prop,"column-gap")){int g=css_px(v);o->gap=(int16_t)(g<0?0:g);o->set|=SET_GAP;}
         else if(ieq(prop,"grid-template-columns")){parse_tracks(v,o->gcols,&o->ngcols);if(o->ngcols)o->set|=SET_GCOLS;}
-        else if(ieq(prop,"flex-grow")){int n=0;for(const char*p=v;*p>='0'&&*p<='9';p++)n=n*10+(*p-'0');o->grow=(int16_t)n;o->set|=SET_GROW;}
-        else if(ieq(prop,"flex")){int n=0,any=0;const char*p=v;while(*p==' ')p++;while(*p>='0'&&*p<='9'){n=n*10+(*p-'0');p++;any=1;}o->grow=(int16_t)(any?n:1);o->set|=SET_GROW;}
+        else if(ieq(prop,"flex-grow")){const char*p=v;int n=dec(&p);o->grow=(int16_t)(n<0?0:n>1000?1000:n);o->set|=SET_GROW;}
+        else if(ieq(prop,"flex")){const char*p=v;while(*p==' ')p++;int n=dec(&p);o->grow=(int16_t)(n<0?1:n>1000?1000:n);o->set|=SET_GROW;}
     }
 }
 
@@ -264,8 +282,7 @@ static void compute_style(dom_node *n, const computed_style *parent, lrule *rule
     intrinsic(n->tag, cs);
     /* replaced elements get an intrinsic box from width/height attrs */
     if(ieq(n->tag,"img")){ const char*w=dom_attr_get(n,"width"),*h=dom_attr_get(n,"height");
-        int wv=0,hv=0; for(const char*p=w;p&&*p>='0'&&*p<='9';p++)wv=wv*10+(*p-'0');
-        for(const char*p=h;p&&*p>='0'&&*p<='9';p++)hv=hv*10+(*p-'0');
+        int wv = w ? dec(&w) : -1, hv = h ? dec(&h) : -1;
         cs->width = wv>0?wv:120; cs->height = hv>0?hv:80; cs->display=DISP_INLINE_BLOCK; }
     else if(ieq(n->tag,"input")||ieq(n->tag,"button")||ieq(n->tag,"select")){
         if(cs->width<0)cs->width=160; if(cs->height<0)cs->height=24; cs->display=DISP_INLINE_BLOCK; cs->border[0]=cs->border[1]=cs->border[2]=cs->border[3]=1; }

@@ -40,6 +40,7 @@ struct tcp_conn {
     uint32_t      rx_head, rx_tail; /* ring indices; count = head-tail*/
     int           passive;          /* arrived on a listening port     */
     int           accepted;         /* already handed to tcp_accept    */
+    uint64_t      last_act;         /* tick of the last segment seen    */
 };
 
 #define MAX_CONNS   16          /* a server needs more than a browser did */
@@ -52,6 +53,37 @@ static uint32_t isn_seed;
  * produces is an ordinary tcp_conn, so everything downstream -- send, recv,
  * close -- is the code that already existed for the client side. */
 static uint16_t listeners[MAX_LISTEN];
+
+/* How long an unfinished, unclaimed connection may sit in the table before the
+ * slot is taken back. Only consulted when there is no free slot at all, so a
+ * quiet machine never reaps anything. */
+#define STALE_MS 30000
+
+/* Free a connection without the FIN exchange. tcp_close() does the polite
+ * version; this one is for the paths that cannot afford to pump the network
+ * stack -- notably reap_stale(), which runs from inside tcp_input(). */
+static void drop_conn(struct tcp_conn *c) {
+    for (int i = 0; i < MAX_CONNS; i++) if (conns[i] == c) conns[i] = 0;
+    if (c->rx) kfree(c->rx);
+    kfree(c);
+}
+
+/* Take back slots held by connections nobody is waiting on: a half-open
+ * passive one, or one that was established and never accepted, that has said
+ * nothing for STALE_MS. A connection tcp_accept() has handed out belongs to
+ * its caller and is never touched here, whatever state it is in. */
+static int reap_stale(void) {
+    uint64_t now = pit_ticks();
+    int freed = 0;
+    for (int i = 0; i < MAX_CONNS; i++) {
+        struct tcp_conn *c = conns[i];
+        if (!c || !c->passive || c->accepted) continue;
+        if (now - c->last_act < STALE_MS) continue;
+        drop_conn(c);
+        freed++;
+    }
+    return freed;
+}
 
 static int is_listening(uint16_t port) {
     for (int i = 0; i < MAX_LISTEN; i++) if (listeners[i] == port) return 1;
@@ -140,6 +172,8 @@ static void tcp_input_at(struct netif *nif, const netaddr *src,
 
         int slot = -1;
         for (int i = 0; i < MAX_CONNS; i++) if (!conns[i]) { slot = i; break; }
+        if (slot < 0 && reap_stale())
+            for (int i = 0; i < MAX_CONNS; i++) if (!conns[i]) { slot = i; break; }
         if (slot < 0) return;                       /* backlog full: drop the SYN */
 
         c = (struct tcp_conn *)kmalloc(sizeof(*c));
@@ -156,11 +190,13 @@ static void tcp_input_at(struct netif *nif, const netaddr *src,
         isn_seed += (uint32_t)pit_ticks() * 2654435761u + 0x9E3779B9u;
         c->snd_nxt = c->snd_una = isn_seed;
         c->state   = SYN_RCVD;
+        c->last_act = pit_ticks();
         conns[slot] = c;
         tcp_xmit(c, TCP_SYN | TCP_ACK, 0, 0);
         return;
     }
     (void)nif;
+    c->last_act = pit_ticks();
 
     uint16_t thl = (uint16_t)((h->data_off >> 4) * 4);
     if (thl < 20 || thl > len) return;
@@ -243,6 +279,8 @@ struct tcp_conn *tcp_connect_addr(const netaddr *dst, uint16_t dport, uint32_t t
 
     int slot = -1;
     for (int i = 0; i < MAX_CONNS; i++) if (!conns[i]) { slot = i; break; }
+    if (slot < 0 && reap_stale())
+        for (int i = 0; i < MAX_CONNS; i++) if (!conns[i]) { slot = i; break; }
     if (slot < 0) return 0;
 
     struct tcp_conn *c = (struct tcp_conn *)kmalloc(sizeof(*c));
@@ -427,7 +465,5 @@ void tcp_close(struct tcp_conn *c) {
         c->state = waslast ? DONE : FIN_WAIT;
         pump(400);                                    /* brief drain for the ACK/FIN */
     }
-    for (int i = 0; i < MAX_CONNS; i++) if (conns[i] == c) conns[i] = 0;
-    if (c->rx) kfree(c->rx);
-    kfree(c);
+    drop_conn(c);
 }

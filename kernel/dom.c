@@ -12,7 +12,11 @@
 /* ----------------------------- arena ----------------------------------- */
 #define DBLK (64 * 1024)
 #define DMAX (12 * 1024 * 1024)          /* runaway backstop */
-typedef struct DBlk { struct DBlk *next; uint32_t used; uint8_t mem[DBLK]; } DBlk;
+/* _Alignas because mem[] would otherwise sit at offset 12 -- next is 8 bytes,
+ * used is 4, and a uint8_t array asks for no padding of its own. Rounding
+ * the allocation size up to 8 keeps the offsets aligned relative to a base
+ * that was not, so every node in the tree came back 4 mod 8. */
+typedef struct DBlk { struct DBlk *next; uint32_t used; _Alignas(8) uint8_t mem[DBLK]; } DBlk;
 typedef struct { DBlk *head; uint32_t total; int oom; } DArena;
 
 static void *da_alloc(DArena *a, uint32_t n) {
