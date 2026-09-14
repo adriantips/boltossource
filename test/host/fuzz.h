@@ -611,7 +611,7 @@ static int fz_main(int argc, char **argv, const fz_target *targets, int ntargets
     /* Always, not only under --selftest: a run that fuzzes nothing should fail
      * rather than pass quickly. */
     fz_heap_reset();
-    if (fz_selftest() != 0) { fprintf(stderr, "FAIL selftest: the harness is not reaching its targets\n"); return 3; }
+    if (fz_selftest() != 0) { fprintf(stderr, "FAIL selftest: a check that has to hold before fuzzing does not\n"); return 3; }
     fz_heap_reset();
     if (selftest_only) { printf("ok   selftest\n"); return 0; }
 
