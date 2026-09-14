@@ -69,7 +69,7 @@ typedef struct fz_blk {
 static fz_blk  *fz_live_list;
 static uint32_t fz_serial;
 static uint64_t fz_bytes_live, fz_bytes_cap = 96u << 20;
-static uint64_t fz_alloc_calls, fz_free_calls;
+static uint64_t fz_alloc_calls;
 static fz_blk  *fz_quar[FZ_QUAR];
 static int      fz_quar_head;
 
@@ -165,7 +165,6 @@ static void fz_release(fz_blk *b) {
 
 void kfree(void *ptr) {
     if (!ptr) return;
-    fz_free_calls++;
     fz_blk *b = (fz_blk *)((uint8_t *)ptr - FZ_RED) - 1;
     if (b->state == FZ_DEAD) { fz_fail("double free of block #%u", b->serial); return; }
     if (b->state != FZ_LIVE) { fz_fail("kfree(%p) of memory the heap never handed out", ptr); return; }
@@ -387,12 +386,23 @@ __declspec(dllimport) void *__stdcall AddVectoredExceptionHandler(
     unsigned long first, long (__stdcall *handler)(fz_exc_ptrs *));
 
 static uintptr_t fz_fault_rip, fz_image_delta;
+static void fz_save_case(const char *why);       /* defined below */
 
 static long __stdcall fz_vectored(fz_exc_ptrs *ep) {
     unsigned long c = ep->rec->code;
     if (c == 0xC0000005u || c == 0xC000001Du || c == 0xC0000094u ||
-        c == 0xC00000FDu || c == 0xC000008Cu)     /* AV, illegal insn, div0, stack, bounds */
-        fz_fault_rip = (uintptr_t)ep->rec->address;
+        c == 0xC0000095u || c == 0xC00000FDu || c == 0xC000008Cu)
+        fz_fault_rip = (uintptr_t)ep->rec->address;   /* AV, illegal insn, #DE, stack, bounds */
+
+    /* An access violation and an illegal instruction both reach the signal
+     * handlers below, because the CRT turns them into SIGSEGV and SIGILL. A
+     * divide error does not: the process dies with no report and no saved
+     * input. `INT64_MIN / -1` in a page's script is exactly that, so it is
+     * reported from here, where the exception still exists. */
+    if ((c == 0xC0000094u || c == 0xC0000095u) && fz_in_target) {
+        fz_save_case("a divide error -- a division with no representable answer");
+        _Exit(1);
+    }
     return 0;                                     /* EXCEPTION_CONTINUE_SEARCH */
 }
 
@@ -530,6 +540,13 @@ static int fz_check_failures;
     fprintf(stderr, "  selftest: %s\n", #cond); fz_check_failures++; } } while (0)
 
 static int fz_run_case(const fz_target *t, const char *path) {
+    /* A replay reproduces the recorded condition and nothing else. Left to the
+     * usual rule, one input in eight would be run with the heap refusing
+     * partway through -- so a saved regression case could pass because the
+     * allocator gave up before the bug's code was reached. --oom still says
+     * so explicitly, and several of the saved cases need it. */
+    if (fz_oom_force == -2) fz_oom_force = -1;
+
     FILE *f = fopen(path, "rb");
     if (!f) { fprintf(stderr, "cannot open %s\n", path); return 2; }
     fz_input_len = (uint32_t)fread(fz_input, 1, sizeof fz_input, f);
