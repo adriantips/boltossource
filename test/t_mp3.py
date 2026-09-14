@@ -490,10 +490,11 @@ def shell(vm, line, wait_for, timeout=90):
 
 
 def position_s(status_out):
-    """`media status`'s Position field, in seconds."""
-    m = re.search(r"Position: (\d+):(\d+)", status_out)
+    """`media status`'s Position and the track's length, both in seconds."""
+    m = re.search(r"Position: (\d+):(\d+) / (\d+):(\d+)", status_out)
     assert m, "no Position line in:\n" + status_out[-700:]
-    return int(m.group(1)) * 60 + int(m.group(2))
+    return (int(m.group(1)) * 60 + int(m.group(2)),
+            int(m.group(3)) * 60 + int(m.group(4)))
 
 
 def qemu_tests():
@@ -576,7 +577,7 @@ def qemu_tests():
             assert "State   : playing" in out, \
                 "it stopped on its own within four seconds:\n" + out[-800:]
             pos = re.search(r"Position: (\d+):(\d+)", out)
-            assert pos and int(pos.group(1)) * 60 + int(pos.group(2)) >= 3, (
+            assert pos and position_s(out)[0] >= 3, (
                 "four seconds passed and the track had not advanced past %s -- "
                 "nothing was feeding the codec:\n%s"
                 % (pos.group(0) if pos else "?", out[-800:]))
@@ -596,27 +597,39 @@ def qemu_tests():
             # and `display` each repaint the whole screen and print their state
             # back, and neither takes the keyboard away from the Terminal the
             # way switching desktops would.
-            before = position_s(out)
+            before, duration = position_s(out)
             t0 = time.time()
-            for zone, bright in (("left", 55), ("right", 100), ("max", 70),
-                                 ("top-left", 100), ("restore", 85)):
+            for zone, bright in (("left", 55), ("right", 100),
+                                 ("max", 70), ("restore", 85)):
                 shell(vm, "snap " + zone, "floating" if zone == "restore" else zone,
                       timeout=60)
                 shell(vm, "display brightness %d" % bright, "brightness", timeout=60)
             worked = time.time() - t0
             out = shell(vm, "media status", "Device  :", timeout=60)
-            after = position_s(out)
+            after, _ = position_s(out)
 
             assert "State   : playing" in out, \
                 "the track stopped while the desktop was busy:\n" + out[-800:]
-            # A second of slack for the status commands themselves, and the
-            # position only has one-second resolution either end.
-            assert after - before >= worked - 2.0, (
+            # The player repeats, so a position that went backwards wrapped
+            # rather than stalled. Adding a lap is only honest while the work
+            # took less than a lap -- past that the count is ambiguous, and the
+            # test says so rather than guessing which way.
+            assert worked < duration - 2, (
+                "the compositor work took %.0f s of a %d s track, so the "
+                "position is ambiguous. Shorten the loop or lengthen the track."
+                % (worked, duration))
+            advanced = after - before
+            if advanced < 0:
+                advanced += duration
+            # A second of slack for the status command itself, and the position
+            # has one-second resolution at each end.
+            assert advanced >= worked - 2.0, (
                 "%.0f s of compositor work passed and the track advanced %d s "
-                "(%d -> %d). The decode is not keeping up when the screen is "
-                "busy:\n%s" % (worked, after - before, before, after, out[-800:]))
+                "(%d -> %d of %d). The decode is not keeping up when the screen "
+                "is busy:\n%s"
+                % (worked, advanced, before, after, duration, out[-800:]))
             print("  ok: %d s of audio across %.0f s of snapping and repainting"
-                  % (after - before, worked))
+                  % (advanced, worked))
 
             vm.expect_absent("KERNEL PANIC")
             wav_path = vm.wav_path
