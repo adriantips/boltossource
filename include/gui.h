@@ -208,6 +208,7 @@ uint32_t media_duration_ms(void);
 int  media_playing(void);
 int  media_loaded(void);
 const char *media_track(void);            /* file name, or "" */
+const char *media_format(void);           /* "MPEG-1 Layer III, 44.1 kHz ...", or "" */
 const char *media_status(void);           /* why it will not play, or "" */
 const char *media_folder(void);           /* the folder the playlist came from */
 int  media_repeat(void);

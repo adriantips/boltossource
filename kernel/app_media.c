@@ -416,6 +416,10 @@ uint32_t    media_duration_ms(void) { return have ? snd_duration_ms(&trk) : 0; }
 int         media_playing(void)     { return playing; }
 int         media_loaded(void)      { return have; }
 const char *media_track(void)       { return have ? name : ""; }
+/* What the open file turned out to be, in the decoder's own words. There
+ * is more than one kind of sound file now, so "which one is this" is a
+ * question a player has to be able to answer. */
+const char *media_format(void)      { return have ? snd_describe(&trk) : ""; }
 const char *media_status(void)      { return problem; }
 const char *media_folder(void)      { return pl_dir; }
 int         media_repeat(void)      { return repeat; }

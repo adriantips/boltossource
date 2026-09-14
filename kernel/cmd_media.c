@@ -63,7 +63,13 @@ static void print_status(void) {
     fmt_time(media_position_ms(), pos);
     fmt_time(media_duration_ms(), dur);
 
+    /* Order matters here in a way that is not obvious: test/t_media.py waits
+     * for the Device line as its end-of-output marker and reads the fields out
+     * of what it has. A field added *after* Device would be printed after that
+     * test had already stopped reading -- which passes locally and fails under
+     * load, in somebody else's test. New fields go above it. */
     kprintf("Track   : %s\n", t[0] ? t : "(none)");
+    if (media_format()[0]) kprintf("Format  : %s\n", media_format());
     kprintf("Folder  : %s\n", media_folder());
     kprintf("State   : %s\n", media_playing() ? "playing"
                             : (media_loaded() ? "paused" : "stopped"));
