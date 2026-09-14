@@ -2,8 +2,9 @@ name: ci
 
 # Every push and every pull request. The point of this file is that the part of
 # the suite which needs no machine runs on every change rather than when
-# somebody remembers -- roughly two minutes for the fuzzers plus eleven
-# host-only tests, against forty for the QEMU half.
+# somebody remembers. Three minutes on the machine this was written on -- 54 s
+# for the fuzzers and two minutes for the eleven host-only tests -- against
+# forty for the QEMU half. A hosted runner will differ; the ratio will not.
 on:
   push:
   pull_request:
