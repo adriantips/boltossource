@@ -599,11 +599,17 @@ def qemu_tests():
             # way switching desktops would.
             before, duration = position_s(out)
             t0 = time.time()
+            # What each command is waited on for is not the obvious string.
+            # The Terminal echoes what is typed, so waiting for "left" after
+            # `snap left` matches the echo and returns before the command has
+            # run; and `display brightness` prints "bright", not "brightness".
+            # Both markers below appear only in the output: "snap:" prefixes
+            # every line snap emits, and "modes" is the last line display
+            # prints, which makes it an end-of-output marker as well.
             for zone, bright in (("left", 55), ("right", 100),
                                  ("max", 70), ("restore", 85)):
-                shell(vm, "snap " + zone, "floating" if zone == "restore" else zone,
-                      timeout=60)
-                shell(vm, "display brightness %d" % bright, "brightness", timeout=60)
+                shell(vm, "snap " + zone, "snap:", timeout=60)
+                shell(vm, "display brightness %d" % bright, "modes", timeout=60)
             worked = time.time() - t0
             out = shell(vm, "media status", "Device  :", timeout=60)
             after, _ = position_s(out)
