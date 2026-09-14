@@ -195,7 +195,7 @@ SRCS=(
     kernel/cpp.c kernel/ccbuild.c kernel/cmd_cc.c kernel/cmd_build.c kernel/cmd_vcs.c kernel/boltpy.c kernel/cmd_python.c kernel/boltcc.c kernel/js.c kernel/cmd_js.c
     fs/ramfs.c fs/fat32.c fs/ext2.c
     drivers/keyboard.c drivers/framebuffer.c drivers/gpu.c drivers/mouse.c drivers/ata.c drivers/ahci.c drivers/nvme.c drivers/xhci.c drivers/usbstor.c drivers/pcspk.c drivers/audio.c drivers/ac97.c drivers/hda.c mm/pmm.c mm/vmm.c mm/kheap.c mm/dma.c
-    kernel/wav.c kernel/cmd_libctest.c kernel/mixer.c kernel/cmd_mixer.c kernel/app_mixer.c kernel/cmd_mic.c kernel/cmd_usb.c
+    kernel/wav.c kernel/mp3.c kernel/sound.c kernel/cmd_libctest.c kernel/mixer.c kernel/cmd_mixer.c kernel/app_mixer.c kernel/cmd_mic.c kernel/cmd_usb.c
 )
 # The freestanding C library. Built with -fno-math-errno/-fno-trapping-math so the
 # compiler lowers __builtin_sqrt &c. to bare SSE instructions instead of an
