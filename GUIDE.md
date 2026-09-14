@@ -367,6 +367,7 @@ Two things to know, because a vault you misunderstand is worse than none:
 ```sh
 poweroff        # commit everything, mark the filesystem clean, then power off
 reboot          # the same, then restart
+suspend         # sleep to RAM, keeping everything open, and wake where you left off
 ```
 
 Use these rather than holding the power button. They flush the filesystem and
@@ -374,6 +375,21 @@ mark it clean, which is what lets the next boot skip the consistency check.
 
 Pulling the power is *safe* — BoltOS is built to survive it — but it costs the
 next boot an `fsck`, and it can lose the last thing you did.
+
+`suspend` is the different one. It does not shut down: the memory stays
+refreshed and everything else powers off, so your windows, your shell and your
+open files are all still there when you wake it — with a key, the power button,
+or the lid. It commits the filesystem first, because a sleeping machine that
+loses power has lost whatever was only in RAM, which is the whole filesystem
+tree. It does *not* mark it clean, because as far as the next boot is concerned
+this machine never stopped running.
+
+Two things to know before you rely on it. The machine comes back on one CPU
+core — the others need a restart signal nothing sends yet, which costs you
+nothing in practice but is true. And a suspended machine is still a machine
+running on its battery: it is a lunch break, not a way to leave it in a drawer
+for a week. `power status` will tell you whether this machine offers S3 at all,
+and how many times you have woken it since it booted.
 
 ---
 
@@ -465,7 +481,6 @@ Being straight about this is more useful than a feature list:
   but the only radio it can bind to today is the built-in one (`wifi radio on`),
   which has no PHY and bridges the wired interface. A real card needs a driver
   behind `struct wifi_radio`; nothing above it would change.
-- **No suspend or resume.**
 - **No battery reading, and brightness is a software dimmer.** `display
   brightness 60`, or the slider in the tray's quick settings, works and is
   real -- but it scales the pixels on their way to the panel rather than
