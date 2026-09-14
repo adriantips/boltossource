@@ -1533,6 +1533,12 @@ static uint32_t pull(mp3_t *m, int16_t *out, uint32_t frames, int budget) {
             m->posf -= (uint64_t)old << 16;
             continue;
         }
+        /* Interpolating reads one frame past idx, and idx runs to
+         * nat_frames - 1, so this reads nat_frames. That is in bounds by
+         * construction rather than by luck: nat holds 1152 + 1 frames laid out
+         * as [carry][the frame], the carry being the previous MPEG frame's last
+         * sample, so the lookahead always lands on a real one. See the note on
+         * `nat` in struct mp3 for why the stream comes out a sample late. */
         uint32_t frac = (uint32_t)(m->posf & 0xFFFF);
         const int16_t *a = m->nat + idx * 2;
         const int16_t *b = a + 2;
