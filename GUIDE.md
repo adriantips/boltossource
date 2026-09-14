@@ -465,10 +465,18 @@ Being straight about this is more useful than a feature list:
   but the only radio it can bind to today is the built-in one (`wifi radio on`),
   which has no PHY and bridges the wired interface. A real card needs a driver
   behind `struct wifi_radio`; nothing above it would change.
-- **No suspend or resume**, and no battery or brightness control. On a laptop it
-  runs at full brightness until the battery is flat.
-- **No USB mass storage.** USB keyboards and mice work; USB drives do not appear
-  in File Explorer.
+- **No suspend or resume.**
+- **No battery reading, and brightness is a software dimmer.** `display
+  brightness 60`, or the slider in the tray's quick settings, works and is
+  real -- but it scales the pixels on their way to the panel rather than
+  turning the backlight down, so it saves no power. A battery's charge on a PC
+  comes from running a method in the firmware, and there is no interpreter for
+  those yet: the machine can tell you whether a battery exists, not how full it
+  is.
+- **A USB drive has to be there before you boot.** Sticks work -- they appear
+  in File Explorer, `usb` lists and mounts them, and the installer can write to
+  one -- but the bus is enumerated once, at startup. Plugging one in afterwards
+  does nothing until you restart.
 - **No printing.**
 - **IPv6 works, but nothing hands out a resolver over it.** The machine
   addresses itself, finds its router, and opens TCP connections over v6 --
@@ -476,11 +484,14 @@ Being straight about this is more useful than a feature list:
   cannot yet do is find a *name server* over v6: that address still comes from
   DHCP, so on a network with no IPv4 at all, addresses you type work and names
   you type do not.
-- **Sound plays; nothing records.** Intel HD Audio and AC'97 are both driven,
-  and the Media player plays WAV files. There is no microphone input, no volume
-  mixer beyond the one master level, and no MP3 or any other compressed format
-  -- a `.wav` is the only kind of sound file the machine can open.
-- **No disk encryption.** Anyone who can take the disk out can read it.
+- **No MP3, or any other compressed sound format.** A `.wav` is the only kind
+  of sound file the machine can open. Everything else about the audio path is
+  there: both codecs, a five-channel mixer with real mutes, and recording
+  (`mic rec`, or the Listen button on the mixer's capture column).
+- **No full-disk encryption.** There is an encrypted directory (`vault`), with
+  its own password, sealed again whenever you lock the screen, log out or shut
+  down. Everything outside it is plain on the disk, and anyone who can take the
+  disk out can read that.
 - **Nothing is upgradable in place.** A newer BoltOS means reinstalling.
 
 If any of those matters to you, BoltOS is not the machine's only operating
