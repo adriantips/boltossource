@@ -399,10 +399,24 @@ int fz_selftest(void) {
     FZ_CHECK(rc == 0);
     FZ_CHECK(!strcmp(self_log, "7"));
 
-    /* And that the recursion guard added in kernel/js.c actually stops, rather
-     * than the process dying the way it used to. */
+    /* The recursion guard in kernel/js.c has to stop a runaway script rather
+     * than let the process die the way it used to -- and it has to leave room
+     * for one that is merely recursive. Twelve frames is more than the
+     * fibonacci in the corpus needs, and this is the tighter of the two builds
+     * the file is compiled for: the host frames are fatter than the kernel's.
+     * If this ever starts failing, JS_STACK_BUDGET is too small or somebody
+     * has put a large local back into eval(). */
     rc = js_run("function f(n){ return f(n+1); } f(0);", 36, &h, err, sizeof err);
     FZ_CHECK(rc == -1);
+    FZ_CHECK(!strcmp(err, "too much recursion"));
+
+    self_log[0] = 0;
+    static const char deep[] =
+        "function d(n){ if (n <= 0) return 0; return 1 + d(n-1); }"
+        " console.log('' + d(12));";
+    rc = js_run(deep, (uint32_t)(sizeof deep - 1), &h, err, sizeof err);
+    FZ_CHECK(rc == 0);
+    FZ_CHECK(!strcmp(self_log, "12"));
 
     return fz_check_failures ? -1 : 0;
 }
