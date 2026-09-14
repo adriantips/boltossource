@@ -199,8 +199,8 @@ Twenty-six of them, all in the Start menu. The ones you are most likely to want:
 - Settings — themes, resolution, wallpaper, fonts.
 - Security — the lock timer, the firewall, and the account list.
 - Network — the Wi-Fi networks in range, and what it takes to join one.
-- Media — plays sound files. Open a `.wav` from File Explorer, or open the
-  app and pick one: the folder it came out of becomes the playlist, and it
+- Media — plays sound files. Open a `.wav` or `.mp3` from File Explorer, or open
+  the app and pick one: the folder it came out of becomes the playlist, and it
   moves on to the next track by itself. It keeps playing while you do something
   else -- minimise it, switch desktop, lock the screen, it carries on.
 - Photos, Music, Paint, Sheets, Calendar, Contacts, Calculator, Clock, and a
@@ -484,10 +484,11 @@ Being straight about this is more useful than a feature list:
   cannot yet do is find a *name server* over v6: that address still comes from
   DHCP, so on a network with no IPv4 at all, addresses you type work and names
   you type do not.
-- **No MP3, or any other compressed sound format.** A `.wav` is the only kind
-  of sound file the machine can open. Everything else about the audio path is
-  there: both codecs, a five-channel mixer with real mutes, and recording
-  (`mic rec`, or the Listen button on the mixer's capture column).
+- **No compressed sound format other than MP3.** `.wav` and `.mp3` are what
+  the machine opens; AAC, Ogg Vorbis, FLAC and Opus are not there. Everything
+  else about the audio path is: both codecs, a five-channel mixer with real
+  mutes, and recording (`mic rec`, or the Listen button on the mixer's capture
+  column).
 - **No full-disk encryption.** There is an encrypted directory (`vault`), with
   its own password, sealed again whenever you lock the screen, log out or shut
   down. Everything outside it is plain on the disk, and anyone who can take the

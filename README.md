@@ -20,7 +20,8 @@ honest account of what it cannot do yet.
 > NVMe / AHCI SATA disks (HDD/SSD) behind a VFS and generic block layer, **EXT2
 > and FAT32** standard filesystem support, hardware interrupts, keyboard and
 > mouse drivers, an **xHCI USB** host-controller driver with **HID** support,
-> **Intel HDA + AC97 audio** drivers, an interactive shell, a dual-stack
+> **Intel HDA + AC97 audio** drivers with **WAV and MP3** playback, an
+> interactive shell, a dual-stack
 > **IPv4 + IPv6 TCP/UDP/TLS 1.2+1.3 network stack** (Neighbour Discovery and
 > SLAAC, X.509 certificate verification, **DHCP**, persistent configuration, a
 > DNS cache and an **SNTP** clock)
@@ -320,11 +321,11 @@ Bundled apps (34):
   pass/block counters) and the account list
 - Logs — this boot's kernel ring, what survived earlier boots, and the
   crash log, in one scrollable window
-- Media — a WAV player: the folder a track came from is the playlist, the
-  level meter is drawn from the samples on their way to the codec, and playback
-  is fed from the compositor's main loop rather than the window's tick, so it
-  keeps playing while the window is minimised, on another desktop, or while the
-  session is locked
+- Media — a WAV and MP3 player: the folder a track came from is the playlist,
+  the level meter is drawn from the samples on their way to the codec, and
+  playback is fed from the compositor's main loop rather than the window's tick,
+  so it keeps playing while the window is minimised, on another desktop, or
+  while the session is locked
 - Calculator, Clock, Stopwatch, Calendar, Notes (saved to FS)
 - Paint, Color Picker, Piano (PC-speaker, zoomable multi-octave)
 - System Info, Matrix rain
@@ -714,9 +715,55 @@ system sounds are generated at build time by `mkwav.py` and seeded to
 `/usr/share/sounds` in two deliberately different shapes (22 kHz mono 8-bit,
 44.1 kHz stereo 16-bit), so between them they exercise every conversion.
 
+### MP3
+
+`kernel/mp3.c` is a from-scratch MPEG-1/2/2.5 Layer III decoder: frame headers
+and side information, the bit reservoir (a granule routinely starts in the frame
+*before* the one carrying its header), Huffman decoding over the standard's 32
+codebooks, requantisation, mid/side and intensity stereo, short-block reordering,
+alias reduction, the 36- and 12-point IMDCTs with all four window shapes, and the
+polyphase synthesis filterbank. Like `wav.c` it is also the resampler, because
+the codecs are fixed at 48 kHz and an MP3 is 8 to 48.
+
+The constants are the standard's and are not retyped: Table B.7's Huffman
+codebooks, B.8's scalefactor band boundaries and B.3's synthesis window are read
+out of binaries that already carry them and checked for completeness — every
+codebook must be a complete prefix code — before the decoder is allowed near
+them, because a mistyped codeword shows up as noise rather than as an error
+anywhere. The window is 257 integers plus a sign that flips every 32 taps; the
+IMDCT bases, window shapes, alias coefficients and requantisation powers are all
+generated from `sin`/`cos`/`pow` at first use, which is why 1500 lines covers it.
+
+Floating point in the kernel is fine here: the build is `-msse -msse2` and
+`sched.c` already `fxsave`s the SSE state on every switch.
+
+**How it is known to be right.** LAME encodes known audio, `mpg123` decodes it,
+`kernel/mp3.c` decodes it, and `test/t_mp3.py` diffs the two sample for sample
+across 25 files — every sampling rate MPEG-1, MPEG-2 and MPEG-2.5 define,
+constant and variable bitrate, mono through dual channel, and clicks, because
+short blocks are what clicks are for. The worst case is 84 dB and one LSB, which
+is two float pipelines rounding in different places. Three real defects came out
+of that: the synthesis window's printed table is read *down its columns*
+(`D[32c + r]`, not `D[16r + c]`) and reading it along the rows puts the filter's
+peak on every sixteenth tap; `mode_extension` is per frame and an encoder turns
+mid/side on and off as the music changes, so reading it once out of the first
+header un-matrixes frames that were never matrixed; and MPEG-2's scalefactor
+partitions count scalefactors rather than bands, which takes three times the bits
+and is then papered over by the count1 region filling whatever is left.
+
+Not implemented, said out loud rather than discovered: free-format streams, and
+MPEG-2 intensity stereo, for which no encoder here can produce a file to test
+against.
+
+`kernel/sound.c` is the seam the players see (`include/sound.h`): open a path,
+get 48 kHz stereo, seek, close, without knowing which decoder answered. The
+format is decided from the bytes and not the name.
+
+### The Media player
+
 The Media player (`kernel/app_media.c`) is what makes that usable. `play`
 holds the calling thread until the last sample is gone, which is fine for a test
-and no good for music; the player decodes half a second at a time and is fed
+and no good for music; the player hands over half a second at a time and is fed
 from `media_pump()` at the top of the compositor's main loop. That placement is
 the design: the loop wakes on every timer interrupt, so the handover from one
 buffer to the next costs about a millisecond rather than the 150 ms a window
@@ -725,7 +772,13 @@ while its window is minimised, while another desktop is showing, while the
 session is locked and while a ring-3 program owns the panel. The folder a track
 came out of is its playlist and it advances on its own; the level meter is
 measured from the PCM on its way to the device, so a silent passage shows
-silence. `media` is the same transport from a prompt — `media open FILE`,
+silence. That half second is not *decoded* in one go, and MP3 is why: a WAV
+costs a multiply a sample, while twenty MPEG frames in one pass of the loop is a
+dropped frame of compositing you can see. The buffer is filled one decoder step
+at a time — about 26 ms of audio per pass of a loop that runs every millisecond
+— while the codec is still playing the last one.
+
+`media` is the same transport from a prompt — `media open FILE`,
 `play`/`pause`, `next`, `seek`, `vol` — for scripts and for a session over SSH,
 and opening the player that way deliberately does not take the keyboard away
 from the shell you typed into. There is one codec and one stream: Media and
@@ -741,7 +794,9 @@ register reads back correctly. `test/t_media.py` uses the same capture to
 check the thing the player exists for: nothing is typed for six seconds, and the
 audio arriving at the sound card over the whole run is far more than the system
 sounds hold, at both of their pitches — so it was fed continuously, by something
-other than the shell, across the end of a track.
+other than the shell, across the end of a track. `test/t_mp3.py` adds the
+differential decode above, and a guest half that fetches an MP3 over the
+machine's own network stack, plays it, and checks the pitch in the capture.
 
 ## Keyboard layouts
 

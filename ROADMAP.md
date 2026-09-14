@@ -339,7 +339,28 @@ which of these it is rather than failing quietly.
         resampling, mono to stereo and 8-bit unsigned to signed, decoded
         incrementally so a track streams rather than converting in full.
         `play FILE`, and two system sounds generated at build time
-- [ ] 89. MP3 decoding
+- [x] 89. MP3 decoding: a from-scratch MPEG-1/2/2.5 Layer III decoder in
+        kernel/mp3.c -- bit reservoir, the standard's 32 Huffman codebooks,
+        requantisation, mid/side and intensity stereo, short-block reordering,
+        alias reduction, both IMDCT sizes with all four windows, and the
+        polyphase synthesis filterbank -- plus kernel/sound.c, so a player
+        opens a path and gets 48 kHz stereo without knowing which decoder
+        answered. The format comes from the bytes, not the name.
+        It is checked against a decoder nobody here wrote: LAME encodes,
+        mpg123 decodes, we decode, and test/t_mp3.py diffs the two sample for
+        sample across 25 files -- every rate the three MPEG versions define,
+        CBR and VBR, mono through dual channel, and clicks, which is the only
+        way to make an encoder emit short blocks. Worst case 84 dB, one LSB.
+        Three defects that oracle caught, none of which a listening test would
+        have localised: Table B.3 is read down its columns and not along its
+        rows, or the window's peak lands on every sixteenth tap; mode_extension
+        is per frame, and an encoder changes its mind about mid/side as the
+        music changes; and MPEG-2's scalefactor partitions count scalefactors
+        rather than bands, which the count1 region then hides by filling
+        whatever is left.
+        Not there, and stated rather than found later: free-format streams, and
+        MPEG-2 intensity stereo, which no encoder on this machine can produce a
+        file to test against
 - [x] 90. Media player app: the folder a track came from is the playlist, it
         advances by itself, and the level meter is measured from the PCM on its
         way to the codec. Fed from media_pump() at the top of the compositor
