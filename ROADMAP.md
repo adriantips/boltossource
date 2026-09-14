@@ -493,6 +493,19 @@ which of these it is rather than failing quietly.
         a misaligned arena is every well-formed document, and starving the
         connection table takes sixteen segments in a row -- so those are
         assertions in the harnesses' own selftests instead
+        **Known gap, said out loud rather than left unsaid:** kernel/mp3.c is
+        not fuzzed, and it should be. It is 1500 lines of bit-level parsing in
+        ring 0 over a whole file buffer, and the file is not one we made --
+        GUIDE.md's own workflow is to `download` an MP3 and then `play` it, so
+        it is the same trust boundary as a web page. Three parts of Layer III
+        make it worse than the line count suggests: the bit reservoir decodes
+        from a file-controlled offset backwards into a kernel buffer,
+        part2_3_length says how many bits the Huffman data occupies and nothing
+        in the format makes it agree with the frame, and codebooks 16-31 read
+        up to 13 extra bits per value and produce indices into a power table.
+        test/host/mp3.c already compiles the shipping decoder on the host with
+        only the heap stubbed, so a harness is cheap; test/seeds/mp3/ holds six
+        files that reach branches a mutator would never find on its own
 - [x] 100. User guide (GUIDE.md: install, daily use, troubleshooting, and an
         honest list of what the OS cannot do) and developer guide
         (DEVELOPING.md: the on-machine toolchain, projects, debugging,

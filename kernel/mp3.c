@@ -745,6 +745,16 @@ struct mp3 {
     int scalefac_l[2][23];
     int scalefac_s[2][13][3];
 
+    /* Scratch for the frame being decoded. These were function-level statics
+     * until it was pointed out that two threads reach this at once: the
+     * compositor calls media_pump() while a blocking `play` decodes in the
+     * shell's thread, and the preempt hook only stops the *stream*, after the
+     * decode has already happened. Two open files would have shared them in
+     * any case. Nine kilobytes to not have to think about it again. */
+    int   is[2][576];
+    float xr[2][576];
+    float sb[32];
+
     /* one decoded MPEG frame, at the file's own rate. Slot 0 carries the last
      * sample of the previous frame so the resampler can interpolate across the
      * seam; the stream therefore comes out one sample late, forever, which
@@ -1187,9 +1197,9 @@ static void synth(mp3_t *m, int ch, const float *sb, int16_t *out, int stride) {
  * and the next one tried, which is what a player should do with a file that
  * has a bad patch in the middle. */
 static uint32_t decode_frame(mp3_t *m) {
-    static int   is[2][576];
-    static float xr[2][576];
-    static float sb[32];
+    int   (*is)[576] = m->is;
+    float (*xr)[576] = m->xr;
+    float  *sb       = m->sb;
 
     int16_t carryl = m->nat_frames ? m->nat[m->nat_frames * 2 + 0] : 0;
     int16_t carryr = m->nat_frames ? m->nat[m->nat_frames * 2 + 1] : 0;

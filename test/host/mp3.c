@@ -217,6 +217,34 @@ static int dump_48k(const char *in, const char *out) {
     return 0;
 }
 
+/* Seek, then decode from there. The point is where it lands: an MP3 has no
+ * index, so seeking is arithmetic on byte offsets (or the Xing table of
+ * contents), and landing in the wrong place is the failure mode. */
+static int dump_seek(const char *in, uint32_t ms, const char *out) {
+    uint32_t len;
+    uint8_t *file = slurp(in, &len);
+    const char *err = "?";
+    mp3_t *m = mp3_open(file, len, &err);
+    if (!m) { fprintf(stderr, "mp3_open: %s\n", err); return 2; }
+
+    mp3_seek_ms(m, ms);
+    FILE *o = fopen(out, "wb");
+    int16_t pcm[4096];
+    uint32_t made = 0;
+    while (made < 48000u * 2) {                 /* two seconds is plenty */
+        uint32_t n = mp3_read(m, pcm, 2048);
+        if (!n) break;
+        fwrite(pcm, sizeof(int16_t), (size_t)n * 2, o);
+        made += n;
+    }
+    fclose(o);
+    fprintf(stderr, "asked for %u ms, decoder reports %u ms, %u frames\n",
+            ms, mp3_position_ms(m) - made * 1000 / 48000, made);
+    mp3_close(m);
+    free(file);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc >= 2 && strcmp(argv[1], "--selftest") == 0) {
         build_tables();
@@ -236,9 +264,12 @@ int main(int argc, char **argv) {
     }
     if (argc == 4 && strcmp(argv[1], "--native") == 0) return dump_native(argv[2], argv[3]);
     if (argc == 4 && strcmp(argv[1], "--48k") == 0)    return dump_48k(argv[2], argv[3]);
+    if (argc == 5 && strcmp(argv[1], "--seek") == 0)
+        return dump_seek(argv[3], (uint32_t)atoi(argv[2]), argv[4]);
 
     fprintf(stderr, "usage: mp3-host --selftest [FILE.mp3]\n"
                     "       mp3-host --native FILE.mp3 OUT.pcm\n"
-                    "       mp3-host --48k    FILE.mp3 OUT.pcm\n");
+                    "       mp3-host --48k    FILE.mp3 OUT.pcm\n"
+                    "       mp3-host --seek MS FILE.mp3 OUT.pcm\n");
     return 2;
 }
