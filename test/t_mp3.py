@@ -321,6 +321,33 @@ def seeking(exe, lame):
         print("  ok: seeks land within %.0f ms over 30 s (%s)" % (worst, what))
 
 
+def adversarial_wav(path):
+    """A real WAV whose samples contain real MPEG-1 Layer III frame headers,
+    three of them, spaced exactly one frame apart.
+
+    The accident that started this -- ordinary PCM containing a byte pair that
+    looks like a frame sync -- depended on luck and on files that are build
+    output. This is the same thing on purpose and in a file the test writes
+    itself, so the regression is guarded on a bare checkout: any classifier that
+    goes looking for frame headers before it checks for "RIFF" will claim it.
+    """
+    # 0xFF 0xFB: sync, MPEG-1, Layer III, no CRC. 0x90: 128 kbps at 44.1 kHz,
+    # no padding. 0x00: stereo, no emphasis. 144 * 128000 / 44100 = 417 bytes.
+    hdr = bytes((0xFF, 0xFB, 0x90, 0x00))
+    frame = 417
+    data = bytearray()
+    for i in range(6):
+        data += hdr
+        data += bytes(((i * 37 + j * 11) & 0x7F for j in range(frame - 4)))
+    body = bytes(data)
+
+    with open(path, "wb") as f:
+        f.write(b"RIFF" + struct.pack("<I", 36 + len(body)) + b"WAVEfmt ")
+        f.write(struct.pack("<IHHIIHH", 16, 1, 2, 44100, 44100 * 4, 4, 16))
+        f.write(b"data" + struct.pack("<I", len(body)) + body)
+    return path
+
+
 def classifying(exe, lame):
     """What snd_open() decides a file is.
 
@@ -341,21 +368,53 @@ def classifying(exe, lame):
     seeds = Path(ROOT) / "test" / "seeds" / "mp3"
     positives = sorted(seeds.glob("*.mp3")) if seeds.is_dir() else []
 
-    # Real WAVs: the build's own system sounds, plus whatever this run wrote.
-    negatives = [p for p in [Path(ROOT) / "assets" / "audio" / "chime.wav",
-                             Path(ROOT) / "assets" / "audio" / "blip.wav"] if p.exists()]
-    if lame:
-        for rate, chans, kind in ((44100, 2, "noise"), (22050, 1, "chirp"),
-                                  (48000, 2, "clicks")):
-            p = OUT / ("neg-%d-%d-%s.wav" % (rate, chans, kind))
-            make_wav(p, rate, chans, kind, secs=4.0)   # long enough to get lucky
-            negatives.append(p)
+    # The negatives this test makes for itself. Everything below them is a
+    # bonus: assets/audio/*.wav, build/ and esp/ are all gitignored build
+    # output, so on a fresh checkout -- and in the CI host job, which never runs
+    # build.sh -- they are simply absent, and a set assembled hopefully out of
+    # globs shrinks in silence and still passes. The files that exposed the bug
+    # were two large WAVs of exactly this kind, so the test carries its own now.
+    negatives = [(adversarial_wav(OUT / "neg-planted.wav"),
+                  "a WAV with real MPEG frame headers planted in its samples")]
+    for rate, chans, kind, secs in ((44100, 2, "noise", 8.0),
+                                    (48000, 2, "noise", 8.0),
+                                    (22050, 1, "chirp", 4.0),
+                                    (44100, 2, "clicks", 4.0)):
+        p = OUT / ("neg-%d-%d-%s.wav" % (rate, chans, kind))
+        make_wav(p, rate, chans, kind, secs=secs)
+        negatives.append((p, "%d Hz %s %s WAV, %.0f s" % (
+            rate, "mono" if chans == 1 else "stereo", kind, secs)))
 
-    # Everything else the machine can open, in whatever sizes the repo has.
-    for pat in ("assets/wallpapers/*.png", "assets/wallpapers/*.jpg",
-                "assets/fonts/*.ttf", "esp/*.EFI", "build/kernel.elf",
-                "kernel/mp3.c", "README.md", "iso/boltos.iso"):
-        negatives += [p for p in Path(ROOT).glob(pat) if p.is_file()][:2]
+    # And then whatever else this checkout happens to have, because the full
+    # negative set for this classifier is every other format the machine can
+    # open. Tracked files first, so CI gets them too.
+    for pat, what in (("assets/wallpapers/*.png", "PNG"),
+                      ("assets/wallpapers/*.jpg", "JPEG"),
+                      ("assets/fonts/*.ttf", "TrueType"),
+                      ("kernel/mp3.c", "C source"),
+                      ("README.md", "Markdown"),
+                      ("iso/boltos.iso", "an ISO image"),
+                      # Build output: present after build.sh, absent in CI.
+                      ("assets/audio/*.wav", "a system sound"),
+                      ("build/kernel.elf", "ELF64"),
+                      ("build/*.EFI", "PE32+"),
+                      ("esp/EFI/BOOT/*.EFI", "PE32+")):
+        for p in sorted(Path(ROOT).glob(pat))[:2]:
+            if p.is_file():
+                negatives.append((p, what))
+
+    # Before trusting the planted file as a negative, prove it is a real one.
+    # The same bytes with the 44-byte RIFF header removed have to classify as an
+    # MP3 -- if they do not, the plant failed and "it was not called an MP3"
+    # means nothing. A negative example nobody could mistake is not a test.
+    planted = negatives[0][0]
+    body = OUT / "neg-planted-body.bin"
+    body.write_bytes(planted.read_bytes()[44:])
+    bare = subprocess.run([exe, "--which", str(body)], capture_output=True, text=True)
+    assert bare.stdout.startswith("MP3"), (
+        "the planted frame headers are not convincing on their own (%s), so the "
+        "WAV built around them proves nothing about the classifier"
+        % (bare.stdout + bare.stderr).strip())
 
     assert positives, "no seeds in test/seeds/mp3 -- nothing to check the yes side with"
     for p in positives:
@@ -365,16 +424,24 @@ def classifying(exe, lame):
             % (p.name, (out.stdout + out.stderr).strip()))
 
     wrong = []
-    for p in negatives:
+    for p, what in negatives:
         out = subprocess.run([exe, "--which", str(p)], capture_output=True, text=True)
         if out.stdout.startswith("MP3"):
-            wrong.append("%s (%d bytes) -> %s" % (p.name, p.stat().st_size,
-                                                  out.stdout.strip()))
+            wrong.append("%s (%d bytes, %s) -> %s"
+                         % (p.name, p.stat().st_size, what, out.stdout.strip()))
     assert not wrong, (
         "files that are not MP3s were opened as MP3s, which is how a .wav comes "
         "out as static:\n  " + "\n  ".join(wrong))
-    print("  ok: %d MP3s and %d files of other kinds, every one classified right"
+
+    # Say what was tested, not how much. A count cannot be checked by a reader;
+    # this listing is how boltos-d8 spotted that an `esp/*.EFI` glob one
+    # directory too shallow had been matching nothing at all, in silence.
+    print("  ok: the planted headers do read as an MP3 with the RIFF header off, "
+          "and as a WAV with it on")
+    print("  ok: %d MP3s opened as MP3s, and %d files of other kinds not:"
           % (len(positives), len(negatives)))
+    for p, what in negatives:
+        print("       %-26s %9d  %s" % (p.name, p.stat().st_size, what))
 
 
 def host_tests():
@@ -406,14 +473,14 @@ def host_tests():
 
 # ---- and on the machine itself --------------------------------------------
 
-def shell(vm, line, must_contain=None, timeout=90):
-    """Run a command and wait for the prompt rather than for a fixed time --
+def shell(vm, line, wait_for, timeout=90):
+    """Type into the GUI Terminal and wait for a line, not for a fixed time --
     every fixed sleep is a guess that stops being true on a loaded machine."""
-    out = vm.run(line, timeout=timeout)
-    if must_contain:
-        assert must_contain in out, (
-            "%r never printed %r:\n%s" % (line, must_contain, out[-800:]))
-    return out
+    vm.clear()
+    vm.type(line + "\n")
+    assert vm.wait_for(wait_for, timeout=timeout), (
+        "%r never printed %r:\n%s" % (line, wait_for, vm.serial()[-900:]))
+    return vm.serial()
 
 
 def qemu_tests():
@@ -464,27 +531,21 @@ def qemu_tests():
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
 
     try:
-        # -vga none so the kernel falls back to the serial shell with the
-        # network up; see test/t_net.py, which needs the same thing.
-        # Entry 1, not the default 2: safe mode has a serial shell but brings up
-        # neither the network nor audio, which is both halves of this test. With
-        # `-vga none` a normal boot has no framebuffer to draw a desktop on, so
-        # it falls back to the serial shell with everything else running --
-        # the same trick test/t_net.py uses, for the same reason.
-        with BoltVM(name="mp3", net=True, audio="hda", wav="mp3-capture.wav",
-                    extra=["-vga", "none"]) as vm:
-            vm.reach_shell(240, "1")
-            # reach_shell's probe can leave half a line in the input buffer, so
-            # the first real command arrives with a character glued to its
-            # front. A bare Return clears it.
-            vm.key("ret")
-            time.sleep(0.5)
+        # The desktop, not the serial shell, and that is forced rather than
+        # chosen: media_pump() is called from the top of the compositor's main
+        # loop, so on a machine with no framebuffer -- `-vga none`, which is how
+        # t_net.py gets a shell with networking -- the compositor is not running
+        # and nothing would feed the codec. The GUI Terminal runs the same shell
+        # and echoes to the same serial port, so the commands are identical.
+        with BoltVM(name="mp3", net=True, audio="hda", wav="mp3-capture.wav") as vm:
+            vm.sign_in(LOGIN_USER, LOGIN_PASS, timeout=180)
+            vm.open_app("Terminal")
 
             shell(vm, "download http://10.0.2.2:%d/tone.mp3 /home/user/tone.mp3" % port,
                   "downloaded", timeout=120)
             print("  ok: the machine fetched an MP3 over its own network stack")
 
-            out = shell(vm, "media open /home/user/tone.mp3", timeout=120)
+            out = shell(vm, "media open /home/user/tone.mp3", "Device  :", timeout=120)
             m = re.search(r"(MPEG-[\d.]+) Layer III, ([\d.]+) kHz ([a-z ]+), (\d+) kbps", out)
             assert m, ("nothing reported the file as an MPEG stream:\n" + out[-800:])
             print("  ok: reported as %s Layer III, %s kHz %s, %s kbps"
@@ -498,7 +559,7 @@ def qemu_tests():
             # has moved on its own is the evidence that the incremental decode
             # keeps the codec fed -- which is the part of this that MP3 changed.
             time.sleep(4.0)
-            out = shell(vm, "media status", timeout=60)
+            out = shell(vm, "media status", "Device  :", timeout=60)
             assert "State   : playing" in out, \
                 "it stopped on its own within four seconds:\n" + out[-800:]
             pos = re.search(r"Position: (\d+):(\d+)", out)
