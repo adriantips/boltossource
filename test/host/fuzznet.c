@@ -28,6 +28,7 @@
 #include "http.h"
 #include "x509.h"
 #include "inflate.h"
+#include "crypto.h"
 #include "hw.h"
 
 /* ------------------------------------------------------- the substitutes --*/
@@ -341,8 +342,44 @@ static int unhex(const char *h, uint8_t *out, uint32_t cap, uint32_t *len) {
  * would have caught dns_resolve_addr's return convention being inverted, which
  * made every HTTP target here exit before parsing a byte and report a clean
  * run at two million inputs a second. */
+/* RFC 7748 section 6.1 (the Diffie-Hellman example) and section 5.2 (a single
+ * scalar multiplication), byte for byte. The numbers are the RFC's, which is
+ * the point: they were not produced by this code. */
+static int x25519_vectors(void) {
+    struct { const char *scalar, *point, *want; } v[] = {
+        /* 5.2: one multiplication with no special structure in either input */
+        { "a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4",
+          "e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c",
+          "c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552" },
+        /* 6.1: Alice and Bob both arrive at the same secret, from either side */
+        { "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
+          "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f",
+          "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742" },
+        { "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb",
+          "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+          "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742" },
+    };
+    int bad = 0;
+    for (unsigned i = 0; i < sizeof v / sizeof *v; i++) {
+        uint8_t sc[32], pt[32], want[32], got[32]; uint32_t n;
+        unhex(v[i].scalar, sc, sizeof sc, &n);
+        unhex(v[i].point, pt, sizeof pt, &n);
+        unhex(v[i].want, want, sizeof want, &n);
+        x25519(got, sc, pt);
+        if (memcmp(got, want, 32)) { fprintf(stderr, "  x25519 vector %u\n", i); bad++; }
+    }
+    /* And the public keys, which is the ladder against the base point. */
+    uint8_t sc[32], want[32], got[32]; uint32_t n;
+    unhex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a", sc, sizeof sc, &n);
+    unhex("8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a", want, sizeof want, &n);
+    x25519(got, sc, x25519_basepoint);
+    if (memcmp(got, want, 32)) { fprintf(stderr, "  x25519 base point\n"); bad++; }
+    return bad;
+}
+
 int fz_selftest(void) {
     fz_check_failures = 0;
+    fz_check_failures += x25519_vectors();
 
     static const char ok200[] =
         "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 28\r\n"
