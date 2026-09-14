@@ -257,6 +257,62 @@ def shipping_path(exe, lame):
         print("  ok: %d Hz in, %.2f s of 48 kHz stereo out" % (rate, frames / 48000.0))
 
 
+def seeking(exe, lame):
+    """Where a seek lands. An MP3 carries no index, so this is arithmetic on
+    byte offsets (or on a Xing table of contents), and it is approximate by
+    construction -- the bit reservoir also has to refill, which costs a frame
+    or two of audio before anything comes out. What the assertion is for is the
+    failure that matters: a seek that lands somewhere else entirely."""
+    src, mp3 = OUT / "seeksrc.wav", OUT / "seek.mp3"
+    full, part = OUT / "seekfull.pcm", OUT / "seekpart.pcm"
+    rate, secs = 44100, 30.0
+
+    # A slow chirp: no two moments sound alike, so "where did this land" has
+    # exactly one answer and a correlation can find it.
+    n = int(rate * secs)
+    a = array.array("h")
+    for i in range(n):
+        t = i / secs / rate * secs
+        f = 200 + 3000 * (i / rate) / secs
+        v = int(math.sin(2 * math.pi * f * (i / rate)) * 30000)
+        a.append(v)
+        a.append(v)
+    with wave.open(str(src), "wb") as f:
+        f.setnchannels(2)
+        f.setsampwidth(2)
+        f.setframerate(rate)
+        f.writeframes(a.tobytes())
+
+    for args, what in ((["-b", "128"], "constant bitrate, by byte offset"),
+                       (["-V", "4"], "variable bitrate, by Xing table of contents")):
+        subprocess.run([lame] + args + ["--quiet", str(src), str(mp3)], check=True)
+        subprocess.run([exe, "--48k", str(mp3), str(full)],
+                       capture_output=True, check=True)
+        ref = read_pcm(full)
+        worst = 0
+        for ms in (2000, 5000, 10000, 20000, 27000):
+            subprocess.run([exe, "--seek", str(ms), str(mp3), str(part)],
+                           capture_output=True, check=True)
+            got = read_pcm(part)
+            assert len(got) > 12000 * 2, "seeking to %d ms decoded nothing" % ms
+            # Correlate a window from 2000 frames in (past the reservoir refill)
+            # against the straight decode, over +/- 3 s of where it was asked for.
+            lo = max(0, (ms - 3000) * 48)
+            hi = min(len(ref) // 2 - 4000, (ms + 3000) * 48)
+            best = None
+            for off in range(lo, hi, 24):
+                e = sum(abs(ref[(off + i) * 2] - got[(2000 + i) * 2])
+                        for i in range(0, 2000, 5))
+                if best is None or e < best[0]:
+                    best = (e, off)
+            landed = (best[1] - 2000) / 48.0
+            worst = max(worst, abs(landed - ms))
+        assert worst < 600, (
+            "a seek was %.0f ms out (%s). Approximate is expected; this is not "
+            "approximate, it is somewhere else." % (worst, what))
+        print("  ok: seeks land within %.0f ms over 30 s (%s)" % (worst, what))
+
+
 def host_tests():
     exe = build_harness()
     lame, mpg123 = tool("lame"), tool("mpg123")
@@ -278,6 +334,7 @@ def host_tests():
         return
     differential(str(exe), lame, mpg123)
     shipping_path(str(exe), lame)
+    seeking(str(exe), lame)
 
 
 # ---- and on the machine itself --------------------------------------------

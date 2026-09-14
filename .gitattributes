@@ -3,3 +3,8 @@
 # and quietly turns every saved case into a different one that no longer
 # reproduces the bug it was kept for.
 test/corpus/**/*.bin binary
+
+# The same hazard for the seed files, which are not crashers but real MP3s: a
+# newline rewritten inside a frame is a frame that decodes to noise, and the
+# diff that did it shows nothing.
+test/seeds/**/*.mp3 binary
