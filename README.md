@@ -2487,8 +2487,9 @@ convention inverted (net/dns.c answers non-zero for success), so every HTTP
 target exited before parsing a byte and reported a clean run at two million
 inputs a second. A broken fuzzer looks exactly like a fuzzer that found nothing.
 
-Fourteen bugs so far, every one reachable from a web page or from the wire. The
-four worst:
+Eleven distinct defects so far -- more sites than that, since some of them are
+one mistake made in several places -- and every one reachable from a web page or
+from the wire. The four worst:
 
 - `dechunk()` clamped a chunk size with `r + sz > len`, which wraps. A chunk
   header of `FFFFFFF0` defeated the clamp entirely and handed `memmove` a

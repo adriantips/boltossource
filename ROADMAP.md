@@ -437,8 +437,9 @@ which of these it is rather than failing quietly.
         quarantine, leak counting and a switch that makes allocation start
         failing partway through a parse. clang's `-fsanitize-trap` needs no
         runtime library and supplies the rest.
-        Fourteen bugs, every one of them reachable from a web page or from the
-        network:
+        Eleven distinct defects, grouped by cause rather than by site -- three
+        of these bullets are one mistake made in several places. Every one of
+        them is reachable from a web page or from the network:
           * `dechunk()` clamped a chunk with `r + sz > len`, which wraps -- a
             chunk header of `FFFFFFF0` handed `memmove` a four-gigabyte count
             off a 64 KB buffer. Any server could send it
