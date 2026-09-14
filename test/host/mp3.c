@@ -18,12 +18,43 @@
 #include <assert.h>
 #include <math.h>
 
-/* kernel/mp3.c pulls in kheap.h and stdio.h for four calls between them. */
-static void *kmalloc(unsigned long long n) { return malloc((size_t)n); }
-static void kfree(void *p) { free(p); }
-#define kheap_h_stub 1
+/* The only thing either source wants from the system is a heap. Not static:
+ * kernel/sound.c is linked as its own object and needs to reach these. */
+void *kmalloc(unsigned long long n) { return malloc((size_t)n); }
+void kfree(void *p) { free(p); }
 
 #include "../../kernel/mp3.c"
+
+/* kernel/sound.c is linked in as its own object rather than included, so its
+ * statics stay its own and nothing in the shipping sources has to be renamed to
+ * suit a test. All it wants from the system is a way to read a file, which the
+ * host has; `priv` is where the VFS puts a backend handle, so that is where the
+ * FILE * goes. */
+#include "../../include/sound.h"
+#include "../../include/vfs.h"
+
+file *vfs_open(const char *path, int flags) {
+    (void)flags;
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return 0;
+    file *f = (file *)calloc(1, sizeof *f);
+    f->priv = fp;
+    return f;
+}
+int64_t vfs_read(file *f, void *buf, uint64_t len) {
+    return (int64_t)fread(buf, 1, (size_t)len, (FILE *)f->priv);
+}
+int64_t vfs_write(file *f, const void *buf, uint64_t len) {
+    return (int64_t)fwrite(buf, 1, (size_t)len, (FILE *)f->priv);
+}
+int64_t vfs_lseek(file *f, int64_t off, int whence) {
+    FILE *fp = (FILE *)f->priv;
+    fseek(fp, (long)off, whence == SEEK_END ? SEEK_END
+                       : whence == SEEK_CUR ? SEEK_CUR : SEEK_SET);
+    return ftell(fp);
+}
+void vfs_close(file *f) { fclose((FILE *)f->priv); free(f); }
+
 
 /* ---- the checks that need no reference decoder --------------------------- */
 
@@ -264,6 +295,17 @@ int main(int argc, char **argv) {
     }
     if (argc == 4 && strcmp(argv[1], "--native") == 0) return dump_native(argv[2], argv[3]);
     if (argc == 4 && strcmp(argv[1], "--48k") == 0)    return dump_48k(argv[2], argv[3]);
+    if (argc == 3 && strcmp(argv[1], "--which") == 0) {
+        /* Which decoder snd_open() hands the file to, which is a different
+         * question from what the file is and the one that decides whether a
+         * user hears their music or hears static. */
+        snd_t s;
+        const char *err = "?";
+        if (snd_open(argv[2], &s, &err) != 0) { printf("refused: %s\n", err); return 1; }
+        printf("%s | %s\n", s.kind == SND_MP3 ? "MP3" : "WAV", snd_describe(&s));
+        snd_close(&s);
+        return 0;
+    }
     if (argc == 5 && strcmp(argv[1], "--seek") == 0)
         return dump_seek(argv[3], (uint32_t)atoi(argv[2]), argv[4]);
 

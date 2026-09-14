@@ -1385,19 +1385,38 @@ static void read_vbr_header(mp3_t *m, const hdr_t *h) {
 int mp3_sniff(const void *file, uint32_t len) {
     const uint8_t *p = (const uint8_t *)file;
     if (!p || len < 4) return 0;
+
+    /* Containers that announce themselves. Layer III has no magic of its own --
+     * only an eleven-bit run of set bits somewhere in the file -- and eleven
+     * set bits turn up in ordinary PCM often enough that two of five real WAVs
+     * on this machine scanned as MP3s and would have played as static. A
+     * format that says what it is gets to say it first. */
+    if (len >= 12 && memcmp(p, "RIFF", 4) == 0) return 0;
+    if (memcmp(p, "OggS", 4) == 0 || memcmp(p, "fLaC", 4) == 0 ||
+        memcmp(p, "FORM", 4) == 0 || memcmp(p, "\x1a\x45\xdf\xa3", 4) == 0)
+        return 0;
+
     uint32_t at = id3v2_len(p, len);
     if (at) return 1;
 
-    /* No tag: insist on two headers in a row that agree, or a WAV would match
-     * on any byte pair that happened to look like a sync. */
+    /* No tag, so the only evidence is the frames themselves: three in a row,
+     * each exactly where the one before said the next would start, and all
+     * agreeing about the stream. Two was not enough. */
     for (uint32_t scan = 0; scan < 8192 && at + 4 <= len; scan++, at++) {
         hdr_t h;
         if (parse_header(p + at, len - at, &h) != 0) continue;
-        if (at + h.bytes + 4 > len) return 1;       /* one frame, and that is all */
-        hdr_t h2;
-        if (parse_header(p + at + h.bytes, len - at - h.bytes, &h2) == 0 &&
-            h2.rate == h.rate && h2.chans == h.chans)
-            return 1;
+        uint32_t off = at, agreed = 1;
+        for (int i = 0; i < 2; i++) {
+            hdr_t n;
+            uint32_t next = off + h.bytes;
+            if (next + 4 > len) { agreed = 3; break; }   /* ran out: take it */
+            if (parse_header(p + next, len - next, &n) != 0) break;
+            if (n.rate != h.rate || n.chans != h.chans || n.ver != h.ver) break;
+            off = next;
+            h = n;
+            agreed++;
+        }
+        if (agreed >= 3) return 1;
     }
     return 0;
 }
