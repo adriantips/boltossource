@@ -190,15 +190,18 @@ struct Interp {
  * eval_call 608, call_fn 96, parse_block 2160 (it carries a 256-entry array),
  * and one JS call is five or six of them -- about 1.1 KB a level. The
  * scheduler gives a thread 64 KB (kernel/sched.c KSTACK) and the compositor is
- * what lives below it, so half of that is the budget and about thirty frames
- * is what a script gets. Deep, for a page script; shallow next to a real
- * engine, and said out loud in DEVELOPING.md rather than discovered.
+ * what lives below it, so the budget is 40 KB of that -- about thirty-five
+ * frames in the kernel, about eighteen in the fatter instrumented build the
+ * fuzzer uses, and 24 KB left for whatever called in. Deep enough for a page
+ * script; a long way short of a real engine, which has megabytes to spend, and
+ * said out loud in DEVELOPING.md rather than discovered. The ring-3 browser
+ * gets 256 KB (include/proc.h USER_STACK_PGS) and is not the binding case.
  *
  * Counting frames would mean picking a number that is wrong in one of the two
  * builds this file is compiled for -- the kernel's and the ring-3 browser's.
  * Measuring the stack is right in both: remember where it was on the way in
  * and refuse to go further than the budget past it. */
-#define JS_STACK_BUDGET (32u * 1024u)
+#define JS_STACK_BUDGET (40u * 1024u)
 
 static int stack_low(Interp *I) {
     uintptr_t here = (uintptr_t)__builtin_frame_address(0);
