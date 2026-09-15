@@ -6,6 +6,16 @@
 #include "mmio.h"
 #include "string.h"
 #include "kprintf.h"
+#include "timeout.h"
+
+/* Waits, in microseconds. CAP.TO would give the controller's own declared
+ * ready timeout in 500 ms units; 20 seconds is past the largest value that
+ * field can hold, so it covers every controller without reading it. The
+ * command wait is separate and shorter: a queued NVMe command that has not
+ * completed in five seconds is not going to. */
+#define NVME_READY_US 20000000ull
+#define NVME_CMD_US    5000000ull
+
 #include "interrupts.h"
 
 /* ===========================================================================
@@ -140,7 +150,9 @@ static int submit(struct nvme_queue *q, const uint32_t cmd[16]) {
     wr32(q->sq_db, q->sq_tail);
 
     volatile uint32_t *c = q->cqes + q->cq_head * 4;
-    for (uint64_t t = 0; t < 5000000ull; t++) {
+    uint64_t deadline = now_us() + NVME_CMD_US;
+    for (;;) {
+        int expired = now_us() >= deadline;             /* clock before the CQE */
         uint32_t dw3 = c[3];
         if (((dw3 >> 16) & 1u) == q->phase) {              /* phase flipped */
             uint32_t status = (dw3 >> 17) & 0x7FFu;
@@ -154,6 +166,7 @@ static int submit(struct nvme_queue *q, const uint32_t cmd[16]) {
          * timer) wakes us, instead of burning the core on the phase bit. */
         if (nv.irq_ok && ints_on()) __asm__ volatile("hlt");
         else                        __asm__ volatile("pause");
+        if (expired) break;
     }
     kprintf("[nvme] submit timeout: sq_tail=%u cq_head=%u phase=%u dw3=%x\n",
             q->sq_tail, q->cq_head, q->phase, c[3]);
@@ -263,7 +276,7 @@ static int create_io_queues(void) {
  * ------------------------------------------------------------------------*/
 static int controller_start(void) {
     wr32(REG_CC, 0);                                     /* clear CC.EN */
-    for (uint64_t t = 0; t < 5000000ull; t++) { if (!(rd32(REG_CSTS) & CSTS_RDY)) break; }
+    wait_until(!(rd32(REG_CSTS) & CSTS_RDY), NVME_READY_US);
     if (!nv.irq_ok) wr32(REG_INTMS, 0xFFFFFFFFu);        /* polled: mask completions */
 
     wr32(REG_AQA, ((QDEPTH - 1) << 16) | (QDEPTH - 1));
@@ -273,10 +286,13 @@ static int controller_start(void) {
     /* CC: IOSQES=6 (64B), IOCQES=4 (16B), MPS=0 (4KB), CSS=0, EN=1 */
     wr32(REG_CC, (6u << 16) | (4u << 20) | (0u << 7) | CC_EN);
 
-    for (uint64_t t = 0; t < 5000000ull; t++) {
+    uint64_t deadline = now_us() + NVME_READY_US;
+    for (;;) {
+        int expired = now_us() >= deadline;
         uint32_t s = rd32(REG_CSTS);
         if (s & CSTS_CFS) { kprintf("[nvme] controller fatal status\n"); return -1; }
         if (s & CSTS_RDY) return 0;
+        if (expired) break;
     }
     kprintf("[nvme] controller not ready\n");
     return -1;

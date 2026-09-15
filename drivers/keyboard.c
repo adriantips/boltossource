@@ -4,6 +4,7 @@
 #include "keyboard.h"
 #include "keymap.h"
 #include "kbdlayout.h"
+#include "timeout.h"
 
 /* extended (0xE0-prefixed) make code -> our control-byte key code, or 0 */
 static char ext_map(uint8_t sc) {
@@ -88,13 +89,17 @@ static char ctrl_shortcut(char c) {
  *  status should not stop the boot -- the machine already survives having no
  *  keyboard, and it does not survive hanging here.
  * ------------------------------------------------------------------------*/
+/* 20 ms. The 8042 answers in microseconds when it is there at all; the point
+ * of the bound is the machine that has no controller behind these ports, where
+ * every read costs a microsecond and the old 100,000-iteration count meant a
+ * tenth of a second per access, paid on every one of them. */
+#define PS2_WAIT_US 20000ull
+
 static int ctl_wait_write(void) {
-    for (int i = 0; i < 100000; i++) if (!(inb(0x64) & 0x02)) return 0;
-    return -1;
+    return wait_until(!(inb(0x64) & 0x02), PS2_WAIT_US) ? 0 : -1;
 }
 static int ctl_wait_read(void) {
-    for (int i = 0; i < 100000; i++) if (inb(0x64) & 0x01) return 0;
-    return -1;
+    return wait_until(inb(0x64) & 0x01, PS2_WAIT_US) ? 0 : -1;
 }
 static void ctl_cmd(uint8_t c)   { if (ctl_wait_write() == 0) outb(0x64, c); }
 static void ctl_write(uint8_t v) { if (ctl_wait_write() == 0) outb(0x60, v); }

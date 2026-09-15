@@ -11,6 +11,7 @@
 #include "hpet.h"
 #include "io.h"
 #include "kprintf.h"
+#include "timeout.h"
 #include "string.h"
 
 /* Trampoline blob embedded by objcopy (kernel/ap_boot.asm -> build/ap_boot.bin). */
@@ -73,10 +74,7 @@ void ap_entry64(uint64_t idx) {
     }
 }
 
-static void udelay(uint64_t us) {
-    if (hpet_present()) hpet_delay_us(us);
-    else for (volatile uint64_t i = 0; i < us * 100; i++) __asm__ volatile("pause");
-}
+static void udelay(uint64_t us) { delay_us(us); }
 
 void smp_init(void) {
     const struct acpi_info *ai = acpi_get();

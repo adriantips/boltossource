@@ -6,6 +6,7 @@
 #include "dma.h"
 #include "string.h"
 #include "kprintf.h"
+#include "timeout.h"
 
 /* ===========================================================================
  *  AC'97 audio (Intel 82801 / QEMU AC97). Two I/O BARs: BAR0 = mixer (NAM),
@@ -282,7 +283,10 @@ const audio_dev_t *ac97_probe(void) {
 
     /* cold reset + wait for primary codec ready */
     outl((uint16_t)(a.nabm + GLOB_CNT), 0x00000002);
-    for (int t = 0; t < 1000000 && !(glob_sta() & 0x100); t++) __asm__ volatile("pause");
+    /* Each glob_sta() is a port read, about a microsecond on real silicon, so
+     * the old million-iteration bound was a second of boot spent on a codec
+     * that was never going to answer. AC'97 gives primary-codec-ready 600 ms. */
+    wait_until(glob_sta() & 0x100, 600000ull);
     nam_w(NAM_RESET, 0xFFFF);
 
     a.present = 1;

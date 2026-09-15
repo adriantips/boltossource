@@ -19,6 +19,7 @@
 #include "acpi.h"
 #include "apic.h"
 #include "hpet.h"
+#include "timeout.h"
 #include "smp.h"
 #include "pmm.h"
 #include "vmm.h"
@@ -311,6 +312,7 @@ const char *boot_mode_name(void) {
 void kmain(struct bootinfo *bi) {
     stackguard_seed();   /* before any other call, so all frames see one value */
     g_boot_flags = bi->boot_flags;
+
     serial_init();
     fb_init(bi);
     console_init();          /* paints background + taskbar, starts text console */
@@ -353,6 +355,11 @@ void kmain(struct bootinfo *bi) {
     acpi_init();     /* parse ACPI tables (RSDP/XSDT/FADT/MADT/HPET) */
 
     pit_init(1000);  kprintf("[ok] PIT @ 1000 Hz\n");
+    /* Before any device is probed, because every probe below is full of
+     * waits, and until this runs they are counted in loop iterations
+     * rather than in time. PIT channel 2 is the reference, so this needs
+     * nothing that is not already up. */
+    timeout_init();
     keyboard_init(); kprintf("[ok] PS/2 keyboard\n");
     if (fb_present()) { mouse_init((int)fb_width(), (int)fb_height()); kprintf("[ok] PS/2 mouse\n"); }
 
