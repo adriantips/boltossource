@@ -125,6 +125,7 @@ typedef struct {
 
 /* AllocateType / MemoryType */
 #define AllocateAnyPages   0
+#define AllocateMaxAddress 1
 #define AllocateAddress    2
 #define EfiLoaderData      2
 #define EfiConventionalMemory 7
@@ -152,7 +153,15 @@ struct bootinfo {
 #define BOOT_FSCK      0x00000004u
 #define BOOT_UEFI      0x00000008u
 
-struct e820 { uint64_t base, len; uint32_t type; } __attribute__((packed));
+/* 24 bytes, not 20: mm/pmm.c and stage2.asm both walk this array with a
+ * 24-byte stride, because that is what a BIOS INT 15h/E820 entry is -- the
+ * 20-byte base/len/type triple plus the ACPI 3.0 extended-attributes word.
+ * Writing it 20 bytes wide here left every entry after the first shifted,
+ * and the PMM read the resulting garbage as "3007 MiB managed, 0 MiB free".
+ * The trailing word is what makes the stride agree; bit 0 set means "this
+ * entry is valid", which is the conventional value for a synthesised map. */
+struct e820 { uint64_t base, len; uint32_t type; uint32_t acpi; } __attribute__((packed));
+_Static_assert(sizeof(struct e820) == 24, "E820 stride must match mm/pmm.c");
 
 #define KERNEL_PHYS 0x100000ull
 #define PAGE 0x1000ull
@@ -219,12 +228,56 @@ static uint32_t boot_menu(void) {
     return 0;
 }
 
+/* Everything this loader allocates has to land below 4 GiB, and the reasons are
+ * worth writing down because AllocateAnyPages does the exact opposite: EDK2
+ * satisfies it top-down from the highest free address, so on a machine with
+ * more than 4 GiB of RAM every one of these allocations lands outside the map
+ * we are about to install.
+ *
+ *   - the page tables are inherited by the kernel, and mm/vmm.c walks them
+ *     through a direct map that only covers 0..4 GiB;
+ *   - bootinfo's e820_addr is a uint32_t, so a high address truncates silently;
+ *   - the scratch buffer is the source of a `rep movsb` that runs *after* CR3
+ *     is loaded, when nothing but our own identity map exists.
+ *
+ * The UEFI test never caught any of this because it ran the VM with 4 GiB of
+ * RAM, which makes a high allocation impossible by construction. */
+#define LOADER_MAX_ADDR 0xFFFFFFFFull
+
 static uint64_t alloc_pages(UINTN n) {
-    uint64_t addr = 0;
-    if (BS->AllocatePages(AllocateAnyPages, EfiLoaderData, n, &addr) != EFI_SUCCESS) return 0;
+    /* AllocateMaxAddress takes the ceiling in the same field it returns the
+     * allocated base in. */
+    uint64_t addr = LOADER_MAX_ADDR;
+    if (BS->AllocatePages(AllocateMaxAddress, EfiLoaderData, n, &addr) != EFI_SUCCESS) return 0;
     return addr;
 }
 static void zero(void *p, UINTN n) { uint8_t *b = p; for (UINTN i = 0; i < n; i++) b[i] = 0; }
+
+/* 1 GiB pages -- CPUID.80000001H:EDX.PDPE1GB. Present on essentially anything
+ * that boots UEFI, but checked rather than assumed: guessing wrong here costs a
+ * triple fault with nothing on screen to say why. */
+static int cpu_has_1g_pages(void) {
+    uint32_t a, b, c, d;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d)
+                     : "a"(0x80000000u), "c"(0u));
+    if (a < 0x80000001u) return 0;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d)
+                     : "a"(0x80000001u), "c"(0u));
+    return (d >> 26) & 1;
+}
+
+/* Identity-map the single gigabyte containing `addr`, with a fresh PD of 2 MiB
+ * entries. Only used on a CPU with no 1 GiB page support. */
+static void map_gig(uint64_t *pdpt_i, uint64_t addr) {
+    uint64_t g = addr >> 30;
+    if (g < 4 || g >= 512 || pdpt_i[g]) return;   /* below 4 GiB is already mapped */
+    uint64_t pd = alloc_pages(1);
+    if (!pd) return;
+    uint64_t *e = (uint64_t *)pd;
+    for (uint64_t i = 0; i < 512; i++)
+        e[i] = ((g << 30) + i * 0x200000ull) | 0x83;
+    pdpt_i[g] = pd | 3;
+}
 
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
     BS  = st->BootServices;
@@ -301,6 +354,30 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
         PDPT_I[i] = (pd0 + (uint64_t)i * PAGE) | 3;
         PDPT_D[i] = (pd0 + (uint64_t)i * PAGE) | 3;
     }
+
+    /* Identity-map above 4 GiB too, with 1 GiB pages, which costs no extra page
+     * tables whatsoever.
+     *
+     * Not for the kernel's benefit -- mm/pmm.c caps itself at 4 GiB on purpose.
+     * This is for the handful of instructions after `mov %%cr3`: BOOTX64.EFI
+     * runs wherever firmware put it, firmware loads images top-down, and so on
+     * a machine with more than 4 GiB of RAM this loader's own code sits above
+     * the old map. Installing CR3 then faulted on the very next instruction
+     * fetch -- boot services already gone, nothing left that could report it,
+     * and a dead machine one line after "kernel loaded:". Legacy boot never saw
+     * it because stage2 runs at 0x8000 and always will.
+     *
+     * The low 4 GiB keep their 2 MiB entries exactly as they were: the kernel
+     * inherits these tables and mm/vmm.c walks them expecting that shape. */
+    if (cpu_has_1g_pages()) {
+        for (uint64_t i = 4; i < 512; i++)
+            PDPT_I[i] = (i << 30) | 0x83;          /* P|RW|PS */
+    } else {
+        uint64_t rsp;
+        __asm__ volatile("mov %%rsp, %0" : "=r"(rsp));
+        map_gig(PDPT_I, (uint64_t)li->ImageBase);
+        map_gig(PDPT_I, rsp);
+    }
     PDPT_K[510] = pd0 | 3;                      /* 0xFFFFFFFF80000000 -> phys 0 */
     /* fill the 4 PDs: 2048 entries of 2 MiB pages, phys 0..4 GiB */
     uint64_t *PD = (uint64_t *)pd0;
@@ -322,18 +399,25 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
     bi->boot_drive = 0xFF;                     /* no BIOS drive number here */
 
     /* get the memory map (also yields the map key for ExitBootServices) */
-    static uint8_t mmbuf[32768];
+    /* Real firmware reports a great many more descriptors than OVMF does; 32 KiB
+     * was enough for a VM and is not a margin worth trusting on a real board. */
+    static uint8_t mmbuf[65536];
     UINTN mmsize = sizeof(mmbuf), mapkey = 0, descsz = 0; uint32_t descver = 0;
     if (BS->GetMemoryMap(&mmsize, (EFI_MEMORY_DESCRIPTOR *)mmbuf, &mapkey, &descsz, &descver) != EFI_SUCCESS) {
         print("GetMemoryMap failed\n"); for (;;) {}
     }
     int ne = 0;
-    for (UINTN off = 0; off + descsz <= mmsize && ne < 256; off += descsz) {
+    /* The e820 buffer is the 3 pages following bootinfo and each entry is 24 bytes
+     * wide to match mm/pmm.c, so the real ceiling is 512 entries -- not the 256
+     * this used to stop at. A truncated map costs the kernel real memory. */
+    const int ne_max = (int)(3 * PAGE / sizeof(struct e820));
+    for (UINTN off = 0; off + descsz <= mmsize && ne < ne_max; off += descsz) {
         EFI_MEMORY_DESCRIPTOR *d = (EFI_MEMORY_DESCRIPTOR *)(mmbuf + off);
         uint32_t type = (d->Type == EfiConventionalMemory) ? 1 : 2;   /* usable vs reserved */
         e820[ne].base = d->PhysicalStart;
         e820[ne].len  = d->NumberOfPages * PAGE;
         e820[ne].type = type;
+        e820[ne].acpi = 1;              /* ACPI 3.0: entry is valid */
         ne++;
     }
     bi->e820_count = (uint32_t)ne;
@@ -345,7 +429,13 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
         /* the map changed between the two calls: retry once */
         mmsize = sizeof(mmbuf);
         BS->GetMemoryMap(&mmsize, (EFI_MEMORY_DESCRIPTOR *)mmbuf, &mapkey, &descsz, &descver);
-        BS->ExitBootServices(image, mapkey);
+        if (BS->ExitBootServices(image, mapkey) != EFI_SUCCESS) {
+            /* Boot services are still ours, so this can still be said out loud.
+             * Falling through would install CR3 with the firmware still owning
+             * the machine, and that failure is silent. */
+            print("ExitBootServices refused twice; stopping\n");
+            for (;;) {}
+        }
     }
 
     /* ---- 6. install our paging, relocate the kernel to 1 MiB, jump ---- *

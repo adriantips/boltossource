@@ -42,13 +42,22 @@ struct bootinfo {
 
 struct boot_header {
     char     magic[8];                /* BOOT_HDR_MAGIC                       */
-    uint32_t version;                 /* 1                                    */
+    uint32_t version;                 /* BOOT_HDR_VERSION                     */
     uint32_t kernel_lba;              /* first sector of kernel.bin           */
     uint32_t kernel_sectors;          /* sectors to load                      */
     uint32_t kernel_bytes;            /* exact image length                   */
     uint32_t flags;                   /* reserved                             */
-    uint32_t checksum;                /* sum32 of the first 28 bytes          */
+    uint32_t kernel_sum;              /* v2: sum32 of the padded kernel image */
+    uint32_t checksum;                /* sum32 of the first 32 bytes          */
 } __attribute__((packed));
+
+/* v1 headers exist on disks written by an older installer and still boot; they
+ * simply cannot be checked. v2 adds kernel_sum: the 32-bit sum of every dword
+ * of kernel_sectors * 512 bytes starting at kernel_lba, i.e. of the image as
+ * padded out to a whole sector. stage2 recomputes it over what actually landed
+ * at 1 MiB and refuses to jump into a mismatch, which is what turns a silently
+ * truncated USB read into a message instead of a hang. */
+#define BOOT_HDR_VERSION 2u
 
 /* Boot-time state, published by kmain (kernel/main.c). */
 uint32_t    boot_flags(void);         /* BOOT_* bitmask for this boot         */

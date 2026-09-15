@@ -46,6 +46,12 @@ VBE_SEG           equ 0x7000
 VBE_INFO_OFF      equ 0x0000          ; VbeInfoBlock  (512 bytes)
 MODE_INFO_OFF     equ 0x0200          ; ModeInfoBlock (256 bytes)
 
+; Written into both ends of the bounce buffer before every read. A BIOS
+; that reports success without moving a byte is a real thing on USB-HDD
+; emulation, and it is indistinguishable from a good read unless you look.
+POISON            equ 0x5A5AA5A5
+MAX_READ_TRIES    equ 4
+
 stage2_start:
     cli
     xor     ax, ax
@@ -56,13 +62,14 @@ stage2_start:
     sti
     mov     [boot_drive], dl
 
+    call    ser_init
     mov     si, msg_stage2
-    call    rm_print
+    call    s2_print
 
     call    enable_a20               ; BIOS, then fast gate, then i8042 -- verified
     jnc     .a20_done
     mov     si, msg_a20fail
-    call    rm_print
+    call    s2_print
     cli
     hlt
     jmp     $
@@ -70,15 +77,32 @@ stage2_start:
 
     call    boot_menu                ; normal / safe / recovery -> [boot_flags]
     call    read_bhdr                ; kernel LBA + sector count from LBA 33
+    call    grab_font                ; BIOS glyphs, while there is a BIOS
     call    do_vbe                   ; pick + set linear framebuffer
     call    do_e820                  ; memory map
     call    enter_unreal             ; flat FS/GS for >1MiB writes
     call    load_kernel              ; disk -> 1 MiB
 
+    call    recheck_a20              ; before anything trusts 1 MiB again
+
     mov     si, msg_loaded
-    call    rm_print
+    call    s2_print
+
+    call    verify_kernel            ; did the bytes actually arrive?
+    jnc     .kernel_ok
+    mov     si, msg_retry
+    call    s2_print
+    mov     word [force_chunk], 1
+    call    load_kernel
+    call    recheck_a20
+    call    verify_kernel
+    jc      kernel_bad
+.kernel_ok:
 
     call    build_paging
+
+    mov     si, msg_paged
+    call    s2_print
 
     mov     dword [BOOTINFO + 28], E820_BUF     ; bootinfo.e820_addr
     mov     eax, [boot_flags]
@@ -115,6 +139,259 @@ rm_print:
     int     0x10
     jmp     .l
 .d: ret
+
+; ---- console ---------------------------------------------------------------
+; Print DS:SI wherever it can actually be seen. While the machine is still in
+; text mode that is the BIOS teletype; once a VBE mode is set it is the linear
+; framebuffer, because int 10h output after a mode set is a coin toss -- some
+; firmware keeps rendering its console into the same buffer, some drops it on
+; the floor. Writing to both would have the two fight over the same pixels, so
+; this picks one. Everything stage2 has to say after the mode set goes through
+; here, which is the difference between a diagnosable failure and a coloured
+; rectangle.
+s2_print:
+    call    ser_print
+    cmp     byte [fb_ready], 0
+    jne     fb_print
+    jmp     rm_print
+
+; ---- COM1 ------------------------------------------------------------------
+; 115200 8N1, written straight to the UART rather than through INT 14h, which
+; is slow and which several BIOSes implement badly or not at all. On a machine
+; with no UART at all the out instructions go nowhere and the LSR reads back
+; 0xFF, so the spin below has a bound on it -- an unbounded wait for a THR
+; that will never empty would hang the boot on exactly the headless machines
+; this is meant to help.
+ser_init:
+    push    ax
+    push    dx
+    mov     dx, 0x3F9
+    xor     al, al
+    out     dx, al                   ; no interrupts, we poll
+    mov     dx, 0x3FB
+    mov     al, 0x80
+    out     dx, al                   ; DLAB on
+    mov     dx, 0x3F8
+    mov     al, 1
+    out     dx, al                   ; divisor 1 -> 115200
+    mov     dx, 0x3F9
+    xor     al, al
+    out     dx, al
+    mov     dx, 0x3FB
+    mov     al, 0x03
+    out     dx, al                   ; 8N1, DLAB off
+    mov     dx, 0x3FA
+    mov     al, 0xC7
+    out     dx, al                   ; FIFOs on, cleared
+    mov     dx, 0x3FC
+    mov     al, 0x0B
+    out     dx, al                   ; DTR + RTS + OUT2
+
+    ; Is there a UART here at all? The scratch register is the usual probe:
+    ; write a pattern, read it back, and an absent chip floats every read to
+    ; 0xFF. A 486-era 8250 has no scratch register and will be missed, which
+    ; costs that machine its boot log and nothing else.
+    mov     dx, 0x3FF
+    mov     al, 0xA5
+    out     dx, al
+    in      al, dx
+    cmp     al, 0xA5
+    sete    al
+    mov     [ser_ok], al
+    pop     dx
+    pop     ax
+    ret
+
+ser_putc:
+    cmp     byte [ser_ok], 0
+    je      .gone
+    push    ax
+    push    cx
+    push    dx
+    mov     ah, al
+    xor     cx, cx                   ; 65535 polls, then give up on it
+.wait:
+    mov     dx, 0x3FD
+    in      al, dx
+    test    al, 0x20                 ; transmitter holding register empty
+    jnz     .send
+    dec     cx
+    jnz     .wait
+    jmp     .out
+.send:
+    mov     dx, 0x3F8
+    mov     al, ah
+    out     dx, al
+.out:
+    pop     dx
+    pop     cx
+    pop     ax
+.gone:
+    ret
+
+ser_print:
+    cmp     byte [ser_ok], 0
+    je      .gone
+    push    si
+    push    ax
+.l: lodsb
+    test    al, al
+    jz      .d
+    call    ser_putc
+    jmp     .l
+.d: pop     ax
+    pop     si
+.gone:
+    ret
+
+; Ask the BIOS for its own 8x8 glyphs while there is still a BIOS to ask.
+; INT 10h AX=1130h/BH=03h hands back ES:BP -> the double-dot table, 8 bytes
+; per character. Flattening it to a linear address here is what lets the
+; framebuffer console below carry no font of its own.
+grab_font:
+    push    es
+    push    bp
+    xor     ax, ax
+    mov     es, ax
+    xor     bp, bp
+    mov     ax, 0x1130
+    mov     bh, 0x03
+    int     0x10
+    xor     eax, eax
+    mov     ax, es
+    shl     eax, 4
+    movzx   ebx, bp
+    add     eax, ebx
+    mov     [font_lin], eax
+    pop     bp
+    pop     es
+    ret
+
+fb_print:
+    pushad
+    call    enter_unreal             ; BIOS calls are free to drop the limits
+.n: lodsb
+    test    al, al
+    jz      .d
+    call    fb_putc
+    jmp     .n
+.d: popad
+    ret
+
+; One 8x8 glyph, white on the same slate the screen was cleared to. Assumes
+; the 32-bpp mode do_vbe insists on, so a pixel is one dword and a character
+; cell is 32 bytes wide.
+fb_putc:
+    pushad
+    cmp     al, 10
+    je      .nl
+    cmp     al, 13
+    je      .cr
+    cmp     al, 32
+    jb      .out                     ; ignore the other control bytes
+
+    movzx   ebx, al                  ; glyph = font_lin + char*8
+    shl     ebx, 3
+    add     ebx, [font_lin]
+
+    mov     eax, [fb_pitch]          ; pixel = fb + cy*8*pitch + cx*8*4
+    movzx   ecx, word [fb_cy]
+    shl     ecx, 3
+    mul     ecx
+    mov     edi, eax
+    movzx   eax, word [fb_cx]
+    shl     eax, 5
+    add     edi, eax
+    add     edi, [fb_base]
+
+    mov     dx, 8                    ; eight rows
+.row:
+    mov     al, [fs:ebx]
+    mov     ah, al
+    push    edi
+    mov     cx, 8                    ; eight columns, MSB first
+.col:
+    test    ah, 0x80
+    jz      .off
+    mov     dword [fs:edi], 0x00FFFFFF
+    jmp     .adv
+.off:
+    mov     dword [fs:edi], 0x00202840
+.adv:
+    add     edi, 4
+    shl     ah, 1
+    dec     cx
+    jnz     .col
+    pop     edi
+    add     edi, [fb_pitch]
+    inc     ebx
+    dec     dx
+    jnz     .row
+
+    inc     word [fb_cx]
+    mov     ax, [fb_cols]
+    cmp     ax, [fb_cx]
+    ja      .out
+.nl:
+    mov     word [fb_cx], 0
+    inc     word [fb_cy]
+    mov     ax, [fb_rows]
+    cmp     ax, [fb_cy]
+    ja      .out
+    mov     word [fb_cy], 0          ; wrap rather than scroll; stage2 is brief
+    jmp     .out
+.cr:
+    mov     word [fb_cx], 0
+.out:
+    popad
+    ret
+
+; Paint the whole visible area, so the firmware's leftover console is not
+; showing underneath our own text. Done with a plain store loop rather than
+; rep stosd because that would need ES flat, and every other routine in here
+; reloads ES as a real-mode segment whenever it feels like it.
+fb_clear:
+    pushad
+    call    enter_unreal
+    movzx   ecx, word [fb_rows]
+    shl     ecx, 3                   ; scanlines to paint
+    mov     esi, [fb_base]           ; start of the current scanline
+.line:
+    mov     edi, esi
+    movzx   ebx, word [fb_cols]
+    shl     ebx, 3                   ; columns -> pixels
+.px:
+    mov     dword [fs:edi], 0x00202840
+    add     edi, 4
+    dec     ebx
+    jnz     .px
+    add     esi, [fb_pitch]
+    dec     ecx
+    jnz     .line
+    popad
+    ret
+
+; EAX -> eight hex digits, through whichever console is live.
+print_hex32:
+    pushad
+    mov     di, hexbuf
+    mov     cx, 8
+.d: rol     eax, 4
+    mov     bl, al
+    and     bl, 0x0F
+    add     bl, '0'
+    cmp     bl, '9'
+    jbe     .p
+    add     bl, 7
+.p: mov     [di], bl
+    inc     di
+    dec     cx
+    jnz     .d
+    mov     byte [di], 0
+    mov     si, hexbuf
+    call    s2_print
+    popad
+    ret
 
 ; ---- A20 -------------------------------------------------------------------
 ; QEMU always honours the port-0x92 "fast gate", but real chipsets don't all
@@ -297,11 +574,11 @@ boot_menu:
     mov     dword [boot_flags], 4       ; BOOT_FSCK
     mov     si, msg_pick_fsck
 .say:
-    call    rm_print
+    call    s2_print
     ret
 .done:
     mov     si, msg_pick_normal
-    call    rm_print
+    call    s2_print
     ret
 
 ; Repaint the "booting in N" line in place (CR, no LF).
@@ -343,8 +620,12 @@ read_bhdr:
     jne     .done
     cmp     dword [es:di + 4], 'BHDR'    ; magic[4..7]
     jne     .done
-    cmp     dword [es:di + 8], 1         ; version
-    jne     .done
+    mov     eax, [es:di + 8]             ; version
+    test    eax, eax
+    jz      .done
+    cmp     eax, 2                       ; newer than this stage2 knows
+    ja      .done
+    mov     [hdr_ver], eax
     mov     eax, [es:di + 12]            ; kernel_lba
     test    eax, eax
     jz      .done
@@ -353,8 +634,17 @@ read_bhdr:
     test    eax, eax
     jz      .done
     mov     [kern_sectors], eax
+    ; v2 adds a sum32 of the whole padded kernel image. A v1 header still
+    ; boots -- disks written by an older installer exist -- it just cannot
+    ; be checked, which is exactly the situation v2 was added to end.
+    cmp     dword [hdr_ver], 2
+    jb      .nosum
+    mov     eax, [es:di + 28]            ; kernel_sum
+    mov     [kern_sum], eax
+    mov     byte [have_sum], 1
+.nosum:
     mov     si, msg_hdr
-    call    rm_print
+    call    s2_print
 .done:
     ret
 
@@ -376,7 +666,7 @@ do_vbe:
     mov     ax, 0x4F00
     int     0x10
     cmp     ax, 0x004F
-    jne     .done
+    jne     .no_vesa
 
     mov     ax, [es:VBE_INFO_OFF + 0x10]     ; VideoModePtr segment
     mov     [mode_seg], ax
@@ -423,7 +713,7 @@ do_vbe:
 .choose:
     mov     cx, [pref_mode]
     cmp     cx, 0xFFFF
-    je      .done
+    je      .no_mode
 
     mov     ax, VBE_SEG                      ; refresh ModeInfo for chosen mode
     mov     es, ax
@@ -431,14 +721,17 @@ do_vbe:
     mov     ax, 0x4F01
     int     0x10
     cmp     ax, 0x004F
-    jne     .done
+    jne     .no_info
+
+    mov     si, msg_vbe_set                  ; last words while text mode still shows
+    call    s2_print
 
     mov     bx, [pref_mode]                 ; set mode with LFB bit
     or      bx, 0x4000
     mov     ax, 0x4F02
     int     0x10
     cmp     ax, 0x004F
-    jne     .done
+    jne     .no_set
 
     mov     ax, VBE_SEG
     mov     es, ax
@@ -452,6 +745,52 @@ do_vbe:
     mov     [BOOTINFO + 16], eax             ; pitch (BytesPerScanLine)
     movzx   eax, byte [es:MODE_INFO_OFF + 0x19]
     mov     [BOOTINFO + 20], eax             ; bpp
+
+    ; Arm the framebuffer console with what the mode turned out to be.
+    ; Two things have to hold first: a plausible aperture (a real LFB is
+    ; always well above the 1 MiB line, and a zero or low PhysBasePtr means
+    ; the firmware filled the block in badly), and a font to draw with. If
+    ; either is missing the BIOS teletype stays the console -- worse, but
+    ; never worse than scribbling megabytes into whatever lives at a bogus
+    ; physical address.
+    mov     eax, [BOOTINFO + 0]
+    cmp     eax, 0x100000
+    jb      .done
+    cmp     dword [font_lin], 0
+    je      .done
+    mov     [fb_base], eax
+    mov     eax, [BOOTINFO + 16]
+    mov     [fb_pitch], eax
+    mov     eax, [BOOTINFO + 8]
+    shr     eax, 3
+    mov     [fb_cols], ax
+    mov     eax, [BOOTINFO + 12]
+    shr     eax, 3
+    mov     [fb_rows], ax
+    mov     word [fb_cx], 0
+    mov     word [fb_cy], 0
+    mov     byte [fb_ready], 1
+    call    fb_clear
+    mov     si, msg_banner
+    call    s2_print
+    jmp     .done
+
+; Each dead end says which one it was: on a CSM machine whose GPU has no legacy
+; VBE modes the kernel comes up headless and talks only to COM1, which looks
+; exactly like a hang unless the bootloader admits what happened.
+.no_vesa:
+    mov     si, msg_vbe_none
+    jmp     .say
+.no_mode:
+    mov     si, msg_vbe_nomode
+    jmp     .say
+.no_info:
+    mov     si, msg_vbe_noinfo
+    jmp     .say
+.no_set:
+    mov     si, msg_vbe_noset
+.say:
+    call    s2_print
 .done:
     xor     ax, ax
     mov     es, ax
@@ -521,26 +860,35 @@ load_kernel:
     mov     dword [dest_off],  KERNEL_PHYS
     mov     eax, [kern_sectors]
     mov     [remaining], eax
+    mov     word [chunk], SECTORS_PER_CHUNK
+    cmp     word [force_chunk], 0    ; set after a failed checksum
+    je      .sized
+    mov     ax, [force_chunk]
+    mov     [chunk], ax
+.sized:
+    mov     dword [dots], 0
 .loop:
     mov     eax, [remaining]
     test    eax, eax
     jz      .done
-    mov     ecx, SECTORS_PER_CHUNK
+    movzx   ecx, word [chunk]
     cmp     eax, ecx
     jae     .have
     mov     ecx, eax
 .have:
     mov     [dap_count], cx
-    mov     word [dap_off], 0
-    mov     word [dap_seg], BOUNCE_SEG
-    mov     eax, [cur_lba]
-    mov     [dap_lba], eax
-    mov     dword [dap_lba + 4], 0
-    mov     si, dap
-    mov     ah, 0x42
-    mov     dl, [boot_drive]
-    int     0x13
-    jc      .err
+    call    read_chunk
+    jc      .shrink
+
+    ; Re-establish the flat limits before every copy. An INT 13h that went
+    ; through a CSM thunk has been in and out of protected mode with our
+    ; segment registers in its hands, and a BIOS that saves and restores FS
+    ; with push/pop reloads the descriptor cache from a real-mode selector on
+    ; the way back -- silently undoing unreal mode. Doing this once before the
+    ; loop, as this used to, is only safe on firmware that happens to be
+    ; polite about it; QEMU's SeaBIOS is, which is why this never showed up in
+    ; a test. It costs a few hundred cycles per 32 KiB.
+    call    enter_unreal
     mov     esi, BOUNCE_LIN
     mov     edi, [dest_off]
     movzx   ecx, word [dap_count]
@@ -559,15 +907,189 @@ load_kernel:
     add     [dest_off], eax
     movzx   eax, word [dap_count]
     sub     [remaining], eax
+    call    progress
     jmp     .loop
+.shrink:
+    ; A BIOS that will not serve 64 sectors in one go will often serve 8, and
+    ; one that will not serve 8 will usually serve 1. Halve and try again
+    ; before declaring the medium unreadable.
+    shr     word [chunk], 1
+    jnz     .loop
+    jmp     .err
 .done:
+    cmp     byte [dotted], 0         ; close the progress line, if there was one
+    je      .quiet
+    mov     byte [dotted], 0         ; the retry pass prints its own row of dots
+    mov     si, msg_crlf
+    call    s2_print
+.quiet:
     ret
 .err:
-    mov     si, msg_diskerr
-    call    rm_print
+    mov     si, msg_readfail
+    call    s2_print
+    mov     eax, [cur_lba]
+    call    print_hex32
+    mov     si, msg_readtail
+    call    s2_print
     cli
     hlt
     jmp     .err
+
+; ---- one guarded INT 13h extended read into the bounce buffer -------------
+; Returns CF=0 only for a read that demonstrably moved data. Three separate
+; things can go wrong here and only one of them sets the carry flag:
+;
+;   * the honest failure -- CF=1, retried after an AH=00h controller reset;
+;   * the short read -- the DAP's count field is in/out and the BIOS writes
+;     back what it really transferred, so it is rewritten before every try;
+;   * the silent lie -- CF=0, count unchanged, nothing transferred. Both ends
+;     of the buffer are poisoned first so that one cannot pass for a good
+;     read. This is the one that produces a machine that boots to a coloured
+;     rectangle: stage2 completes, and 1 MiB holds whatever it held before.
+read_chunk:
+    mov     cx, [dap_count]
+    mov     [want], cx
+    mov     byte [tries], MAX_READ_TRIES
+.try:
+    call    enter_unreal
+    mov     edi, BOUNCE_LIN
+    mov     dword [fs:edi], POISON
+    movzx   eax, word [want]
+    shl     eax, 9
+    add     edi, eax
+    sub     edi, 4
+    mov     dword [fs:edi], POISON
+
+    mov     cx, [want]
+    mov     [dap_count], cx
+    mov     word [dap_off], 0
+    mov     word [dap_seg], BOUNCE_SEG
+    mov     eax, [cur_lba]
+    mov     [dap_lba], eax
+    mov     dword [dap_lba + 4], 0
+    mov     si, dap
+    mov     ah, 0x42
+    mov     dl, [boot_drive]
+    int     0x13
+    jc      .retry
+    mov     cx, [dap_count]
+    test    cx, cx
+    jz      .retry
+
+    call    enter_unreal
+    mov     edi, BOUNCE_LIN
+    cmp     dword [fs:edi], POISON
+    jne     .ok
+    movzx   eax, word [dap_count]
+    shl     eax, 9
+    add     edi, eax
+    sub     edi, 4
+    cmp     dword [fs:edi], POISON
+    jne     .ok
+.retry:
+    dec     byte [tries]
+    jz      .fail
+    xor     ax, ax                   ; AH=00h: reset the disk controller
+    mov     dl, [boot_drive]
+    int     0x13
+    jmp     .try
+.ok:
+    clc
+    ret
+.fail:
+    stc
+    ret
+
+; A dot per half-megabyte, so a load that is crawling looks different from a
+; load that has stopped. On a stick that negotiated USB 1.1 this is the only
+; sign the machine is doing anything at all for ten seconds at a time.
+progress:
+    push    eax
+    movzx   eax, word [dap_count]
+    add     [dots], eax
+    cmp     dword [dots], 1024       ; one dot per half-megabyte
+    jb      .skip
+    sub     dword [dots], 1024
+    mov     byte [dotted], 1
+    mov     si, msg_dot
+    call    s2_print
+.skip:
+    pop     eax
+    ret
+
+; ---- did the kernel actually arrive? ---------------------------------------
+; The check that tells a broken boot apart from a broken kernel. stage2 has
+; just pulled several megabytes through firmware it cannot audit; if one
+; sector quietly did not make it, the jump below lands in rubble and the
+; machine stops with nothing on screen to say why. Summing what reached 1 MiB
+; and comparing it against the sum build.sh recorded turns that into a
+; sentence. Runs before paging so it can use the flat data segments.
+verify_kernel:                       ; CF=1 if what is at 1 MiB is not it
+    cmp     byte [have_sum], 0
+    je      .ok                      ; v1 header: nothing to compare against
+    call    enter_unreal
+    mov     esi, KERNEL_PHYS
+    mov     ecx, [kern_sectors]
+    shl     ecx, 7                   ; sectors -> dwords
+    xor     eax, eax
+.sum:
+    add     eax, [gs:esi]
+    add     esi, 4
+    dec     ecx
+    jnz     .sum
+    mov     [kern_got], eax
+    cmp     eax, [kern_sum]
+    jne     .bad
+    mov     si, msg_sumok
+    call    s2_print
+.ok:
+    clc
+    ret
+.bad:
+    stc
+    ret
+
+; Both attempts disagreed with the header. Say what was read and what was
+; wanted, and stop -- jumping into this is the silent hang the checksum was
+; added to replace.
+kernel_bad:
+    mov     si, msg_sumbad
+    call    s2_print
+    mov     eax, [kern_got]
+    call    print_hex32
+    mov     si, msg_sumwant
+    call    s2_print
+    mov     eax, [kern_sum]
+    call    print_hex32
+    mov     si, msg_sumhelp
+    call    s2_print
+    cli
+    hlt
+    jmp     $
+
+; ---- A20, one more time ----------------------------------------------------
+; A20 was proved on before the boot menu, but everything since -- the menu,
+; VBE, E820 and several megabytes of disk reads -- went through firmware that
+; is entitled to leave the line however it likes, and some CSMs do turn it
+; back off on the way out of a thunk. With A20 off every address with bit 20
+; set is aliased down, so the kernel that was just written to 1 MiB is really
+; sitting at 0, and the jump into it lands in the interrupt vector table.
+recheck_a20:
+    call    test_a20
+    jnc     .ok
+    call    enable_a20
+    jc      .dead
+    mov     si, msg_a20back
+    call    s2_print
+    ret
+.dead:
+    mov     si, msg_a20lost
+    call    s2_print
+    cli
+    hlt
+    jmp     $
+.ok:
+    ret
 
 ; ---- page tables --------------------------------------------------------
 ;   PML4[0]   -> identity map      0..4 GiB           (boot / phys access)
@@ -631,6 +1153,39 @@ long_mode_entry:
     mov     gs, ax
     mov     ss, ax
     mov     rsp, 0x90000
+
+    ; Breadcrumbs. BIOS is gone by now, so these are the only way to say how far
+    ; we got on a machine with no serial cable. The text cells land in VGA text
+    ; memory (seen only if no graphics mode was set); the red bar goes into the
+    ; framebuffer itself (seen only if one was). One of the two always shows.
+    mov     rax, 0xB8000
+    mov     word [rax +  0], 0x4F4C          ; L
+    mov     word [rax +  2], 0x4F4D          ; M
+    mov     word [rax +  4], 0x4F36          ; 6
+    mov     word [rax +  6], 0x4F34          ; 4
+    mov     word [rax +  8], 0x4F2D          ; -
+    mov     word [rax + 10], 0x4F4F          ; O
+    mov     word [rax + 12], 0x4F4B          ; K
+
+    cld
+    mov     ebx, [BOOTINFO + 0]              ; fb_addr (phys, identity-mapped)
+    test    ebx, ebx
+    jz      .no_fb
+    mov     r8d, [BOOTINFO + 16]             ; pitch, bytes per scanline
+    xor     r9d, r9d
+.bar:
+    mov     eax, r9d
+    imul    eax, r8d
+    mov     rdi, rbx
+    add     rdi, rax
+    mov     ecx, 160
+    mov     eax, 0x00FF0000                  ; red: long mode reached
+    rep     stosd
+    inc     r9d
+    cmp     r9d, 32
+    jb      .bar
+.no_fb:
+
     mov     rdi, BOOTINFO
     mov     rax, KERNEL_PHYS
     jmp     rax
@@ -651,6 +1206,28 @@ remaining:    dd 0
 mode_seg:     dw 0
 mode_off:     dw 0
 pref_mode:    dw 0xFFFF
+hdr_ver:      dd 0
+kern_sum:     dd 0
+have_sum:     db 0
+chunk:        dw 0
+force_chunk:  dw 0
+kern_got:     dd 0
+want:         dw 0
+tries:        db 0
+dots:         dd 0
+dotted:       db 0
+
+; framebuffer console state, filled in by do_vbe once a mode is really set
+font_lin:     dd 0
+fb_base:      dd 0
+fb_pitch:     dd 0
+fb_cols:      dw 0
+fb_rows:      dw 0
+fb_cx:        dw 0
+fb_cy:        dw 0
+fb_ready:     db 0
+hexbuf:       times 12 db 0
+ser_ok:       db 0
 
 align 4
 dap:
@@ -672,9 +1249,38 @@ gdt64:
 
 msg_stage2:  db "BoltOS S2: stage 2 loaded.", 13, 10, 0
 msg_a20fail: db "BoltOS S2: A20 line would not enable, stopping here.", 13, 10, 0
+msg_paged:   db "BoltOS S2: page tables built.", 13, 10, 0
+msg_vbe_set:   db "  VBE: setting the mode now", 13, 10, 0
+msg_vbe_none:  db "  VBE: no VESA BIOS here -- kernel will be serial-only", 13, 10, 0
+msg_vbe_nomode:db "  VBE: no 32bpp LFB mode offered -- kernel will be serial-only", 13, 10, 0
+msg_vbe_noinfo:db "  VBE: mode info refused -- kernel will be serial-only", 13, 10, 0
+msg_vbe_noset: db "  VBE: mode set refused -- kernel will be serial-only", 13, 10, 0
 msg_loaded:  db "BoltOS S2: kernel at 1MiB, going long mode.", 13, 10, 0
 msg_diskerr: db "BoltOS S2 disk error", 13, 10, 0
 msg_hdr:     db "  boot header found", 13, 10, 0
+msg_banner:  db "BoltOS stage 2", 13, 10, 0
+msg_dot:     db ".", 0
+msg_crlf:    db 13, 10, 0
+msg_sumok:   db 13, 10, "  kernel verified: checksum matches", 13, 10, 0
+msg_retry:   db 13, 10, "  checksum mismatch -- reloading one sector at a time", 13, 10, 0
+msg_sumbad:  db 13, 10, "BoltOS S2: the kernel did not survive the trip from disk.", 13, 10
+             db "  loaded 0x", 0
+msg_sumwant: db "  expected 0x", 0
+msg_sumhelp: db 13, 10
+             db "  Stopping here instead of jumping into it.", 13, 10
+             db "  INT 13h reported every one of those reads as a success, so", 13, 10
+             db "  this is firmware mis-serving the boot device rather than a", 13, 10
+             db "  damaged image. Worth trying, in order: a different USB port", 13, 10
+             db "  (a rear one, USB 2.0 if the board has any), then booting the", 13, 10
+             db "  stick in UEFI mode instead of CSM.", 13, 10, 0
+msg_readfail:db 13, 10, "BoltOS S2: INT 13h will not read LBA 0x", 0
+msg_readtail:db 13, 10
+             db "  Retried with a controller reset and down to one sector at a", 13, 10
+             db "  time, and the drive still refused. The image may be short --", 13, 10
+             db "  check that the whole file was written to the stick.", 13, 10, 0
+msg_a20back: db "  A20 had gone back off; re-enabled it", 13, 10, 0
+msg_a20lost: db 13, 10, "BoltOS S2: A20 went back off and will not re-enable.", 13, 10
+             db "  Everything above 1 MiB is aliased; cannot boot.", 13, 10, 0
 
 msg_menu:    db 13, 10
              db "  ==== BoltOS boot menu ====", 13, 10

@@ -52,8 +52,10 @@ resizing of an existing partition. Pick a disk you are willing to lose.
 
 ### 1. Boot the image
 
-Boot `boltos.iso` (or write `os.img` to a USB stick). Within five seconds you
-will see the boot menu:
+Boot `boltos.iso`, or write `boltusb.img` to a USB stick -- not `os.img`, which
+has no partition table and no EFI partition and is meant for QEMU.
+[TUTORIALBOOTUSB.MD](TUTORIALBOOTUSB.MD) covers the stick end to end. Within
+five seconds you will see the boot menu:
 
 ```
 1. BoltOS

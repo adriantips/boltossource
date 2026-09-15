@@ -98,7 +98,8 @@ static int header_on(blkdev_t *d, struct boot_header *out) {
     if (blk_read(d, BOOT_HDR_LBA, 1, sec) != 0) return 0;
     struct boot_header *h = (struct boot_header *)sec;
     if (memcmp(h->magic, BOOT_HDR_MAGIC, 8) != 0) return 0;
-    if (h->version != 1 || h->kernel_sectors == 0 || h->kernel_bytes == 0) return 0;
+    if (h->version < 1 || h->version > BOOT_HDR_VERSION) return 0;
+    if (h->kernel_sectors == 0 || h->kernel_bytes == 0) return 0;
     if (h->kernel_lba + h->kernel_sectors > d->sectors) return 0;
     *out = *h;
     return 1;
@@ -345,6 +346,9 @@ int install_run(install_req *r) {
         }
     }
 
+    /* Computed while the padded image still exists, and carried into the boot
+     * header below: it is what stage2 checks the loaded kernel against. */
+    uint32_t ksum = 0;
     step(r, 20, "writing the kernel");
     {
         /* Pad the tail to a whole sector so the last partial sector is written. */
@@ -353,6 +357,8 @@ int install_run(install_req *r) {
         if (!padded) { kfree(kimg); return fail(r, "out of memory"); }
         memset(padded, 0, bytes);
         memcpy(padded, kimg, kbytes);
+        const uint32_t *w = (const uint32_t *)padded;
+        for (uint64_t i = 0; i < bytes / 4; i++) ksum += w[i];
         int rc = blk_write(d, L.kernel_lba, (uint32_t)L.kernel_sectors, padded);
         kfree(padded);
         if (rc != 0) { kfree(kimg); return fail(r, "kernel write failed"); }
@@ -366,11 +372,12 @@ int install_run(install_req *r) {
         memset(sec, 0, sizeof sec);
         struct boot_header *h = (struct boot_header *)sec;
         memcpy(h->magic, BOOT_HDR_MAGIC, 8);
-        h->version        = 1;
+        h->version        = BOOT_HDR_VERSION;
         h->kernel_lba     = (uint32_t)L.kernel_lba;
         h->kernel_sectors = (uint32_t)L.kernel_sectors;
         h->kernel_bytes   = (uint32_t)L.kernel_bytes;
         h->flags          = 0;
+        h->kernel_sum     = ksum;
         uint32_t sum = 0;
         for (unsigned i = 0; i < sizeof(struct boot_header) - sizeof(uint32_t); i++)
             sum += sec[i];

@@ -17,15 +17,33 @@ import struct, sys
 SECTOR = 512
 HDR_LBA = 33
 MAGIC = b"BOLTBHDR"
-VERSION = 1
+VERSION = 2
 
 
-def build(kernel_lba, kernel_bytes):
+def kernel_sum32(image, kernel_lba, sectors):
+    """Sum of every little-endian dword of the kernel as it sits on the disk.
+
+    Taken over the padded sector count rather than the exact byte length, so
+    stage2 can compute the same number over whole sectors without caring where
+    the image stops inside the last one.
+    """
+    with open(image, "rb") as fh:
+        fh.seek(kernel_lba * SECTOR)
+        data = fh.read(sectors * SECTOR)
+    if len(data) < sectors * SECTOR:
+        data += b"\0" * (sectors * SECTOR - len(data))
+    total = 0
+    for (word,) in struct.iter_unpack("<I", data):
+        total += word
+    return total & 0xFFFFFFFF
+
+
+def build(kernel_lba, kernel_bytes, kernel_sum):
     sectors = (kernel_bytes + SECTOR - 1) // SECTOR
-    # magic[8] version kernel_lba kernel_sectors kernel_bytes flags -- 28 bytes,
-    # then a sum32 over exactly those, matching include/boot.h.
-    body = struct.pack("<8sIIIII", MAGIC, VERSION, kernel_lba, sectors,
-                       kernel_bytes, 0)
+    # magic[8] version kernel_lba kernel_sectors kernel_bytes flags kernel_sum
+    # -- 32 bytes, then a sum32 over exactly those, matching include/boot.h.
+    body = struct.pack("<8sIIIIII", MAGIC, VERSION, kernel_lba, sectors,
+                       kernel_bytes, 0, kernel_sum)
     checksum = sum(body) & 0xFFFFFFFF
     return (body + struct.pack("<I", checksum)).ljust(SECTOR, b"\0")
 
@@ -34,13 +52,15 @@ def main(argv):
     if len(argv) != 4:
         raise SystemExit(__doc__.strip().splitlines()[-1].strip())
     image, kernel_lba, kernel_bytes = argv[1], int(argv[2]), int(argv[3])
-    hdr = build(kernel_lba, kernel_bytes)
+    sectors = (kernel_bytes + SECTOR - 1) // SECTOR
+    ksum = kernel_sum32(image, kernel_lba, sectors)
+    hdr = build(kernel_lba, kernel_bytes, ksum)
     with open(image, "r+b") as fh:
         fh.seek(HDR_LBA * SECTOR)
         fh.write(hdr)
-    print("      boot header @LBA %d -> kernel @LBA %d, %d bytes (%d sectors)"
-          % (HDR_LBA, kernel_lba, kernel_bytes,
-             (kernel_bytes + SECTOR - 1) // SECTOR))
+    print("      boot header @LBA %d -> kernel @LBA %d, %d bytes (%d sectors),"
+          " sum32 0x%08X"
+          % (HDR_LBA, kernel_lba, kernel_bytes, sectors, ksum))
     return 0
 
 
