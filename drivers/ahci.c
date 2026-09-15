@@ -7,6 +7,7 @@
 #include "mmio.h"
 #include "string.h"
 #include "kprintf.h"
+#include "timeout.h"
 
 /* ===========================================================================
  *  AHCI 1.x host bus adapter (polled, DMA).
@@ -83,15 +84,30 @@ static inline void     hw_(uint32_t off, uint32_t v){ mmio_write32(g_abar, off, 
 static inline uint32_t pr(struct ahci_port *p, uint32_t off)             { return mmio_read32(p->regs, off); }
 static inline void     pw(struct ahci_port *p, uint32_t off, uint32_t v) { mmio_write32(p->regs, off, v); }
 
+/* Waits, in microseconds. AHCI 1.3 gives the engine 500 ms to stop (10.1.2),
+ * and a live link 10 ms to report PhyRdy -- so 100 ms for the link is already
+ * ten times the spec. These used to be iteration counts in the millions, which
+ * on a real HBA is tens of seconds each, paid once per port whether or not a
+ * disk is attached. */
+#define AHCI_STOP_US    500000ull
+#define AHCI_LINK_US    100000ull
+#define AHCI_IDLE_US   1000000ull
+#define AHCI_CMD_US    5000000ull
+
 static void port_stop(struct ahci_port *p) {
     uint32_t cmd = pr(p, PxCMD);
     cmd &= ~(CMD_ST | CMD_FRE);
     pw(p, PxCMD, cmd);
-    for (int t = 0; t < 1000000; t++)
-        if (!(pr(p, PxCMD) & (CMD_CR | CMD_FR))) break;
+    wait_until(!(pr(p, PxCMD) & (CMD_CR | CMD_FR)), AHCI_STOP_US);
 }
 static void port_start(struct ahci_port *p) {
-    while (pr(p, PxCMD) & CMD_CR) { }
+    /* This was `while (pr(p, PxCMD) & CMD_CR) { }` -- no bound at all. A port
+     * whose command engine never goes idle hung the kernel here forever, with
+     * the boot log stopped mid-line and nothing to say why. */
+    if (!wait_until(!(pr(p, PxCMD) & CMD_CR), AHCI_STOP_US)) {
+        kprintf("[ahci] port %d: command engine will not stop\n", p->portno);
+        return;
+    }
     uint32_t cmd = pr(p, PxCMD);
     cmd |= CMD_FRE;
     pw(p, PxCMD, cmd);
@@ -142,19 +158,20 @@ static int port_exec(struct ahci_port *p, uint8_t ata_cmd, uint64_t lba,
     }
 
     /* wait for the port to be idle, then issue slot 0 */
-    for (int t = 0; t < 1000000; t++)
-        if (!(pr(p, PxTFD) & (TFD_BSY | TFD_DRQ))) break;
+    wait_until(!(pr(p, PxTFD) & (TFD_BSY | TFD_DRQ)), AHCI_IDLE_US);
     pw(p, PxIS, 0xFFFFFFFFu);
     pw(p, PxCI, 1);
 
-    for (uint64_t t = 0; t < 20000000ull; t++) {
+    uint64_t deadline = now_us() + AHCI_CMD_US;
+    for (;;) {
+        int expired = now_us() >= deadline;             /* clock before registers */
         if (!(pr(p, PxCI) & 1)) {
             if (pr(p, PxTFD) & TFD_ERR) return -1;
             return 0;
         }
         if (pr(p, PxIS) & (1u << 30)) return -1;        /* TFES: task file error */
+        if (expired) return -1;
     }
-    return -1;
 }
 
 static int ahci_rw(struct ahci_port *p, uint64_t lba, uint32_t count, void *buf, int write) {
@@ -211,9 +228,7 @@ static int ahci_blk_resume(blkdev_t *b) {
     /* The link has to have come back before the port is worth programming. A
      * disk that is still negotiating reads as "no device present", and
      * starting a port in that state gets you a command that never completes. */
-    int up = 0;
-    for (int t = 0; t < 2000000 && !up; t++) up = (pr(p, PxSSTS) & 0x0F) == 3;
-    if (!up) return -1;
+    if (!wait_until((pr(p, PxSSTS) & 0x0F) == 3, AHCI_LINK_US)) return -1;
 
     port_stop(p);
     pw(p, PxCLB,  (uint32_t)p->clb.phys);

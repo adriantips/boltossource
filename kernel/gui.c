@@ -3129,6 +3129,18 @@ static void gui_audio_preempt(void) { media_halt(); music_halt(); }
 void gui_run(void) {
     PW = (int)fb_width();
     PH = (int)fb_height();
+    /* The backbuffers below are sized MAX_PW x MAX_PH once and never resized,
+     * so a panel larger than that would have the compositor drawing past the
+     * end of them -- on a machine whose firmware hands us a 5K or 6K mode,
+     * which is exactly the machine nobody tests on. Refusing the desktop and
+     * dropping to the shell is not much of an outcome, but it is an outcome
+     * that says what happened instead of corrupting memory. */
+    if (PW > MAX_PW || PH > MAX_PH) {
+        kprintf("\nThe display is %dx%d and the desktop is built for at most "
+                "%dx%d.\nStarting BoltShell instead.\n", PW, PH, MAX_PW, MAX_PH);
+        shell_run();
+        return;
+    }
     W = PW; H = PH;
     out_x = out_y = 0; out_w = PW; out_h = PH;
     g_clear_clip();

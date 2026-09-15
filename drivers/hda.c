@@ -7,6 +7,7 @@
 #include "hpet.h"
 #include "string.h"
 #include "kprintf.h"
+#include "timeout.h"
 
 /* ===========================================================================
  *  Intel High Definition Audio (HDA) controller + codec driver.
@@ -202,10 +203,10 @@ static struct {
     const char *in_label;
 } h;
 
-static void udelay(uint32_t us) {
-    if (hpet_present()) { hpet_delay_us(us); return; }
-    for (uint32_t i = 0; i < us * 200; i++) __asm__ volatile("pause");
-}
+/* Was a `pause` loop with a guessed 200 iterations per microsecond, which is
+ * off by more than 10x in both directions depending on the part -- and every
+ * bounded wait below is counted in these. delay_us() is measured. */
+static void udelay(uint32_t us) { delay_us(us); }
 
 /* --- talking to a codec -------------------------------------------------- */
 

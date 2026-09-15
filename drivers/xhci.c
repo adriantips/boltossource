@@ -5,6 +5,7 @@
 #include "mmio.h"
 #include "string.h"
 #include "kprintf.h"
+#include "timeout.h"
 #include "xhci.h"
 #include "usb.h"
 #include "keyboard.h"
@@ -93,7 +94,22 @@
 #define CC_SHORT_PACKET 13
 
 #define RING_SZ   16     /* TRBs per ring (incl. link)            */
-#define POLL_MAX  5000000ull
+
+/* Waits, in microseconds, and every one of them is a deadline rather than a
+ * spin count. The difference is not cosmetic: an MMIO read costs a few
+ * nanoseconds under an emulator and about a microsecond on a real PCH, so the
+ * 5,000,000-iteration loop this driver used to spin was 20 ms in QEMU and half
+ * a minute on the metal -- once per root port, on a controller with 24 of them.
+ * The numbers below come from the xHCI 1.1 spec's own limits with slack:
+ * 5.4.1 for the halt, 4.22.1 for the ownership handshake, and USB 2.0 10.2.8.1
+ * for the 20 ms port reset. */
+#define W_HALT_US       32000ull    /* USBSTS.HCH after clearing R/S        */
+#define W_RESET_US    1000000ull    /* HCRST self-clear, then CNR clear     */
+#define W_RUN_US        32000ull    /* HCH drop after setting R/S           */
+#define W_OWN_US      1000000ull    /* BIOS letting go of the controller    */
+#define W_PORT_US      200000ull    /* port reset completing (PRC)          */
+#define W_EVENT_US    1000000ull    /* an event landing on the event ring   */
+#define W_BULK_US     5000000ull    /* a bulk transfer: a real disk, so longer */
 
 struct trb { uint32_t d[4]; };
 
@@ -181,7 +197,9 @@ static uint64_t ring_push(struct ring *r, uint32_t d0, uint32_t d1, uint32_t d2,
 /* Poll the event ring for the next event. Fills cc/slot/ptr/type. Returns 0 on
  * an event, -1 on timeout. Advances ERDP. */
 static int evt_poll(uint32_t *cc, uint32_t *slot, uint64_t *ptr, uint32_t *type) {
-    for (uint64_t t = 0; t < POLL_MAX; t++) {
+    uint64_t deadline = now_us() + W_EVENT_US;
+    for (;;) {
+        int expired = now_us() >= deadline;            /* clock before the TRB */
         volatile uint32_t *e = xh.evt.trb + xh.evt_deq * 4;
         uint32_t d3 = e[3];
         if ((d3 & 1u) == xh.evt_cycle) {
@@ -195,8 +213,9 @@ static int evt_poll(uint32_t *cc, uint32_t *slot, uint64_t *ptr, uint32_t *type)
             rt_wr64(IR0_ERDP, erdp | (1u << 3));   /* EHB: clear event handler busy */
             return 0;
         }
+        if (expired) return -1;
+        __asm__ volatile("pause");
     }
-    return -1;
 }
 
 /* Issue a command-ring TRB and wait for its Command Completion Event. Returns
@@ -268,6 +287,72 @@ static uint32_t mps0_for_speed(uint8_t speed) {
     }
 }
 
+/* ---------------------------------------------------------------------------
+ *  Taking the controller away from the firmware (xHCI 1.1, section 4.22.1).
+ *
+ *  This is the step whose absence is invisible under emulation and fatal on a
+ *  real machine. QEMU's xHCI publishes no extended capabilities at all, so a
+ *  driver that ignores them enumerates perfectly there. A PC's firmware, on the
+ *  other hand, owns the controller when it hands control to the kernel, and
+ *  keeps a System Management Interrupt armed on the registers below: every
+ *  write the driver makes traps into SMM, which is free to undo it. The symptom
+ *  is not an error -- it is a controller that accepts commands and answers
+ *  none, so every wait in the driver runs to its limit and the machine looks
+ *  hung partway down the boot log.
+ *
+ *  The handshake: find the USB Legacy Support capability, set the OS-owned
+ *  semaphore, wait for the firmware to drop the BIOS-owned one, then disable
+ *  every SMI it had armed and clear the events it had pending.
+ * ---------------------------------------------------------------------------*/
+#define XECP_LEGACY     1u
+#define LEGSUP_BIOS_OWN (1u << 16)
+#define LEGSUP_OS_OWN   (1u << 24)
+/* USBLEGCTLSTS: the SMI *enable* bits (3 + 8 + 3 of them) that have to go, and
+ * the three write-1-to-clear SMI event bits at the top. */
+#define LEGCTL_SMI_ENABLES ((0x7u << 1) | (0xFFu << 5) | (0x7u << 17))
+#define LEGCTL_SMI_EVENTS  (0x7u << 29)
+
+static void take_ownership(uint32_t hcc1) {
+    uint32_t off = ((hcc1 >> 16) & 0xFFFF) * 4;    /* xECP, counted in dwords */
+    if (!off) return;                              /* no extended caps: QEMU  */
+
+    volatile uint8_t *cap = (volatile uint8_t *)xh.cap + off;
+    /* The list is firmware-provided, so it is walked defensively: a bad `next`
+     * of 0 ends it, and a bounded guard stops a loop that points at itself. */
+    for (int guard = 0; guard < 64; guard++) {
+        uint32_t w = *(volatile uint32_t *)cap;
+        uint32_t id = w & 0xFF, next = (w >> 8) & 0xFF;
+
+        if (id == XECP_LEGACY) {
+            volatile uint32_t *legsup = (volatile uint32_t *)cap;
+            volatile uint32_t *legctl = (volatile uint32_t *)(cap + 4);
+
+            if (!(*legsup & LEGSUP_BIOS_OWN)) {
+                /* Already ours -- but the SMIs below may still be armed. */
+                *legctl = (*legctl & ~LEGCTL_SMI_ENABLES) | LEGCTL_SMI_EVENTS;
+                return;
+            }
+
+            *legsup = *legsup | LEGSUP_OS_OWN;
+            if (wait_until(!(*legsup & LEGSUP_BIOS_OWN), W_OWN_US)) {
+                kprintf("[xhci] firmware handed the controller over\n");
+            } else {
+                /* Some firmware never answers. Linux forces the bit for the
+                 * same reason: a controller half-owned by a BIOS that has
+                 * stopped listening is worse than one taken by force. */
+                *legsup = (*legsup | LEGSUP_OS_OWN) & ~LEGSUP_BIOS_OWN;
+                kprintf("[xhci] firmware would not release the controller in "
+                        "%u ms; taking it\n", (unsigned)(W_OWN_US / 1000));
+            }
+            *legctl = (*legctl & ~LEGCTL_SMI_ENABLES) | LEGCTL_SMI_EVENTS;
+            return;
+        }
+
+        if (!next) return;
+        cap += next * 4;
+    }
+}
+
 /* Reset one root-hub port (0-based). Returns 1 if a device is connected and
  * the port enabled, 0 otherwise. */
 static int port_reset(uint32_t p) {
@@ -280,14 +365,21 @@ static int port_reset(uint32_t p) {
     /* assert reset (write 1 to PR), preserving non-change bits */
     sc = op_rd(OP_PORTSC(p)) & ~PORTSC_RW1CS;
     op_wr(OP_PORTSC(p), sc | PORTSC_PR);
-    for (uint64_t t = 0; t < POLL_MAX; t++) {
+    uint64_t deadline = now_us() + W_PORT_US;
+    for (;;) {
+        int expired = now_us() >= deadline;
         uint32_t s = op_rd(OP_PORTSC(p));
         if (s & PORTSC_PRC) {                      /* reset complete */
             op_wr(OP_PORTSC(p), (s & ~PORTSC_RW1CS) | PORTSC_PRC);  /* clear PRC */
             return (s & PORTSC_PED) ? 1 : 0;
         }
+        if (expired) {
+            kprintf("[xhci] port %u: reset did not complete in %u ms\n",
+                    p + 1, (unsigned)(W_PORT_US / 1000));
+            return 0;
+        }
+        __asm__ volatile("pause");
     }
-    return 0;
 }
 
 static void hid_setup(struct usbdev *d, struct ring *ep0, const uint8_t *cfg, uint16_t total);
@@ -658,12 +750,14 @@ static void bulk_irq_mask(int off) {
  * if nothing came back at all -- which is a wedged controller, not a failed
  * command, and the caller should say so differently. */
 static int bulk_wait(struct bulkpipe *b) {
-    for (uint64_t t = 0; t < POLL_MAX; t++) {
+    uint64_t deadline = now_us() + W_BULK_US;
+    for (;;) {
+        int expired = now_us() >= deadline;
         xhci_drain();
         if (b->done) return (int)b->cc;
+        if (expired) return -1;
         __asm__ volatile("pause");
     }
-    return -1;
 }
 
 /* Recover a halted endpoint: Reset Endpoint, then point its transfer ring at a
@@ -840,12 +934,23 @@ void xhci_init(void) {
     xh.maxports = (hcs1 >> 24) & 0xFF;
     xh.csz = (hcc1 >> 2) & 1;
 
+    /* Before touching a single operational register: the firmware still owns
+     * this controller on a real machine, and writes made behind its back are
+     * trapped into SMM. */
+    take_ownership(hcc1);
+
     /* reset: stop, then HCRST, wait for HCRST clear and CNR clear */
     op_wr(OP_USBCMD, op_rd(OP_USBCMD) & ~USBCMD_RS);
-    for (uint64_t t = 0; t < POLL_MAX; t++) if (op_rd(OP_USBSTS) & USBSTS_HCH) break;
+    wait_until(op_rd(OP_USBSTS) & USBSTS_HCH, W_HALT_US);
     op_wr(OP_USBCMD, USBCMD_HCRST);
-    for (uint64_t t = 0; t < POLL_MAX; t++) if (!(op_rd(OP_USBCMD) & USBCMD_HCRST)) break;
-    for (uint64_t t = 0; t < POLL_MAX; t++) if (!(op_rd(OP_USBSTS) & USBSTS_CNR)) break;
+    if (!wait_until(!(op_rd(OP_USBCMD) & USBCMD_HCRST), W_RESET_US) ||
+        !wait_until(!(op_rd(OP_USBSTS) & USBSTS_CNR),  W_RESET_US)) {
+        /* A controller that will not come out of reset will not answer
+         * anything that follows either, and every one of those answers is
+         * another timeout. Say so once and leave it alone. */
+        kprintf("[xhci] controller did not come out of reset; skipping USB\n");
+        return;
+    }
 
     /* DCBAA */
     if (dma_alloc((xh.maxslots + 1) * 8, &xh.dcbaa_buf) != 0) { kprintf("[xhci] DCBAA OOM\n"); return; }
@@ -888,15 +993,27 @@ void xhci_init(void) {
 
     /* run */
     op_wr(OP_USBCMD, op_rd(OP_USBCMD) | USBCMD_RS);
-    for (uint64_t t = 0; t < POLL_MAX; t++) if (!(op_rd(OP_USBSTS) & USBSTS_HCH)) break;
+    if (!wait_until(!(op_rd(OP_USBSTS) & USBSTS_HCH), W_RUN_US)) {
+        kprintf("[xhci] controller stayed halted after R/S; skipping USB\n");
+        return;
+    }
 
     xh.present = 1;
     kprintf("[xhci] %x:%x up: %u slots, %u ports, %u-byte ctx\n",
             pd.vendor, pd.device, xh.maxslots, xh.maxports, ctxsz());
 
+    uint64_t t_enum = now_us();
     for (uint32_t p = 0; p < xh.maxports; p++) enumerate_port(p);
+    t_enum = now_us() - t_enum;
 
     if (xh.ndev == 0) kprintf("[xhci] no devices attached\n");
+    /* Printed only when it was slow, and printed at all because "the boot
+     * stopped just after the xhci banner" was the whole of the evidence the
+     * first time this went wrong on real hardware. A number here says whether
+     * a port is fighting us or the controller simply has a lot of them. */
+    if (t_enum > 1000000ull)
+        kprintf("[xhci] %u ports took %lu ms to enumerate\n",
+                xh.maxports, t_enum / 1000ull);
 
     /* Enumeration done -- switch HID input from idle-loop polling to hardware
      * interrupts. Route an MSI/MSI-X vector to the IDT, enable interrupter 0

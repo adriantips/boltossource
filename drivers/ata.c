@@ -5,6 +5,7 @@
 #include "io.h"
 #include "string.h"
 #include "kprintf.h"
+#include "timeout.h"
 
 /* ===========================================================================
  *  ATA / IDE PIO block driver.  See include/ata.h for the model.
@@ -60,21 +61,38 @@ static void ata_select(uint16_t io, uint16_t ctrl, uint8_t slave, uint8_t lba_hi
     ata_delay(ctrl);
 }
 
+/* How long a drive is given to answer. The ATA spec allows 31 seconds for a
+ * spin-up, but nothing here is waiting on a sleeping 1998 disk: these are a
+ * live command on a drive that has already identified itself. Five seconds is
+ * generous for that and short enough that four dead slots cost twenty seconds
+ * instead of the minutes the old spin counts cost -- 4,000,000 port reads is
+ * about four seconds of real machine, and this ran on every probe of every
+ * channel whether or not anything was plugged into it. */
+#define ATA_WAIT_US 5000000ull
+
+/* Clock first, status second -- see wait_until() in include/timeout.h for why
+ * the order decides whether a stalled poller can fail a working disk. */
 static int wait_clear_bsy(uint16_t io) {
-    for (uint32_t t = 0; t < 4000000u; t++) {
+    uint64_t deadline = now_us() + ATA_WAIT_US;
+    for (;;) {
+        int expired = now_us() >= deadline;
         uint8_t s = inb(io + R_STATUS);
         if (!(s & ST_BSY)) return (s & (ST_ERR | ST_DF)) ? -1 : 0;
+        if (s == 0xFF) return -1;          /* floating bus: nothing drives it */
+        if (expired) return -1;
     }
-    return -1;
 }
 
 static int wait_drq(uint16_t io) {
-    for (uint32_t t = 0; t < 4000000u; t++) {
+    uint64_t deadline = now_us() + ATA_WAIT_US;
+    for (;;) {
+        int expired = now_us() >= deadline;
         uint8_t s = inb(io + R_STATUS);
         if (s & (ST_ERR | ST_DF)) return -1;
         if (!(s & ST_BSY) && (s & ST_DRQ)) return 0;
+        if (s == 0xFF) return -1;
+        if (expired) return -1;
     }
-    return -1;
 }
 
 /* ---------------------------------------------------------------------------
@@ -93,6 +111,12 @@ static int probe_one(uint16_t io, uint16_t ctrl, uint8_t slave, ata_dev *out) {
 
     uint8_t status = inb(io + R_STATUS);
     if (status == 0) return 0;                 /* nothing on this slot */
+    /* 0xFF is not a status, it is an undriven ISA bus -- which is what every
+     * port in this range reads as on a machine that has no IDE controller at
+     * all, i.e. every machine built in the last fifteen years. Without this the
+     * probe reads BSY (0x80 is set in 0xFF), waits out the full timeout, and
+     * does it again for all four slots. */
+    if (status == 0xFF) return 0;
 
     if (wait_clear_bsy(io) != 0) return 0;
 
