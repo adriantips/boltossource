@@ -95,7 +95,7 @@ class BoltVM:
                  memory="2G", smp=2, extra=None, port=None, workdir=None,
                  boot_img=None, data_disks=None, no_reboot=False, nic="e1000",
                  hostfwd=None, audio="ac97", wav=None, ipv6=False,
-                 netdev=None, mac=None, usb=None):
+                 netdev=None, mac=None, usb=None, boot_bus="ide"):
         self.name = name
         self.uefi = uefi
         self.workdir = workdir or os.path.join(ROOT, "test", "out")
@@ -112,6 +112,18 @@ class BoltVM:
         if not os.path.exists(img):
             raise SystemExit("%s missing -- run build.sh first" % img)
 
+        # `boot_bus` says how the boot image is presented. "usb" puts it behind
+        # an xHCI controller with a bootindex, so SeaBIOS (or OVMF) enumerates
+        # it and boots it as mass storage -- the path a physical stick takes.
+        xhci = ["-device", "qemu-xhci,id=xhci"] if boot_bus == "usb" else []
+
+        def boot_drive():
+            d = ["-drive", _drive("boot", img, snapshot)]
+            if boot_bus == "usb":
+                return xhci + d + ["-device",
+                                   "usb-storage,bus=xhci.0,drive=boot,bootindex=0"]
+            return d + ["-device", "ide-hd,drive=boot,bus=ide.0,unit=0"]
+
         a = [find_qemu()]
         if uefi:
             code, varsf = find_ovmf()
@@ -123,13 +135,19 @@ class BoltVM:
                 myvars = os.path.join(self.workdir, name + "-OVMF_VARS.fd")
                 shutil.copyfile(varsf, myvars)
                 a += ["-drive", "if=pflash,format=raw,unit=1,file=" + myvars]
-            # The ESP is served straight out of esp/ as a virtual FAT volume.
-            a += ["-drive", "id=esp,file=fat:rw:" + os.path.join(ROOT, "esp") +
-                  ",format=raw,if=none",
-                  "-device", "ide-hd,drive=esp,bus=ide.0,unit=0"]
+            if boot_img:
+                # A named image under UEFI carries its own EFI system partition;
+                # attach the disk and let the firmware go looking, the way it
+                # would on a real stick. That tests the partition table and the
+                # FAT32 volume, which serving esp/ as a virtual FAT never does.
+                a += boot_drive()
+            else:
+                # The ESP is served straight out of esp/ as a virtual FAT volume.
+                a += ["-drive", "id=esp,file=fat:rw:" + os.path.join(ROOT, "esp") +
+                      ",format=raw,if=none",
+                      "-device", "ide-hd,drive=esp,bus=ide.0,unit=0"]
         else:
-            a += ["-drive", _drive("boot", img, snapshot),
-                  "-device", "ide-hd,drive=boot,bus=ide.0,unit=0"]
+            a += boot_drive()
 
         if data_disks is None:
             data_disks = [("hdd",  "disk-hdd.img",  "ide-hd,drive=hdd,bus=ide.1,unit=0,rotation_rate=7200"),
@@ -146,7 +164,8 @@ class BoltVM:
         # strings; "disk:PATH" is expanded into a drive plus a usb-storage, and
         # anything else is handed to -device as written (usb-kbd, usb-mouse).
         if usb:
-            a += ["-device", "qemu-xhci,id=xhci"]
+            if not xhci:
+                a += ["-device", "qemu-xhci,id=xhci"]
             for n, spec in enumerate(usb):
                 if spec.startswith("disk:"):
                     path = spec[5:]

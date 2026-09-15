@@ -17,8 +17,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # rather than after the slow durability runs. t_fuzz.py leads because it boots
 # nothing at all -- it is the only one here that can fail before QEMU has
 # started.
-ORDER = ["t_fuzz.py", "t_boot.py", "t_bootmenu.py", "t_uefi.py", "t_fs.py",
-         "t_persist.py"]
+ORDER = ["t_fuzz.py", "t_boot.py", "t_bootmenu.py", "t_uefi.py",
+         "t_usbboot.py", "t_fs.py", "t_persist.py"]
 
 
 def discover(filters):

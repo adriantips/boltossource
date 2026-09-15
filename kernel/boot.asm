@@ -43,6 +43,28 @@ _start:
     or      rax, (1 << 9) | (1 << 10)
     mov     cr4, rax
 
+    ; breadcrumb: green bar means the kernel's own entry stub is running, so the
+    ; long-mode switch and the higher-half mapping both took.
+    cld
+    mov     r10d, [rbx + 0]                 ; bootinfo.fb_addr
+    test    r10d, r10d
+    jz      .no_mark_entry
+    mov     r8d, [rbx + 16]                 ; bootinfo.fb_pitch
+    xor     r9d, r9d
+.mark_entry:
+    mov     eax, r9d
+    imul    eax, r8d
+    mov     rdi, r10
+    add     rdi, rax
+    add     rdi, 170 * 4
+    mov     ecx, 160
+    mov     eax, 0x0000FF00
+    rep     stosd
+    inc     r9d
+    cmp     r9d, 32
+    jb      .mark_entry
+.no_mark_entry:
+
     ; --- rescue bootinfo before the .bss wipe --------------------------------
     ; The UEFI loader takes its bootinfo pages from the firmware with
     ; AllocateAnyPages, so they can land anywhere in RAM -- including inside
@@ -82,6 +104,28 @@ _start:
     sub     rcx, rdi
     xor     eax, eax
     rep     stosb
+
+    ; breadcrumb: blue bar means bootinfo survived the rescue and .bss is clear,
+    ; so anything still missing after this is kmain's own doing.
+    cld
+    mov     r10d, [rbx + 0]
+    test    r10d, r10d
+    jz      .no_mark_kmain
+    mov     r8d, [rbx + 16]
+    xor     r9d, r9d
+.mark_kmain:
+    mov     eax, r9d
+    imul    eax, r8d
+    mov     rdi, r10
+    add     rdi, rax
+    add     rdi, 340 * 4
+    mov     ecx, 160
+    mov     eax, 0x000000FF
+    rep     stosd
+    inc     r9d
+    cmp     r9d, 32
+    jb      .mark_kmain
+.no_mark_kmain:
 
     mov     rdi, rbx                ; arg0 = bootinfo
     xor     rbp, rbp

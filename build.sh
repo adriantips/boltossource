@@ -539,3 +539,12 @@ mkdir -p esp/EFI/BOOT
 cp build/BOOTX64.EFI esp/EFI/BOOT/BOOTX64.EFI
 cp build/kernel.bin  esp/kernel.bin
 echo "OK -> esp/ (BOOTX64.EFI $(stat -c %s build/BOOTX64.EFI) bytes + kernel.bin)"
+
+echo "[9/9] USB stick image (legacy BIOS + UEFI on one stick)"
+# os.img above is the shape QEMU wants: no partition table, kernel in the
+# raw. A physical stick needs an MBR that firmware can make sense of and an
+# ESP for machines with no CSM, so it gets its own image. See mkusb.py for
+# the layout and TUTORIALBOOTUSB.MD for how to write it to a stick.
+USBIMG=iso/boltusb.img
+"$PYTHON" mkusb.py "$USBIMG" build/stage1.bin build/stage2.bin \
+    build/kernel.bin build/BOOTX64.EFI
