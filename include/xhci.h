@@ -8,6 +8,9 @@ void xhci_poll(void);   /* poll USB HID keyboards; call from idle loops */
 /* Armed USB boot keyboards / mice, for the boot log's input summary. */
 void xhci_hid_counts(int *keyboards, int *mice);
 int  xhci_irq_driven(void);   /* 1 = HID on interrupts, 0 = polled */
+/* A few lines saying what the controller is and what is attached to it, meant
+ * to be printed at the very end of a boot where the log above has scrolled. */
+void xhci_report(void);
 
 /* One armed HID endpoint. `reports` is how many have actually arrived, which
  * is the only way to tell a keyboard that was never found from one that is

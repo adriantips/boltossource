@@ -64,8 +64,35 @@
 #define PORTSC_PR       (1u << 4)
 #define PORTSC_PP       (1u << 9)
 #define PORTSC_PRC      (1u << 21)
+#define PORTSC_LWS      (1u << 16)
+#define PORTSC_WPR      (1u << 31)
 /* write-1-to-clear status change bits we must preserve-mask when writing */
 #define PORTSC_RW1CS    (0x00FE0000u)   /* CSC..CEC change bits */
+
+/* Every bit that *does something* when a 1 is written to it, and which must
+ * therefore be zero in a read-modify-write of PORTSC.
+ *
+ * PED is the one that mattered. It reads 1 on an enabled port and writing 1
+ * back does not mean "stay enabled" -- it means *disable this port*. A
+ * SuperSpeed port trains its link and enables itself the moment something is
+ * plugged in, with no reset from anybody, so PED read 1 on exactly the ports
+ * with a device on them, and the reset below wrote it straight back. The port
+ * was disabled by the act of trying to reset it. Every port on the machine
+ * reported a connection and not one of them enumerated.
+ *
+ * PR and WPR start resets, LWS commits a link-state write, and 17..23 are the
+ * write-one-to-clear change bits. Everything else -- port power, link state,
+ * the wake enables -- has to survive the write, so this is a mask of what to
+ * drop rather than a list of what to keep. */
+#define PORTSC_WMASK    (PORTSC_PED | PORTSC_PR | PORTSC_LWS | \
+                         PORTSC_RW1CS | PORTSC_WPR)
+#define portsc_neutral(v)  ((v) & ~PORTSC_WMASK)
+
+/* A device may not be ready to answer until TRSTRCY after its reset ends --
+ * 10 ms in USB 2.0 7.1.7.5. Enable Slot and Address Device went out the
+ * microsecond PRC appeared, which an emulated device answers and a real one
+ * does not have to. */
+#define W_RECOVERY_US    10000ull
 
 /* --- runtime / interrupter 0 (BAR0 + RTSOFF + 0x20) ----------------------- */
 #define IR0_IMAN        0x00
@@ -137,12 +164,42 @@ struct usbdev {
     uint8_t  max_dci;
 };
 
-#define MAX_DEV 8
+/* A keyboard with a hub in it, a monitor, a dock: a machine has more USB
+ * devices than it has things plugged into it, and every one needs a slot, an
+ * EP0 ring and a device context. Eight was enough for an emulator with two. */
+#define MAX_DEV 16
+
+/* Where a device sits, which on a bus with hubs in it is not just a port
+ * number. `route` is the xHCI Route String: four bits per tier naming the hub
+ * port taken at that tier, which is how the controller addresses a packet
+ * through up to five hubs. `tt_slot`/`tt_port` name the high-speed hub doing
+ * transaction translation for a low- or full-speed device below it -- without
+ * them the controller has no idea how to reach a 1.5 Mbit keyboard hanging off
+ * a 480 Mbit hub, and the device addresses and then answers nothing. */
+struct usbpath {
+    uint8_t  root_port;        /* 1-based root hub port                     */
+    uint32_t route;            /* xHCI route string, 4 bits per tier        */
+    uint8_t  depth;            /* 0 = on a root port                        */
+    uint8_t  speed;            /* xHCI speed id: 1=FS 2=LS 3=HS 4=SS        */
+    uint8_t  tt_slot, tt_port; /* the TT responsible for us, 0 if none      */
+};
 
 static struct {
     int present;
     int irq_ok;                /* 1 once MSI + interrupter 0 drive HID input */
     volatile uint32_t irqs;    /* interrupts actually delivered on the vector */
+    /* Everything xhci_report() needs to say what happened, kept because a
+     * machine with no keyboard cannot be asked a follow-up question and its
+     * boot log scrolls. */
+    uint16_t pci_vendor, pci_device;
+    uint64_t bar_phys;
+    volatile const void *bar_virt;
+    const char *why;           /* why there is no USB, or 0 if there is       */
+    uint32_t ports_powered;    /* ports this driver had to switch on          */
+    uint32_t ports_connected;  /* ports reporting a device after the debounce */
+    /* Where enumeration gave up, per port. Counted rather than only printed,
+     * because the printing scrolls off a screen nobody can scroll back. */
+    uint32_t fail_reset, fail_slot, fail_addr, fail_desc;
     volatile void *cap;        /* BAR0 base (capability regs)   */
     volatile void *op;         /* operational regs              */
     volatile void *rt;         /* runtime regs                  */
@@ -368,24 +425,44 @@ static void take_ownership(uint32_t hcc1) {
 static int port_reset(uint32_t p) {
     uint32_t sc = op_rd(OP_PORTSC(p));
     if (!(sc & PORTSC_CCS)) return 0;              /* nothing attached */
-    /* power on if needed */
-    if (!(sc & PORTSC_PP)) {
-        op_wr(OP_PORTSC(p), (sc & ~PORTSC_RW1CS) | PORTSC_PP);
+
+    if (!(sc & PORTSC_PP)) {                       /* power on if needed */
+        op_wr(OP_PORTSC(p), portsc_neutral(sc) | PORTSC_PP);
+        delay_us(20000);                           /* PP to a usable port */
+        sc = op_rd(OP_PORTSC(p));
     }
-    /* assert reset (write 1 to PR), preserving non-change bits */
-    sc = op_rd(OP_PORTSC(p)) & ~PORTSC_RW1CS;
-    op_wr(OP_PORTSC(p), sc | PORTSC_PR);
+
+    /* A port that is already enabled needs no reset and must not be given one.
+     * That is every SuperSpeed port with a device on it: the link trains and
+     * the port enables itself, and a reset here is both unnecessary and -- see
+     * PORTSC_WMASK -- the thing that used to disable it. */
+    if (sc & PORTSC_PED) {
+        op_wr(OP_PORTSC(p), portsc_neutral(sc) | (sc & PORTSC_RW1CS));
+        delay_us(W_RECOVERY_US);
+        return 1;
+    }
+
+    op_wr(OP_PORTSC(p), portsc_neutral(sc) | PORTSC_PR);
     uint64_t deadline = now_us() + W_PORT_US;
     for (;;) {
         int expired = now_us() >= deadline;
         uint32_t s = op_rd(OP_PORTSC(p));
         if (s & PORTSC_PRC) {                      /* reset complete */
-            op_wr(OP_PORTSC(p), (s & ~PORTSC_RW1CS) | PORTSC_PRC);  /* clear PRC */
-            return (s & PORTSC_PED) ? 1 : 0;
+            op_wr(OP_PORTSC(p), portsc_neutral(s) | PORTSC_PRC);   /* clear PRC */
+            if (!(s & PORTSC_PED)) {
+                kprintf("[xhci] port %u: reset finished but the port did not "
+                        "enable (portsc 0x%x)\n", p + 1, s);
+                xh.fail_reset++;
+                return 0;
+            }
+            /* The device is allowed 10 ms before it has to answer anything. */
+            delay_us(W_RECOVERY_US);
+            return 1;
         }
         if (expired) {
-            kprintf("[xhci] port %u: reset did not complete in %u ms\n",
-                    p + 1, (unsigned)(W_PORT_US / 1000));
+            kprintf("[xhci] port %u: reset did not complete in %u ms "
+                    "(portsc 0x%x)\n", p + 1, (unsigned)(W_PORT_US / 1000), s);
+            xh.fail_reset++;
             return 0;
         }
         __asm__ volatile("pause");
@@ -395,18 +472,32 @@ static int port_reset(uint32_t p) {
 static void hid_attach(struct usbdev *d, struct ring *ep0, const uint8_t *cfg, uint16_t total);
 static void bulk_setup(struct usbdev *d, struct ring *ep0, const uint8_t *cfg, uint16_t total);
 static void bulk_irq_mask(int off);
+static void hub_attach(struct usbdev *d, struct ring *ep0, const struct usbpath *path);
+static void enumerate_device(const struct usbpath *path);
 
-/* Build the input context for Address Device and enumerate one device. */
+/* One device on a root port: reset it, read the speed the port negotiated,
+ * and hand it to enumerate_device() as a path of depth zero. */
 static void enumerate_port(uint32_t p) {
     if (!port_reset(p)) return;
-    uint32_t sc = op_rd(OP_PORTSC(p));
-    uint8_t speed = (sc >> 10) & 0xF;
+    struct usbpath path;
+    memset(&path, 0, sizeof path);
+    path.root_port = (uint8_t)(p + 1);
+    path.speed     = (uint8_t)((op_rd(OP_PORTSC(p)) >> 10) & 0xF);
+    enumerate_device(&path);
+}
+
+/* Build the input context for Address Device and enumerate one device, wherever
+ * on the bus it is. */
+static void enumerate_device(const struct usbpath *path) {
+    uint32_t p = (uint32_t)path->root_port - 1;
+    uint8_t speed = path->speed;
 
     /* Enable Slot */
     uint32_t slot = 0;
     int cc = cmd_exec(0, 0, 0, (TRB_ENABLE_SLOT << 10), &slot);
     if (cc != CC_SUCCESS || slot == 0 || slot > xh.maxslots) {
         kprintf("[xhci] port %u: enable slot failed (cc=%u)\n", p + 1, cc);
+        xh.fail_slot++;
         return;
     }
 
@@ -430,8 +521,13 @@ static void enumerate_port(uint32_t p) {
     volatile uint32_t *sctx = (volatile uint32_t *)((uint8_t *)inctx.virt + ctxsz());
     volatile uint32_t *ep0  = (volatile uint32_t *)((uint8_t *)inctx.virt + ctxsz() * 2);
     icc[1] = 0x3;                                  /* Add A0 (slot) | A1 (EP0) */
-    sctx[0] = ((uint32_t)speed << 20) | (1u << 27);/* speed, context entries=1 */
-    sctx[1] = ((uint32_t)(p + 1)) << 16;           /* root hub port number     */
+    sctx[0] = path->route | ((uint32_t)speed << 20) | (1u << 27);
+    sctx[1] = ((uint32_t)path->root_port) << 16;   /* root hub port number     */
+    /* A low- or full-speed device under a high-speed hub is reached through
+     * that hub's transaction translator, and the controller has to be told
+     * which one. Left at zero, the device addresses and then answers nothing. */
+    if (path->tt_slot)
+        sctx[2] = (uint32_t)path->tt_slot | ((uint32_t)path->tt_port << 8);
     uint32_t mps = mps0_for_speed(speed);
     ep0[1] = (4u << 3) | (3u << 1) | (mps << 16);  /* EP type=control, CErr=3  */
     ep0[2] = (uint32_t)(tr->phys) | 1u;            /* TR dequeue | DCS=1        */
@@ -443,6 +539,7 @@ static void enumerate_port(uint32_t p) {
                   (TRB_ADDRESS_DEV << 10) | (slot << 24), NULL);
     if (cc != CC_SUCCESS) {
         kprintf("[xhci] port %u slot %u: address device failed (cc=%u)\n", p + 1, slot, cc);
+        xh.fail_addr++;
         return;
     }
 
@@ -457,6 +554,7 @@ static void enumerate_port(uint32_t p) {
     uint8_t desc[18]; memset(desc, 0, sizeof desc);
     if (control_xfer(tr, slot, 0x80, 6, 0x0100, 0, desc, 8) != 0) {
         kprintf("[xhci] port %u slot %u: get device descriptor failed\n", p + 1, slot);
+        xh.fail_desc++;
         return;
     }
 
@@ -554,12 +652,8 @@ static void enumerate_port(uint32_t p) {
     else if (kc == 8)
         kprintf("[xhci] slot %u: mass storage subclass %x proto %x is not "
                 "bulk-only SCSI; left alone\n", d->slot, d->if_sub, d->if_proto);
-    /* Said out loud because the consequence is invisible otherwise: a keyboard
-     * plugged into a monitor, a dock or the back of another keyboard is behind
-     * a hub, and this driver walks root ports only. */
     else if (kc == 9)
-        kprintf("[xhci] slot %u: hubs are not driven, so anything plugged into "
-                "this one is invisible\n", d->slot);
+        hub_attach(d, tr, path);
 }
 
 /* ===========================================================================
@@ -813,6 +907,172 @@ static void hid_attach(struct usbdev *d, struct ring *ep0r, const uint8_t *cfg, 
                 "keyboard or mouse\n", d->slot, seen, seen == 1 ? "" : "s");
 }
 
+/* ===========================================================================
+ *  USB hubs.
+ *
+ *  Not driving these was the last thing standing between a real machine and a
+ *  working keyboard. The machine that prompted it reports six things attached
+ *  to its root ports -- audio, a hub, the boot stick, a mouse, a board sensor
+ *  -- and the keyboard is not among them, because the keyboard is a Dell one
+ *  with a hub built into it and everything behind that hub was invisible. A
+ *  monitor's USB ports, a dock and the passthrough socket on another keyboard
+ *  are all the same shape of problem, and "plug it in somewhere else" is not an
+ *  answer when the hub is inside the keyboard.
+ *
+ *  A hub is driven entirely over EP0 with the hub class requests: read the hub
+ *  descriptor for the port count, switch each port on, wait the descriptor's
+ *  own power-good delay, then for every port reporting a connection, reset it
+ *  and enumerate whatever answers -- recursively, because hubs plug into hubs.
+ *
+ *  Two things make this more than a loop. The controller addresses a device
+ *  through a *route string*, four bits per tier naming the hub port taken at
+ *  each one, so every device below a hub needs its path and not just a port
+ *  number. And a low- or full-speed device under a high-speed hub is reached
+ *  through that hub's transaction translator, whose slot and port have to be in
+ *  the slot context or the device addresses and then never answers again --
+ *  which is most keyboards, since a boot keyboard is a 1.5 Mbit device.
+ * ===========================================================================*/
+#define HUB_DESC_TYPE      0x29
+#define HUB_PORT_CONNECTION 0
+#define HUB_PORT_ENABLE     1
+#define HUB_PORT_RESET      4
+#define HUB_PORT_POWER      8
+#define HUB_C_PORT_CONNECTION 16
+#define HUB_C_PORT_RESET      20
+#define MAX_HUB_DEPTH       5      /* the route string is five tiers of 4 bits */
+
+/* Hub class requests, all on the hub's own EP0. */
+static int hub_set_port_feature(struct ring *ep0, uint8_t slot, uint16_t feat, uint16_t port) {
+    return control_xfer(ep0, slot, 0x23, 3, feat, port, NULL, 0);
+}
+static int hub_clear_port_feature(struct ring *ep0, uint8_t slot, uint16_t feat, uint16_t port) {
+    return control_xfer(ep0, slot, 0x23, 1, feat, port, NULL, 0);
+}
+static int hub_port_status(struct ring *ep0, uint8_t slot, uint16_t port,
+                           uint16_t *status, uint16_t *change) {
+    uint8_t st[4];
+    if (control_xfer(ep0, slot, 0xA3, 0, 0, port, st, 4) != 0) return -1;
+    if (status) *status = (uint16_t)st[0] | ((uint16_t)st[1] << 8);
+    if (change) *change = (uint16_t)st[2] | ((uint16_t)st[3] << 8);
+    return 0;
+}
+
+/* wPortStatus bits 9 and 10 carry the speed of whatever answered the reset.
+ * Neither set means full speed, which is the one that has no bit of its own. */
+static uint8_t hub_port_speed(uint16_t status) {
+    if (status & (1u << 9))  return 2;    /* low   */
+    if (status & (1u << 10)) return 3;    /* high  */
+    return 1;                             /* full  */
+}
+
+static void hub_attach(struct usbdev *d, struct ring *ep0, const struct usbpath *path) {
+    if (path->depth >= MAX_HUB_DEPTH) {
+        kprintf("[xhci] slot %u: hub is %u tiers down; the route string has "
+                "room for %u\n", d->slot, path->depth + 1, MAX_HUB_DEPTH);
+        return;
+    }
+
+    uint8_t hd[9];
+    memset(hd, 0, sizeof hd);
+    if (control_xfer(ep0, d->slot, 0xA0, 6, HUB_DESC_TYPE << 8, 0, hd, sizeof hd) != 0) {
+        kprintf("[xhci] slot %u: hub descriptor unreadable\n", d->slot);
+        return;
+    }
+    uint8_t nports = hd[2];
+    /* bPwrOn2PwrGood is in 2 ms units and is the hub telling us how long its
+     * ports take to come up. Doubled, because hubs lie low and a port read
+     * before its power is good reports nothing attached. */
+    uint32_t pwr_good_us = (uint32_t)hd[5] * 2000u * 2u;
+    if (pwr_good_us < 20000u)  pwr_good_us = 20000u;
+    if (pwr_good_us > 1000000u) pwr_good_us = 1000000u;
+    if (nports == 0 || nports > 15) {
+        kprintf("[xhci] slot %u: hub claims %u ports\n", d->slot, nports);
+        return;
+    }
+
+    /* Tell the controller this slot is a hub before anything is put behind it:
+     * it needs the port count to route packets, and Address Device has already
+     * been and gone, so this is a Configure Endpoint that adds only the slot
+     * context back with the hub bits set. */
+    struct dma_buf inctx;
+    if (dma_alloc(ctxsz() * 2, &inctx) != 0) return;
+    memset(inctx.virt, 0, ctxsz() * 2);
+    volatile uint32_t *icc  = (volatile uint32_t *)inctx.virt;
+    volatile uint32_t *sctx = (volatile uint32_t *)((uint8_t *)inctx.virt + ctxsz());
+    icc[1] = 1u;                                    /* A0: the slot context   */
+    sctx[0] = path->route | ((uint32_t)d->speed << 20) | (1u << 26) |
+              ((uint32_t)d->max_dci << 27);         /* bit 26 = Hub           */
+    sctx[1] = ((uint32_t)path->root_port << 16) | ((uint32_t)nports << 24);
+    if (path->tt_slot)
+        sctx[2] = (uint32_t)path->tt_slot | ((uint32_t)path->tt_port << 8);
+    /* TT Think Time, from bits 5-6 of wHubCharacteristics, in FS bit times. */
+    if (d->speed == 3)
+        sctx[2] |= (uint32_t)((hd[3] >> 5) & 0x3) << 16;
+    int cc = cmd_exec((uint32_t)inctx.phys, (uint32_t)(inctx.phys >> 32), 0,
+                      (TRB_CONFIG_EP << 10) | ((uint32_t)d->slot << 24), NULL);
+    dma_free(&inctx);
+    if (cc != CC_SUCCESS) {
+        kprintf("[xhci] slot %u: the controller would not accept it as a hub "
+                "(cc=%d)\n", d->slot, cc);
+        return;
+    }
+
+    kprintf("[xhci] slot %u: hub with %u ports, power good in %u ms\n",
+            d->slot, nports, pwr_good_us / 1000);
+
+    for (uint16_t port = 1; port <= nports; port++)
+        hub_set_port_feature(ep0, d->slot, HUB_PORT_POWER, port);
+    delay_us(pwr_good_us);
+
+    for (uint16_t port = 1; port <= nports; port++) {
+        uint16_t status = 0, change = 0;
+        if (hub_port_status(ep0, d->slot, port, &status, &change) != 0) continue;
+        if (change & (1u << 0))
+            hub_clear_port_feature(ep0, d->slot, HUB_C_PORT_CONNECTION, port);
+        if (!(status & (1u << HUB_PORT_CONNECTION))) continue;
+
+        /* USB 2.0 9.1.2: reset, then the port is enabled and the device is at
+         * address zero and has TRSTRCY to be ready for it. */
+        if (hub_set_port_feature(ep0, d->slot, HUB_PORT_RESET, port) != 0) continue;
+        int ok = 0;
+        uint64_t deadline = now_us() + W_PORT_US;
+        for (;;) {
+            int expired = now_us() >= deadline;
+            if (hub_port_status(ep0, d->slot, port, &status, &change) == 0 &&
+                (change & (1u << HUB_PORT_RESET))) { ok = 1; break; }
+            if (expired) break;
+            delay_us(2000);
+        }
+        if (!ok) {
+            kprintf("[xhci] slot %u port %u: reset did not finish\n", d->slot, port);
+            xh.fail_reset++;
+            continue;
+        }
+        hub_clear_port_feature(ep0, d->slot, HUB_C_PORT_RESET, port);
+        delay_us(W_RECOVERY_US);
+        if (hub_port_status(ep0, d->slot, port, &status, 0) != 0) continue;
+        if (!(status & (1u << HUB_PORT_ENABLE))) continue;
+
+        struct usbpath below;
+        memset(&below, 0, sizeof below);
+        below.root_port = path->root_port;
+        below.depth     = (uint8_t)(path->depth + 1);
+        below.route     = path->route | ((uint32_t)(port & 0xF) << (4 * path->depth));
+        below.speed     = hub_port_speed(status);
+        /* Whoever is translating for us: this hub if it is the high-speed one
+         * directly above a slower device, otherwise whatever was translating
+         * for the hub itself. */
+        if (below.speed < 3 && d->speed == 3) {
+            below.tt_slot = d->slot;
+            below.tt_port = (uint8_t)port;
+        } else {
+            below.tt_slot = path->tt_slot;
+            below.tt_port = path->tt_port;
+        }
+        enumerate_device(&below);
+    }
+}
+
 /* Non-blocking peek of the event ring; returns 1 and fills the out-params if
  * an event is pending, else 0. `resid` is the TRB Transfer Length field, which
  * on a completion means the bytes that did NOT move -- the thing you need to
@@ -994,6 +1254,52 @@ void xhci_hid_counts(int *keyboards, int *mice) {
     }
     if (keyboards) *keyboards = kb;
     if (mice)      *mice      = ms;
+}
+
+/* Everything this driver knows about why the machine can or cannot be typed
+ * on, in a handful of lines, printed at the very end of the boot.
+ *
+ * It exists because the boot log scrolls and a machine with no keyboard cannot
+ * be asked to scroll it back. Twice now the one line that would have named the
+ * fault was three rows above the top of a photograph of the screen. Printed
+ * last, it is still there. */
+void xhci_report(void) {
+    if (!xh.present) {
+        kprintf("[usb] no working USB controller%s%s\n",
+                xh.why ? ": " : " was found on the PCI bus",
+                xh.why ? xh.why : "");
+        if (xh.bar_phys)
+            kprintf("[usb] the controller is %x:%x with BAR0 at 0x%lx\n",
+                    xh.pci_vendor, xh.pci_device, xh.bar_phys);
+        return;
+    }
+    kprintf("[usb] %x:%x, BAR0 0x%lx -> %p, %u ports (%u powered here, "
+            "%u with something attached), %d device%s\n",
+            xh.pci_vendor, xh.pci_device, xh.bar_phys, xh.bar_virt,
+            xh.maxports, xh.ports_powered, xh.ports_connected,
+            xh.ndev, xh.ndev == 1 ? "" : "s");
+    for (int i = 0; i < xh.ndev; i++) {
+        struct usbdev *d = &xh.dev[i];
+        if (!d->used) continue;
+        int armed = 0;
+        for (int k = 0; k < nhid; k++)
+            if (hidk[k].used && hidk[k].slot == d->slot) armed++;
+        kprintf("[usb]   port %u slot %u: %x:%x class %x/%x proto %x, "
+                "%d endpoint%s armed\n",
+                d->port, d->slot, d->vendor, d->product,
+                d->dev_class ? d->dev_class : d->if_class, d->if_sub,
+                d->if_proto, armed, armed == 1 ? "" : "s");
+    }
+    if (xh.fail_reset || xh.fail_slot || xh.fail_addr || xh.fail_desc)
+        kprintf("[usb] enumeration gave up on %u port%s: %u at reset, %u at "
+                "enable-slot, %u at address, %u at descriptor\n",
+                xh.fail_reset + xh.fail_slot + xh.fail_addr + xh.fail_desc,
+                (xh.fail_reset + xh.fail_slot + xh.fail_addr + xh.fail_desc) == 1
+                    ? "" : "s",
+                xh.fail_reset, xh.fail_slot, xh.fail_addr, xh.fail_desc);
+    if (nhid)
+        kprintf("[usb] HID input is %s\n",
+                xh.irq_ok ? "interrupt-driven" : "polled from the idle loop");
 }
 
 /* Walk the armed HID endpoints, one per call. 0 once `i` is past the end. */
@@ -1201,8 +1507,11 @@ void xhci_init(void) {
      * because it is not xHCI left such a machine with no USB at all. */
     struct pci_dev pd;
     {
-        struct pci_dev all[64];
-        int n = pci_scan(all, 64), found = 0, extra = 0;
+        /* 64 was tight: a desktop board fills a good part of it with root
+         * ports and functions on bus 0 alone, and a scan that fills its buffer
+         * stops before whatever it has not reached yet. */
+        struct pci_dev all[128];
+        int n = pci_scan(all, 128), found = 0, extra = 0;
         for (int i = 0; i < n; i++) {
             if (all[i].class != 0x0C || all[i].subclass != 0x03) continue;
             if (all[i].prog_if != 0x30) continue;           /* 30h = xHCI */
@@ -1214,22 +1523,28 @@ void xhci_init(void) {
                     "on any other is invisible\n", extra + 1);
     }
 
+    xh.pci_vendor = pd.vendor; xh.pci_device = pd.device;
+
     struct pci_bar bar;
     if (pci_bar(&pd, 0, &bar) != 0 || !bar.is_mmio) {
+        xh.why = "BAR0 is not memory-mapped";
         kprintf("[xhci] BAR0 is not memory-mapped; no USB\n");
         return;
     }
+    xh.bar_phys = bar.phys;
     if (!pci_map_bar(&bar)) {
         /* Worth spelling out, because the consequence is a machine with no
          * keyboard and a log line that used to say four words about it. The
          * kernel's direct map covers the low 4 GiB, and firmware -- OVMF
          * especially -- is fond of putting a 64-bit BAR far above that. Then
          * there is no USB at all: not the disk, and not the keyboard. */
+        xh.why = "BAR0 could not be mapped";
         kprintf("[xhci] BAR0 at 0x%lx is outside the low 4 GiB the kernel maps, "
                 "so there is no USB on this machine -- including its keyboard "
                 "and mouse\n", bar.phys);
         return;
     }
+    xh.bar_virt = bar.virt;
     xh.cap = bar.virt;
     pci_enable_bus_master(&pd);
     pci_write16(&pd, 0x04, pci_read16(&pd, 0x04) | (1u << 10));  /* Interrupt-Disable */
@@ -1260,6 +1575,7 @@ void xhci_init(void) {
         /* A controller that will not come out of reset will not answer
          * anything that follows either, and every one of those answers is
          * another timeout. Say so once and leave it alone. */
+        xh.why = "the controller never came out of reset";
         kprintf("[xhci] controller did not come out of reset; skipping USB\n");
         return;
     }
@@ -1306,6 +1622,7 @@ void xhci_init(void) {
     /* run */
     op_wr(OP_USBCMD, op_rd(OP_USBCMD) | USBCMD_RS);
     if (!wait_until(!(op_rd(OP_USBSTS) & USBSTS_HCH), W_RUN_US)) {
+        xh.why = "the controller stayed halted";
         kprintf("[xhci] controller stayed halted after R/S; skipping USB\n");
         return;
     }
@@ -1313,6 +1630,26 @@ void xhci_init(void) {
     xh.present = 1;
     kprintf("[xhci] %x:%x up: %u slots, %u ports, %u-byte ctx\n",
             pd.vendor, pd.device, xh.maxslots, xh.maxports, ctxsz());
+
+    /* Switch every port on before looking at any of them.
+     *
+     * PORTSC.PP is not always set when the controller comes out of reset: a
+     * controller that advertises Port Power Control (HCCPARAMS1.PPC) may hand
+     * its ports over unpowered, and an unpowered port reports no connection no
+     * matter what is plugged into it. port_reset() read CCS first and returned
+     * for every port, so the controller came up, said it had 24 of them, and
+     * enumerated nothing at all. QEMU powers its ports at creation, so there
+     * the loop below never has anything to do and its absence cost nothing. */
+    for (uint32_t p = 0; p < xh.maxports; p++) {
+        uint32_t sc = op_rd(OP_PORTSC(p));
+        if (!(sc & PORTSC_PP)) {
+            op_wr(OP_PORTSC(p), (sc & ~PORTSC_RW1CS) | PORTSC_PP);
+            xh.ports_powered++;
+        }
+    }
+    if (xh.ports_powered)
+        kprintf("[xhci] %u of %u ports came up unpowered; switched on\n",
+                xh.ports_powered, xh.maxports);
 
     /* Let the connects settle before looking for them.
      *
@@ -1326,6 +1663,9 @@ void xhci_init(void) {
      * exists and this wait looks like dead weight. It is the difference
      * between a keyboard and no keyboard. */
     delay_us(W_ATTACH_US);
+
+    for (uint32_t p = 0; p < xh.maxports; p++)
+        if (op_rd(OP_PORTSC(p)) & PORTSC_CCS) xh.ports_connected++;
 
     uint64_t t_enum = now_us();
     for (uint32_t p = 0; p < xh.maxports; p++) enumerate_port(p);
