@@ -9,7 +9,11 @@
 #define MOUSE_RIGHT  0x02
 #define MOUSE_MIDDLE 0x04
 
-void    mouse_init(int screen_w, int screen_h);
+/* Returns 1 if a PS/2 mouse answered on the auxiliary port, 0 if there is
+ * nothing there -- in which case the cursor is driven by the USB HID path, or
+ * by nothing at all. */
+int     mouse_init(int screen_w, int screen_h);
+int     mouse_ps2_present(void);
 void    mouse_set_bounds(int screen_w, int screen_h);   /* re-clamp after a res change */
 int     mouse_x(void);
 int     mouse_y(void);

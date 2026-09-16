@@ -2,6 +2,7 @@
 #include "mouse.h"
 #include "interrupts.h"
 #include "io.h"
+#include "timeout.h"
 
 /* ---------------------------------------------------------------------------
  *  8042 PS/2 controller + mouse. The controller multiplexes the keyboard and
@@ -28,20 +29,46 @@ static volatile uint8_t phase;           /* which byte of the packet is next */
 static volatile uint8_t pktsz = 3;       /* 3 (plain) or 4 (IntelliMouse wheel) */
 static volatile int     wheelacc;        /* accumulated wheel delta (+up / -down) */
 
-/* Bounded spin so a missing/!ready controller can never wedge the kernel. */
-static void wait_write(void) { for (int i = 0; i < 100000; i++) if (!(inb(PS2_STATUS) & 2)) return; }
-static void wait_read(void)  { for (int i = 0; i < 100000; i++) if (inb(PS2_STATUS) & 1)   return; }
+/* Real deadlines, not iteration counts. The 8042 answers in microseconds when
+ * it is there at all; 20 ms is the same bound drivers/keyboard.c uses, and the
+ * point of it is the machine that has no controller behind these ports, where
+ * every read costs about a microsecond and the old 100,000-iteration spin was
+ * a tenth of a second per access, paid on every one of a couple of dozen. */
+#define PS2_WAIT_US 20000ull
 
-static uint8_t ctl_read(void)        { wait_read(); return inb(PS2_DATA); }
-static void    ctl_cmd(uint8_t c)    { wait_write(); outb(PS2_CMD, c); }
-static void    ctl_write(uint8_t v)  { wait_write(); outb(PS2_DATA, v); }
+static int wait_write(void) { return wait_until(!(inb(PS2_STATUS) & 2), PS2_WAIT_US) ? 0 : -1; }
+static int wait_read(void)  { return wait_until(inb(PS2_STATUS) & 1,   PS2_WAIT_US) ? 0 : -1; }
 
-/* Send a byte to the mouse (prefix 0xD4) and swallow its 0xFA acknowledge. */
-static void mouse_cmd(uint8_t v) {
+/* -1 when nothing came back, which is a different fact from any byte value and
+ * used to be indistinguishable from 0xFF. See mouse_init(). */
+static int  ctl_read(void)        { return wait_read() == 0 ? inb(PS2_DATA) : -1; }
+static void ctl_cmd(uint8_t c)    { if (wait_write() == 0) outb(PS2_CMD, c); }
+static void ctl_write(uint8_t v)  { if (wait_write() == 0) outb(PS2_DATA, v); }
+
+/* Send a byte to the mouse (prefix 0xD4) and read its acknowledge. 0 when the
+ * device answered 0xFA, -1 otherwise -- which is how "there is a mouse on this
+ * port" gets asked at all.
+ *
+ * It reads up to three replies rather than one, because the byte in front of
+ * the acknowledge is not always the acknowledge. A mouse that has just been
+ * powered or re-enabled announces itself with 0xAA (self-test passed) and then
+ * its device id, and both of those are sitting in the output buffer when the
+ * first command goes out. Taking the first byte as the answer would report no
+ * mouse on a port that has one, which is a worse failure than the one this
+ * whole function exists to avoid. */
+static int mouse_cmd(uint8_t v) {
     ctl_cmd(0xD4);
     ctl_write(v);
-    ctl_read();                          /* ACK */
+    for (int i = 0; i < 3; i++) {
+        int r = ctl_read();
+        if (r == 0xFA) return 0;               /* acknowledged                */
+        if (r < 0 || r == 0xFE) return -1;     /* silence, or "resend"        */
+    }
+    return -1;
 }
+
+static int present;                      /* a mouse answered on the aux port */
+int mouse_ps2_present(void) { return present; }
 
 /* finished a full packet (3 or 4 bytes): apply movement, buttons and wheel */
 static void decode_packet(void) {
@@ -117,35 +144,56 @@ void mouse_set_bounds(int screen_w, int screen_h) {
     if (my > sh - 1) my = sh - 1;
 }
 
-void mouse_init(int screen_w, int screen_h) {
+int mouse_init(int screen_w, int screen_h) {
     sw = screen_w; sh = screen_h;
     mx = screen_w / 2; my = screen_h / 2;
-    btns = 0; phase = 0; evt = 0;
+    btns = 0; phase = 0; evt = 0; present = 0;
 
     ctl_cmd(0xA8);                             /* enable auxiliary device */
 
-    ctl_cmd(0x20);                             /* read controller config byte */
-    uint8_t cfg = ctl_read();
+    /* Anything the firmware or the aux device left in the output buffer is not
+     * a reply to a command this driver has sent, and the probe below reads
+     * replies. Bounded, for the same reason keyboard.c's drain is. */
+    for (int i = 0; i < 64 && (inb(PS2_STATUS) & 1); i++) inb(PS2_DATA);
+
+    /* Read-modify-write the controller config byte -- and only if the read
+     * actually produced one.
+     *
+     * ctl_read() used to hand back whatever inb() gave after a bounded spin,
+     * with no way to say "nothing came back". On a machine whose 8042 does not
+     * answer -- and on a board built in the last decade there may be nothing
+     * at all behind these ports -- that is 0xFF. Bit 4 of the config byte is
+     * *disable the first port's clock*, so this function's parting act was to
+     * switch off the keyboard, on exactly the machines where it had no mouse
+     * to show for it. keyboard_init() has checked its own read since the day
+     * it was written; this one never did, and it runs second. */
+    ctl_cmd(0x20);
+    int cfg = ctl_read();
+    if (cfg < 0) return 0;                     /* no controller: leave it alone */
     cfg |=  0x02;                              /* enable IRQ12 (mouse interrupt) */
     cfg &= ~0x20;                              /* enable the mouse clock */
     ctl_cmd(0x60);                             /* write controller config byte */
-    ctl_write(cfg);
+    ctl_write((uint8_t)cfg);
 
-    mouse_cmd(0xF6);                           /* set defaults */
+    /* Is there a device on the aux port at all? Every PS/2 mouse acknowledges
+     * 0xF6 and an empty port answers nothing. Asking costs one 20 ms deadline
+     * and saves eight of them in the knock below, on every machine whose mouse
+     * is USB -- which is most of them now. */
+    if (mouse_cmd(0xF6) != 0) return 0;        /* set defaults */
 
     /* IntelliMouse "knock": rates 200/100/80 then read device id; id 3 means a
      * scroll wheel is present and the mouse will stream 4-byte packets. */
     mouse_cmd(0xF3); mouse_cmd(200);
     mouse_cmd(0xF3); mouse_cmd(100);
     mouse_cmd(0xF3); mouse_cmd(80);
-    ctl_cmd(0xD4); ctl_write(0xF2); ctl_read();   /* get-id cmd + ACK */
-    uint8_t id = ctl_read();
-    if (id == 0x03) pktsz = 4;
+    if (mouse_cmd(0xF2) == 0 && ctl_read() == 0x03) pktsz = 4;   /* get device id */
     mouse_cmd(0xF3); mouse_cmd(100);           /* restore a sane sample rate */
 
     mouse_cmd(0xF4);                           /* enable packet streaming */
 
     irq_install(12, on_irq);
+    present = 1;
+    return 1;
 }
 
 int     mouse_x(void)        { return mx; }

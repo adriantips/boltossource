@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include "commands.h"
 #include "usb.h"
+#include "xhci.h"
 #include "blk.h"
 #include "fat32.h"
 #include "ext2.h"
@@ -24,7 +25,7 @@
  * ===========================================================================*/
 
 static void usage(void) {
-    kprintf("usage: usb                       list USB storage and what is mounted\n"
+    kprintf("usage: usb                       list USB input, storage and mounts\n"
             "       usb mount [NAME]          mount a USB disk's FAT32 volume\n"
             "       usb umount                flush and release the volume\n"
             "       usb format NAME --yes [L] make a fresh FAT32 volume on it\n"
@@ -45,7 +46,29 @@ static int is_usb(const blkdev_t *d) {
     return d->name[0] == 'u' && d->name[1] == 's' && d->name[2] == 'b';
 }
 
+/* Input first, because it is the half people come here to check. A machine
+ * whose keyboard does nothing is a machine whose owner wants to know whether
+ * the kernel ever found a keyboard, and until this line existed the only place
+ * that said so was a boot log that had already scrolled away. */
+static void list_input(void) {
+    int kb = 0, ms = 0;
+    xhci_hid_counts(&kb, &ms);
+    if (!kb && !ms) {
+        kprintf("input: no USB keyboard or mouse\n");
+        return;
+    }
+    kprintf("input: %d USB keyboard%s, %d USB mouse%s (%s)\n",
+            kb, kb == 1 ? "" : "s", ms, ms == 1 ? "" : "s",
+            xhci_irq_driven() ? "interrupt-driven" : "polled");
+    struct xhci_hid h;
+    for (int i = 0; xhci_hid_get(i, &h); i++)
+        kprintf("  slot %-2u %-8s DCI %-2u %u-byte reports, %lu delivered\n",
+                h.slot, h.proto == 2 ? "mouse" : "keyboard", h.dci, h.rptlen,
+                (unsigned long)h.reports);
+}
+
 static void list(void) {
+    list_input();
     int n = usbstor_count();
     if (!n) {
         kprintf("usb: no USB storage attached\n");

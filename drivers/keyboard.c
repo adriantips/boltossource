@@ -280,7 +280,10 @@ char kbd_getc(void) {
     return (char)c;
 }
 
-void keyboard_init(void) {
+static int ps2_present;                  /* the 8042 answered its config read */
+int kbd_ps2_present(void) { return ps2_present; }
+
+int keyboard_init(void) {
     /* The built-in bindings, so shortcuts work from the first keypress.
      * keymap_init() re-applies these and then loads /etc/keys.conf, which
      * cannot happen until there is a filesystem to read it from. */
@@ -348,9 +351,15 @@ void keyboard_init(void) {
         cfg &= ~0x10;                    /* first-port clock on              */
         ctl_cmd(0x60);
         ctl_write((uint8_t)cfg);
+        ps2_present = 1;
     }
 
     /* Whatever that exchange stirred up is not a keystroke anybody made. */
     for (int i = 0; i < 64 && (inb(0x64) & 1); i++) inb(0x60);
     rhead = rtail = 0;
+    /* The ring, the layout and the shortcut table are up either way: a USB
+     * keyboard feeds the same ring through kbd_inject(). What this returns is
+     * only whether there is an 8042 answering, which is a question the boot
+     * log should be able to put to somebody whose keyboard does nothing. */
+    return ps2_present;
 }
