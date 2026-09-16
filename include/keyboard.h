@@ -38,7 +38,11 @@
 #define KEY_SHOME  0x06
 #define KEY_SEND   0x15
 
-void keyboard_init(void);
+/* Returns 1 if the 8042 answered, 0 if there is no PS/2 controller behind the
+ * legacy ports -- which is normal on a modern board, where the keyboard is a
+ * USB device and reaches this driver through kbd_inject(). */
+int keyboard_init(void);
+int kbd_ps2_present(void);
 int  kbd_ctrl_down(void);  /* 1 while either Ctrl key is held */
 int  kbd_alt_down(void);   /* 1 while either Alt key is held  */
 int  kbd_shift_down(void); /* 1 while either Shift key is held */

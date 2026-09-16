@@ -360,8 +360,15 @@ void kmain(struct bootinfo *bi) {
      * rather than in time. PIT channel 2 is the reference, so this needs
      * nothing that is not already up. */
     timeout_init();
-    keyboard_init(); kprintf("[ok] PS/2 keyboard\n");
-    if (fb_present()) { mouse_init((int)fb_width(), (int)fb_height()); kprintf("[ok] PS/2 mouse\n"); }
+    int ps2_kbd = keyboard_init();
+    kprintf("[%s] PS/2 keyboard%s\n", ps2_kbd ? "ok" : "--",
+            ps2_kbd ? "" : ": no 8042 behind the legacy ports");
+    int ps2_mouse = 0;
+    if (fb_present()) {
+        ps2_mouse = mouse_init((int)fb_width(), (int)fb_height());
+        kprintf("[%s] PS/2 mouse%s\n", ps2_mouse ? "ok" : "--",
+                ps2_mouse ? "" : ": nothing on the auxiliary port");
+    }
 
     /* Hand interrupt delivery to the APIC: masks the 8259s, routes PS/2 lines
      * through the IO-APIC, and runs the scheduler tick off the local-APIC timer.
@@ -378,6 +385,27 @@ void kmain(struct bootinfo *bi) {
     ahci_init();     /* probe AHCI/SATA controller; registers disks into block layer */
     nvme_init();     /* probe NVMe; registers its namespace into the block layer */
     xhci_init();     /* probe xHCI USB controller, enumerate attached devices */
+
+    /* One line saying what can actually type and point, because the failure
+     * this covers is silent otherwise: the desktop comes up, looks right, and
+     * answers nothing, with a boot log full of devices that all came up fine.
+     * A machine whose keyboard is USB has no 8042 at all, so "[ok] PS/2
+     * keyboard" was never the reassurance it read as. */
+    {
+        int usb_kbd = 0, usb_mouse = 0;
+        xhci_hid_counts(&usb_kbd, &usb_mouse);
+        int keys = ps2_kbd + usb_kbd, points = ps2_mouse + usb_mouse;
+        kprintf("[%s] input: %d keyboard%s (%d PS/2, %d USB), %d pointer%s "
+                "(%d PS/2, %d USB)\n", (keys && points) ? "ok" : "--",
+                keys, keys == 1 ? "" : "s", ps2_kbd, usb_kbd,
+                points, points == 1 ? "" : "s", ps2_mouse, usb_mouse);
+        if (!keys || !points)
+            kprintf("[--] nothing will respond to the %s. A USB device behind "
+                    "a hub is invisible to this kernel; try a port on the "
+                    "machine itself.\n",
+                    !keys && !points ? "keyboard or the mouse"
+                                     : (!keys ? "keyboard" : "mouse"));
+    }
     fs_init();       kprintf("[ok] ramfs mounted (/)\n");
     fs_persist_init();/* back the tree with a real disk + load saved image */
     vfs_init();      kprintf("[ok] VFS (ramfs + /dev + /proc)\n");

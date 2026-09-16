@@ -83,8 +83,10 @@
 #define TRB_ENABLE_SLOT 9
 #define TRB_ADDRESS_DEV 11
 #define TRB_CONFIG_EP   12
+#define TRB_EVAL_CTX    13
 #define TRB_RESET_EP    14
 #define TRB_SET_TR_DEQ  16
+#define TRB_NOOP_CMD    23
 #define TRB_TR_EVENT    32
 #define TRB_CMD_EVENT   33
 #define TRB_PORTSC_EVENT 34
@@ -110,6 +112,8 @@
 #define W_PORT_US      200000ull    /* port reset completing (PRC)          */
 #define W_EVENT_US    1000000ull    /* an event landing on the event ring   */
 #define W_BULK_US     5000000ull    /* a bulk transfer: a real disk, so longer */
+#define W_MSI_US       100000ull    /* a No Op's completion arriving as an IRQ */
+#define W_ATTACH_US    200000ull    /* connects settling after the controller starts */
 
 struct trb { uint32_t d[4]; };
 
@@ -126,6 +130,11 @@ struct usbdev {
     uint8_t  slot, port, speed;
     uint16_t vendor, product;
     uint8_t  dev_class, if_class, if_sub, if_proto;
+    /* Highest Device Context Index configured on this slot. A composite device
+     * is configured one interface at a time, and each Configure Endpoint has
+     * to declare a Context Entries count that still covers the endpoints added
+     * by the one before it, or the controller drops them. */
+    uint8_t  max_dci;
 };
 
 #define MAX_DEV 8
@@ -133,6 +142,7 @@ struct usbdev {
 static struct {
     int present;
     int irq_ok;                /* 1 once MSI + interrupter 0 drive HID input */
+    volatile uint32_t irqs;    /* interrupts actually delivered on the vector */
     volatile void *cap;        /* BAR0 base (capability regs)   */
     volatile void *op;         /* operational regs              */
     volatile void *rt;         /* runtime regs                  */
@@ -382,8 +392,9 @@ static int port_reset(uint32_t p) {
     }
 }
 
-static void hid_setup(struct usbdev *d, struct ring *ep0, const uint8_t *cfg, uint16_t total);
+static void hid_attach(struct usbdev *d, struct ring *ep0, const uint8_t *cfg, uint16_t total);
 static void bulk_setup(struct usbdev *d, struct ring *ep0, const uint8_t *cfg, uint16_t total);
+static void bulk_irq_mask(int off);
 
 /* Build the input context for Address Device and enumerate one device. */
 static void enumerate_port(uint32_t p) {
@@ -425,6 +436,7 @@ static void enumerate_port(uint32_t p) {
     ep0[1] = (4u << 3) | (3u << 1) | (mps << 16);  /* EP type=control, CErr=3  */
     ep0[2] = (uint32_t)(tr->phys) | 1u;            /* TR dequeue | DCS=1        */
     ep0[3] = (uint32_t)(tr->phys >> 32);
+    ep0[4] = 8;                                    /* avg TRB len: 8 for control */
 
     /* Address Device (BSR=0) */
     cc = cmd_exec((uint32_t)inctx.phys, (uint32_t)(inctx.phys >> 32), 0,
@@ -434,8 +446,39 @@ static void enumerate_port(uint32_t p) {
         return;
     }
 
-    /* GET_DESCRIPTOR(device, 18) */
+    /* GET_DESCRIPTOR(device) -- the first eight bytes only, to begin with.
+     *
+     * Byte 7 is bMaxPacketSize0, and the EP0 context above was built with a
+     * guess at it taken from the port speed. That guess is exact for low speed
+     * (always 8) and for high speed (always 64), and a coin toss for full
+     * speed, where 8, 16, 32 and 64 are all legal. Eight bytes is the one
+     * length every device can answer whatever its real maximum is, because the
+     * first packet of a control transfer is never split. */
     uint8_t desc[18]; memset(desc, 0, sizeof desc);
+    if (control_xfer(tr, slot, 0x80, 6, 0x0100, 0, desc, 8) != 0) {
+        kprintf("[xhci] port %u slot %u: get device descriptor failed\n", p + 1, slot);
+        return;
+    }
+
+    /* Correct EP0 before anything longer relies on it. A controller splitting
+     * an 18-byte read into 8-byte packets for a device that speaks 64 gets a
+     * transaction error on the second one, and the symptom is a device that
+     * enumerates on one machine and not on another. Evaluate Context (xHCI
+     * 4.6.7) is how EP0 is changed under a slot that is already addressed. */
+    uint32_t real_mps0 = speed == 4 ? (1u << desc[7]) : desc[7];
+    if (real_mps0 && real_mps0 != mps) {
+        memset(inctx.virt, 0, ctxsz() * 3);
+        icc[1] = 0x2;                                  /* A1: EP0 alone      */
+        ep0[1] = (4u << 3) | (3u << 1) | (real_mps0 << 16);
+        ep0[2] = (uint32_t)(tr->phys) | 1u;
+        ep0[3] = (uint32_t)(tr->phys >> 32);
+        ep0[4] = 8;
+        if (cmd_exec((uint32_t)inctx.phys, (uint32_t)(inctx.phys >> 32), 0,
+                     (TRB_EVAL_CTX << 10) | (slot << 24), NULL) != CC_SUCCESS)
+            kprintf("[xhci] port %u slot %u: EP0 packet size %u -> %u refused\n",
+                    p + 1, slot, mps, real_mps0);
+    }
+
     if (control_xfer(tr, slot, 0x80, 6, 0x0100, 0, desc, 18) != 0) {
         kprintf("[xhci] port %u slot %u: get device descriptor failed\n", p + 1, slot);
         return;
@@ -447,27 +490,43 @@ static void enumerate_port(uint32_t p) {
     d->vendor  = (uint16_t)desc[8]  | ((uint16_t)desc[9]  << 8);
     d->product = (uint16_t)desc[10] | ((uint16_t)desc[11] << 8);
     d->if_class = 0;
+    d->max_dci  = 1;                               /* EP0, and nothing else yet */
 
-    /* GET_DESCRIPTOR(config, header then full) to read the interface class */
-    uint8_t cfg[64]; memset(cfg, 0, sizeof cfg);
+    /* GET_DESCRIPTOR(config, header then full).
+     *
+     * This buffer used to be 64 bytes and the read was clamped to it. That is
+     * enough for the single-interface keyboard QEMU emulates (34 bytes) and
+     * not for most real ones: a keyboard with a second HID interface for its
+     * media keys is 59 bytes, a third takes it past 84, and a wireless
+     * receiver carrying a keyboard and a mouse is longer still. Clamping does
+     * not fail -- it truncates, so the endpoint descriptor this driver is
+     * looking for is simply not in the buffer, and the device enumerates,
+     * prints a line, and never delivers a keystroke. */
+    static uint8_t cfg[512];
+    memset(cfg, 0, sizeof cfg);
+    uint16_t total = 0;
     if (control_xfer(tr, slot, 0x80, 6, 0x0200, 0, cfg, 9) == 0) {
-        uint16_t total = (uint16_t)cfg[2] | ((uint16_t)cfg[3] << 8);
-        if (total > sizeof cfg) total = sizeof cfg;
-        if (total > 9 && control_xfer(tr, slot, 0x80, 6, 0x0200, 0, cfg, total) == 0) {
-            /* walk descriptors for the first interface (bDescriptorType==4) */
-            uint32_t i = 0;
-            while (i + 1 < total) {
-                uint8_t blen = cfg[i], btype = cfg[i + 1];
-                if (blen == 0) break;
-                if (btype == 4 && i + 7 < total) {
-                    d->if_class = cfg[i + 5];
-                    d->if_sub   = cfg[i + 6];
-                    d->if_proto = cfg[i + 7];
-                    break;
-                }
-                i += blen;
-            }
+        total = (uint16_t)cfg[2] | ((uint16_t)cfg[3] << 8);
+        if (total > sizeof cfg) {
+            kprintf("[xhci] slot %u: %u-byte configuration truncated to %u\n",
+                    slot, total, (unsigned)sizeof cfg);
+            total = (uint16_t)sizeof cfg;
         }
+        if (total > 9 && control_xfer(tr, slot, 0x80, 6, 0x0200, 0, cfg, total) != 0)
+            total = 0;
+    }
+    /* The first interface, for the summary line below. What actually gets
+     * driven is decided per interface further down, not from this one. */
+    for (uint32_t i = 0; i + 7 < total; ) {
+        uint8_t blen = cfg[i];
+        if (blen == 0) break;
+        if (cfg[i + 1] == 4) {
+            d->if_class = cfg[i + 5];
+            d->if_sub   = cfg[i + 6];
+            d->if_proto = cfg[i + 7];
+            break;
+        }
+        i += blen;
     }
 
     const char *kind = "device";
@@ -480,34 +539,68 @@ static void enumerate_port(uint32_t p) {
             p + 1, slot, kind, d->vendor, d->product, kc, speed);
     xh.ndev++;
 
-    /* boot-protocol keyboard (proto 1) or mouse (proto 2): drive it */
-    if (kc == 3 && (d->if_proto == 1 || d->if_proto == 2))
-        hid_setup(d, tr, cfg, (uint16_t)sizeof cfg);
+    if (total == 0) {
+        kprintf("[xhci] slot %u: no configuration descriptor; left alone\n", slot);
+        return;
+    }
+
+    if (kc == 3)
+        hid_attach(d, tr, cfg, total);
     /* SCSI transparent command set (6) over bulk-only transport (0x50) is what
      * every USB stick made in the last twenty years is. Anything else calling
      * itself class 8 is left alone rather than guessed at. */
     else if (kc == 8 && d->if_sub == 6 && d->if_proto == 0x50)
-        bulk_setup(d, tr, cfg, (uint16_t)sizeof cfg);
+        bulk_setup(d, tr, cfg, total);
     else if (kc == 8)
         kprintf("[xhci] slot %u: mass storage subclass %x proto %x is not "
                 "bulk-only SCSI; left alone\n", d->slot, d->if_sub, d->if_proto);
+    /* Said out loud because the consequence is invisible otherwise: a keyboard
+     * plugged into a monitor, a dock or the back of another keyboard is behind
+     * a hub, and this driver walks root ports only. */
+    else if (kc == 9)
+        kprintf("[xhci] slot %u: hubs are not driven, so anything plugged into "
+                "this one is invisible\n", d->slot);
 }
 
 /* ===========================================================================
- *  USB HID boot keyboard. After a HID device is addressed we SET_CONFIGURATION,
- *  add its interrupt-IN endpoint via Configure Endpoint, switch it to the boot
- *  protocol, and then poll the endpoint for 8-byte boot reports. Decoded keys
- *  are fed into the PS/2 keyboard ring (kbd_inject) so the rest of the system
- *  is transport-agnostic.
+ *  USB HID boot keyboard and mouse.
+ *
+ *  After a HID device is addressed we SET_CONFIGURATION once, then for every
+ *  boot-protocol interface it declares -- and there is usually more than one,
+ *  because a wireless receiver presents its keyboard and its mouse as two
+ *  interfaces of a single device -- add that interface's interrupt-IN endpoint
+ *  via Configure Endpoint, switch it to the boot protocol, and arm a transfer.
+ *  Reports are decoded here and pushed into the PS/2 drivers' rings
+ *  (kbd_inject, mouse_inject), so nothing above this file has to know which
+ *  wire the input arrived on.
+ *
+ *  Endpoints, not just devices, are what this deals in now. The old code took
+ *  the first interrupt-IN endpoint in the whole configuration descriptor and
+ *  armed it against the first interface's protocol byte, which on a combined
+ *  keyboard-and-mouse receiver means one of the two devices is decoded as the
+ *  other and neither works.
  * ===========================================================================*/
+#define MAX_HID 8
+
 struct hidkbd {
     int            used;
     uint8_t        slot, dci, proto;   /* proto: 1=keyboard, 2=mouse    */
+    uint8_t        ep_addr;       /* USB endpoint address, for CLEAR_FEATURE */
+    uint16_t       rptlen;        /* bytes asked for per transfer      */
     struct ring    tr;            /* interrupt-IN transfer ring        */
+    struct ring   *ep0;           /* EP0 ring, for clearing a halt     */
     struct dma_buf rpt;           /* boot report buffer (DMA)          */
     uint8_t        last[8];       /* previous report, for edge detect  */
+    /* Set by the interrupt handler when a transfer comes back with anything
+     * other than a completion, cleared by the idle loop that recovers it. */
+    volatile int   halted;
+    /* Reports this endpoint has delivered. `usb` prints it, which is the
+     * difference between "the keyboard was never found" and "the keyboard is
+     * found, armed, and saying nothing" -- two problems that look identical
+     * from in front of the machine and have nothing in common behind it. */
+    volatile uint32_t reports;
 };
-static struct hidkbd hidk[MAX_DEV];
+static struct hidkbd hidk[MAX_HID];
 static int nhid;
 
 /* HID usage id -> char, honouring shift/ctrl. 0 == produce nothing. Mirrors the
@@ -541,71 +634,183 @@ static char hid_translate(uint8_t u, int shift, int ctrl) {
     }
 }
 
-/* Configure the device's interrupt-IN endpoint and arm the first transfer. */
-static void hid_setup(struct usbdev *d, struct ring *ep0, const uint8_t *cfg, uint16_t total) {
-    if (nhid >= MAX_DEV) return;
-    /* walk the config descriptor: capture interface number + the interrupt-IN
-     * endpoint's address / max-packet size */
-    uint8_t iface = 0, epaddr = 0; uint16_t mps = 8; int have_ep = 0;
-    for (uint32_t i = 0; i + 1 < total; ) {
+/* bInterval means two different things, and neither of them is the number the
+ * endpoint context wants. That field is an exponent: the controller services
+ * the endpoint every 2^Interval * 125 us. At high and super speed bInterval is
+ * already that exponent, off by one. At low and full speed it is a count of
+ * whole 1 ms frames, so it has to be turned back into an exponent, and the
+ * legal range there is 3..10 (xHCI 6.2.3.6, table 6-12).
+ *
+ * The field was left at zero until now. QEMU accepts that; a real controller
+ * does not, because zero is out of range for a full-speed interrupt endpoint,
+ * and Configure Endpoint comes back with a parameter error -- so the keyboard
+ * is addressed, printed, and never scheduled. */
+static uint32_t ep_interval(uint8_t speed, uint8_t binterval) {
+    if (speed == 3 || speed == 4) {                    /* High / Super */
+        int v = (int)binterval - 1;
+        if (v < 0)  v = 0;
+        if (v > 15) v = 15;
+        return (uint32_t)v;
+    }
+    int frames = binterval ? binterval : 1;            /* Low / Full: 1..255 ms */
+    int v = 3;
+    while (v < 10 && (1 << (v - 3)) < frames) v++;
+    return (uint32_t)v;
+}
+
+/* Queue one report transfer and ring the endpoint's doorbell. */
+static void hid_arm(struct hidkbd *h) {
+    ring_push(&h->tr, (uint32_t)h->rpt.phys, (uint32_t)(h->rpt.phys >> 32), h->rptlen,
+              (TRB_NORMAL << 10) | (1u << 5));             /* IOC */
+    __asm__ volatile("" ::: "memory");
+    xh.db[h->slot] = h->dci;
+}
+
+/* Configure one boot-protocol interface's interrupt-IN endpoint and arm it.
+ * `at` is the offset of that interface's descriptor within cfg. Returns 1 if
+ * the endpoint is live. */
+static int hid_iface(struct usbdev *d, struct ring *ep0r, const uint8_t *cfg,
+                     uint16_t total, uint32_t at) {
+    uint8_t iface = cfg[at + 2], proto = cfg[at + 7];
+    if (nhid >= MAX_HID) return 0;
+
+    /* Walk forward to this interface's first interrupt-IN endpoint, stopping
+     * at the next interface descriptor. An endpoint belongs to whichever
+     * interface it follows, and taking the first one in the configuration
+     * regardless is how a mouse ends up armed on the keyboard's pipe. */
+    uint8_t epaddr = 0, binterval = 1; uint32_t mps = 8; int have_ep = 0;
+    for (uint32_t i = at + cfg[at]; i + 6 < total; ) {
         uint8_t blen = cfg[i], btype = cfg[i + 1];
-        if (blen == 0) break;
-        if (btype == 4) iface = cfg[i + 2];                       /* interface  */
-        else if (btype == 5) {                                    /* endpoint   */
+        if (blen == 0 || btype == 4) break;
+        if (btype == 5) {
             uint8_t addr = cfg[i + 2], attr = cfg[i + 3];
             if ((addr & 0x80) && (attr & 3) == 3) {               /* interrupt IN */
-                epaddr = addr; mps = (uint16_t)cfg[i + 4] | ((uint16_t)cfg[i + 5] << 8);
-                have_ep = 1; break;
+                epaddr = addr;
+                mps = (((uint32_t)cfg[i + 4] | ((uint32_t)cfg[i + 5] << 8)) & 0x7FF);
+                binterval = cfg[i + 6];
+                have_ep = 1;
+                break;
             }
         }
         i += blen;
     }
-    if (!have_ep) return;
-    uint8_t epnum = epaddr & 0x0F;
-    uint8_t dci   = (uint8_t)(epnum * 2 + 1);                     /* IN endpoint DCI */
+    if (!have_ep) {
+        kprintf("[xhci] slot %u iface %u: no interrupt-IN endpoint\n", d->slot, iface);
+        return 0;
+    }
 
-    /* SET_CONFIGURATION(bConfigurationValue) */
-    if (control_xfer(ep0, d->slot, 0x00, 9, cfg[5], 0, NULL, 0) != 0) return;
+    uint8_t dci = (uint8_t)((epaddr & 0x0F) * 2 + 1);             /* IN endpoint DCI */
+    if (dci < 2 || dci > 31) return 0;
 
-    /* transfer ring + report buffer for the interrupt endpoint */
+    /* A boot report is 8 bytes for a keyboard and 3 or 4 for a mouse, but the
+     * transfer has to be sized from the endpoint, not from the protocol: ask
+     * for fewer bytes than the device sends and the packet is a babble error,
+     * which halts the endpoint on the first keystroke. */
+    if (mps < 8)  mps = 8;
+    if (mps > 64) mps = 64;
+
     struct hidkbd *h = &hidk[nhid];
-    if (ring_init(&h->tr) != 0) return;
-    if (dma_alloc(8, &h->rpt) != 0) return;
+    if (ring_init(&h->tr) != 0) return 0;
+    if (dma_alloc(64, &h->rpt) != 0) return 0;
+    memset(h->rpt.virt, 0, 64);
     memset(h->last, 0, 8);
+    h->rptlen = (uint16_t)mps;
 
-    /* Configure Endpoint: input context = ICC + slot + (dci) endpoint contexts */
+    /* Context Entries has to cover every endpoint on the slot, not just this
+     * one, or a second Configure Endpoint retires the first interface's. */
+    uint32_t entries = dci > d->max_dci ? dci : d->max_dci;
+
+    /* Configure Endpoint: ICC + slot + up to 31 endpoint contexts. */
     struct dma_buf inctx;
-    if (dma_alloc(ctxsz() * (dci + 2), &inctx) != 0) return;
-    memset(inctx.virt, 0, ctxsz() * (dci + 2));
+    if (dma_alloc(ctxsz() * 33, &inctx) != 0) return 0;
+    memset(inctx.virt, 0, ctxsz() * 33);
     volatile uint32_t *icc  = (volatile uint32_t *)inctx.virt;
     volatile uint32_t *sctx = (volatile uint32_t *)((uint8_t *)inctx.virt + ctxsz());
     volatile uint32_t *ep   = (volatile uint32_t *)((uint8_t *)inctx.virt + ctxsz() * (dci + 1));
     icc[1] = 1u | (1u << dci);                          /* add slot + this endpoint */
-    sctx[0] = ((uint32_t)d->speed << 20) | ((uint32_t)dci << 27);   /* ctx entries=dci */
+    sctx[0] = ((uint32_t)d->speed << 20) | (entries << 27);
     sctx[1] = ((uint32_t)d->port) << 16;
-    ep[1] = (7u << 3) | (3u << 1) | ((uint32_t)mps << 16);  /* EP type=Interrupt-IN, CErr=3 */
-    ep[2] = (uint32_t)(h->tr.phys) | 1u;                   /* TR dequeue | DCS=1 */
+    ep[0] = ep_interval(d->speed, binterval) << 16;
+    ep[1] = (7u << 3) | (3u << 1) | (mps << 16);        /* EP type=Interrupt-IN, CErr=3 */
+    ep[2] = (uint32_t)(h->tr.phys) | 1u;                /* TR dequeue | DCS=1 */
     ep[3] = (uint32_t)(h->tr.phys >> 32);
-    ep[4] = mps;                                           /* avg TRB len / max ESIT */
-    if (cmd_exec((uint32_t)inctx.phys, (uint32_t)(inctx.phys >> 32), 0,
-                 (TRB_CONFIG_EP << 10) | ((uint32_t)d->slot << 24), NULL) != CC_SUCCESS) {
-        dma_free(&inctx); return;
-    }
+    /* Max ESIT Payload in the high half, Average TRB Length in the low half.
+     * The high half used to be zero, which is a request for no periodic
+     * bandwidth at all: the endpoint is configured, the doorbell is accepted,
+     * and the controller never schedules a single transaction for it. */
+    ep[4] = (mps << 16) | mps;
+    int cc = cmd_exec((uint32_t)inctx.phys, (uint32_t)(inctx.phys >> 32), 0,
+                      (TRB_CONFIG_EP << 10) | ((uint32_t)d->slot << 24), NULL);
     dma_free(&inctx);
+    if (cc != CC_SUCCESS) {
+        kprintf("[xhci] slot %u iface %u: configure endpoint failed (cc=%d)\n",
+                d->slot, iface, cc);
+        return 0;
+    }
+    d->max_dci = (uint8_t)entries;
 
-    /* SET_PROTOCOL(boot=0) + SET_IDLE(0) on the interface */
-    control_xfer(ep0, d->slot, 0x21, 0x0B, 0, iface, NULL, 0);
-    control_xfer(ep0, d->slot, 0x21, 0x0A, 0, iface, NULL, 0);
+    /* SET_PROTOCOL(boot=0) + SET_IDLE(indefinite) on this interface. */
+    control_xfer(ep0r, d->slot, 0x21, 0x0B, 0, iface, NULL, 0);
+    control_xfer(ep0r, d->slot, 0x21, 0x0A, 0, iface, NULL, 0);
 
-    /* arm the first interrupt transfer */
-    h->used = 1; h->slot = d->slot; h->dci = dci; h->proto = d->if_proto;
-    ring_push(&h->tr, (uint32_t)h->rpt.phys, (uint32_t)(h->rpt.phys >> 32), 8,
-              (TRB_NORMAL << 10) | (1u << 5));             /* IOC */
-    __asm__ volatile("" ::: "memory");
-    xh.db[d->slot] = dci;                                  /* ring the EP doorbell */
+    h->used = 1; h->slot = d->slot; h->dci = dci; h->proto = proto;
+    h->ep_addr = epaddr; h->ep0 = ep0r; h->halted = 0;
+    hid_arm(h);
     nhid++;
-    kprintf("[xhci] HID %s armed (slot %u ep DCI %u)\n",
-            d->if_proto == 2 ? "mouse" : "keyboard", d->slot, dci);
+    kprintf("[xhci] slot %u iface %u: boot %s armed on DCI %u (%u-byte reports)\n",
+            d->slot, iface, proto == 2 ? "mouse" : "keyboard", dci, mps);
+    return 1;
+}
+
+/* Bring up every boot keyboard and boot mouse a HID device declares. */
+static void hid_attach(struct usbdev *d, struct ring *ep0r, const uint8_t *cfg, uint16_t total) {
+    /* SET_CONFIGURATION once for the device, before any endpoint is added. */
+    if (control_xfer(ep0r, d->slot, 0x00, 9, cfg[5], 0, NULL, 0) != 0) {
+        kprintf("[xhci] slot %u: set configuration %u failed\n", d->slot, cfg[5]);
+        return;
+    }
+
+    /* Boot-subclass interfaces first, because those are the ones whose report
+     * layout this driver actually knows. A device left in report protocol
+     * sends something else entirely, often with a leading report id, so every
+     * byte is off by one and a mouse walks off the screen on its own. */
+    int armed = 0, seen = 0;
+    for (uint32_t i = 0; i + 7 < total; ) {
+        uint8_t blen = cfg[i];
+        if (blen == 0) break;
+        if (cfg[i + 1] == 4 && cfg[i + 5] == 3) {                 /* HID interface */
+            seen++;
+            if (cfg[i + 6] == 1 && (cfg[i + 7] == 1 || cfg[i + 7] == 2))
+                armed += hid_iface(d, ep0r, cfg, total, i);
+        }
+        i += blen;
+    }
+    if (armed || seen == 0) {
+        if (!seen) kprintf("[xhci] slot %u: HID device with no HID interface\n", d->slot);
+        return;
+    }
+
+    /* Nothing declared itself boot-capable. The protocol byte is only defined
+     * when the subclass is 1, so reading it here is a guess -- but it is a
+     * guess in favour of a machine that can be typed on, and a device that
+     * says "keyboard" almost always does send the boot layout when asked to.
+     * If this is ever wrong the symptom is loud and immediate, which is more
+     * than can be said for the alternative. */
+    for (uint32_t i = 0; i + 7 < total; ) {
+        uint8_t blen = cfg[i];
+        if (blen == 0) break;
+        if (cfg[i + 1] == 4 && cfg[i + 5] == 3 &&
+            (cfg[i + 7] == 1 || cfg[i + 7] == 2)) {
+            kprintf("[xhci] slot %u iface %u: subclass %u is not the boot one; "
+                    "trying it as a %s anyway\n", d->slot, cfg[i + 2], cfg[i + 6],
+                    cfg[i + 7] == 2 ? "mouse" : "keyboard");
+            armed += hid_iface(d, ep0r, cfg, total, i);
+        }
+        i += blen;
+    }
+    if (!armed)
+        kprintf("[xhci] slot %u: %d HID interface%s, none of them a usable "
+                "keyboard or mouse\n", d->slot, seen, seen == 1 ? "" : "s");
 }
 
 /* Non-blocking peek of the event ring; returns 1 and fills the out-params if
@@ -677,15 +882,34 @@ static void xhci_drain(void) {
         for (int k = 0; k < nhid; k++) {
             struct hidkbd *h = &hidk[k];
             if (!h->used || !ring_owns(&h->tr, ptr)) continue;
+
+            /* A completion that is not a completion. Real devices stall, and a
+             * marginal cable reports a transaction error; either way the
+             * endpoint is halted, and the doorbell below then does nothing at
+             * all. Re-arming without looking is how a keyboard works for a
+             * while and then stops for good, with nothing said. Flag it and
+             * let the idle loop recover it -- that needs the command ring, and
+             * the command ring waits for events on the ring being drained
+             * right here, which is not something to do inside an interrupt. */
+            if (cc != CC_SUCCESS && cc != CC_SHORT_PACKET) {
+                h->halted = 1;
+                break;
+            }
+
+            h->reports++;
+            /* Residual is what did NOT move, so this is what actually arrived. */
+            uint32_t got = h->rptlen > resid ? h->rptlen - resid : 0;
             uint8_t *r = (uint8_t *)h->rpt.virt;
             if (h->proto == 2) {                   /* boot mouse: btn, dx, dy, wheel */
-                int dx = (int)(int8_t)r[1], dy = (int)(int8_t)r[2];
-                int wh = (int)(int8_t)r[3];
-                mouse_inject(dx, dy, r[0], wh);
-            } else {                               /* boot keyboard */
+                if (got >= 3) {
+                    int dx = (int)(int8_t)r[1], dy = (int)(int8_t)r[2];
+                    int wh = got >= 4 ? (int)(int8_t)r[3] : 0;
+                    mouse_inject(dx, dy, r[0], wh);
+                }
+            } else if (got >= 3) {                 /* boot keyboard */
                 int shift = (r[0] & 0x22) != 0;    /* L/R shift */
                 int ctrl  = (r[0] & 0x11) != 0;    /* L/R ctrl  */
-                for (int i = 2; i < 8; i++) {
+                for (uint32_t i = 2; i < got && i < 8; i++) {
                     uint8_t u = r[i];
                     if (u == 0) continue;
                     int was = 0;
@@ -694,13 +918,10 @@ static void xhci_drain(void) {
                     char c = hid_translate(u, shift, ctrl);
                     if (c) kbd_inject(c);
                 }
-                for (int i = 0; i < 8; i++) h->last[i] = r[i];
+                for (uint32_t i = 0; i < 8; i++) h->last[i] = i < got ? r[i] : 0;
             }
-            /* re-arm the transfer for the next report */
-            ring_push(&h->tr, (uint32_t)h->rpt.phys, (uint32_t)(h->rpt.phys >> 32), 8,
-                      (TRB_NORMAL << 10) | (1u << 5));
-            __asm__ volatile("" ::: "memory");
-            xh.db[h->slot] = h->dci;
+            hid_arm(h);                            /* ready for the next report */
+            break;                                 /* one ring owns this event */
         }
     }
 }
@@ -711,16 +932,81 @@ static void xhci_drain(void) {
  * event that lands mid-drain simply re-asserts the MSI -- nothing is lost. */
 static void xhci_irq(struct registers *r) {
     (void)r;
+    xh.irqs++;
     op_wr(OP_USBSTS, USBSTS_EINT);
     rt_wr(IR0_IMAN, 0x3);            /* bit0 IP (W1C) + bit1 IE (kept set) */
     if (xh.present) xhci_drain();
 }
 
-/* Polled fallback for the idle loop. A no-op once hardware interrupts drive the
- * controller (xh.irq_ok), so the IRQ handler is the sole event-ring consumer. */
+/* Put a halted interrupt endpoint back to work: Reset Endpoint, point its ring
+ * at a known-good TRB, ask the device to clear its own half of the halt, arm a
+ * transfer. The controller and the device each hold half of a stall, which is
+ * why all three commands are here and not just the first.
+ *
+ * Called from the idle loop, never from xhci_irq: every step waits for its own
+ * completion event on the ring the interrupt handler drains. */
+static void hid_recover(void) {
+    for (int k = 0; k < nhid; k++) {
+        struct hidkbd *h = &hidk[k];
+        if (!h->used || !h->halted) continue;
+        h->halted = 0;
+        kprintf("[xhci] slot %u DCI %u halted; resetting the endpoint\n",
+                h->slot, h->dci);
+        bulk_irq_mask(1);
+        cmd_exec(0, 0, 0, (TRB_RESET_EP << 10) | ((uint32_t)h->dci << 16) |
+                          ((uint32_t)h->slot << 24), NULL);
+        h->tr.enq = 0; h->tr.cycle = 1;
+        volatile uint32_t *l = h->tr.trb + (RING_SZ - 1) * 4;
+        l[3] = (TRB_LINK << 10) | (1u << 1);
+        cmd_exec((uint32_t)(h->tr.phys | 1u), (uint32_t)(h->tr.phys >> 32), 0,
+                 (TRB_SET_TR_DEQ << 10) | ((uint32_t)h->dci << 16) |
+                 ((uint32_t)h->slot << 24), NULL);
+        if (h->ep0)                                /* CLEAR_FEATURE(ENDPOINT_HALT) */
+            control_xfer(h->ep0, h->slot, 0x02, 1, 0, h->ep_addr, NULL, 0);
+        hid_arm(h);
+        bulk_irq_mask(0);
+    }
+}
+
+/* The idle-loop half of HID input: drains the event ring when interrupts are
+ * not doing it, and recovers any endpoint the drain found halted. Draining is
+ * skipped while xh.irq_ok, so the handler stays the only consumer of the ring;
+ * recovery runs either way, because it cannot happen inside the handler. */
 void xhci_poll(void) {
-    if (!xh.present || nhid == 0 || xh.irq_ok) return;
-    xhci_drain();
+    if (!xh.present || nhid == 0) return;
+    if (!xh.irq_ok) xhci_drain();
+    hid_recover();
+}
+
+/* 1 when HID reports arrive as interrupts, 0 when the idle loop is polling
+ * for them. Both work; which one is in use is the first thing worth knowing
+ * when input is late rather than absent. */
+int xhci_irq_driven(void) { return xh.irq_ok; }
+
+/* How many USB boot keyboards and mice are actually armed. For the one line
+ * the boot log prints about input, which is the only evidence available to
+ * somebody looking at a desktop that will not answer a keypress. */
+void xhci_hid_counts(int *keyboards, int *mice) {
+    int kb = 0, ms = 0;
+    for (int k = 0; k < nhid; k++) {
+        if (!hidk[k].used) continue;
+        if (hidk[k].proto == 2) ms++; else kb++;
+    }
+    if (keyboards) *keyboards = kb;
+    if (mice)      *mice      = ms;
+}
+
+/* Walk the armed HID endpoints, one per call. 0 once `i` is past the end. */
+int xhci_hid_get(int i, struct xhci_hid *out) {
+    if (i < 0 || i >= nhid || !hidk[i].used) return 0;
+    if (out) {
+        out->slot    = hidk[i].slot;
+        out->dci     = hidk[i].dci;
+        out->proto   = hidk[i].proto;
+        out->rptlen  = hidk[i].rptlen;
+        out->reports = hidk[i].reports;
+    }
+    return 1;
 }
 
 /* ===========================================================================
@@ -909,13 +1195,39 @@ static void bulk_setup(struct usbdev *d, struct ring *ep0,
 }
 
 void xhci_init(void) {
+    /* The first serial-bus/USB function on the bus is not necessarily the xHCI
+     * one. A board that also has a companion EHCI or UHCI controller lists it
+     * first, and asking for "the first USB controller" and then returning
+     * because it is not xHCI left such a machine with no USB at all. */
     struct pci_dev pd;
-    if (!pci_find_by_class(0x0C, 0x03, &pd)) return;
-    if (pd.prog_if != 0x30) return;                /* 30h = xHCI */
+    {
+        struct pci_dev all[64];
+        int n = pci_scan(all, 64), found = 0, extra = 0;
+        for (int i = 0; i < n; i++) {
+            if (all[i].class != 0x0C || all[i].subclass != 0x03) continue;
+            if (all[i].prog_if != 0x30) continue;           /* 30h = xHCI */
+            if (!found) { pd = all[i]; found = 1; } else extra++;
+        }
+        if (!found) return;
+        if (extra)
+            kprintf("[xhci] %d xHCI controllers; driving the first, so a device "
+                    "on any other is invisible\n", extra + 1);
+    }
 
     struct pci_bar bar;
-    if (pci_bar(&pd, 0, &bar) != 0 || !bar.is_mmio || !pci_map_bar(&bar)) {
-        kprintf("[xhci] BAR0 map failed\n");
+    if (pci_bar(&pd, 0, &bar) != 0 || !bar.is_mmio) {
+        kprintf("[xhci] BAR0 is not memory-mapped; no USB\n");
+        return;
+    }
+    if (!pci_map_bar(&bar)) {
+        /* Worth spelling out, because the consequence is a machine with no
+         * keyboard and a log line that used to say four words about it. The
+         * kernel's direct map covers the low 4 GiB, and firmware -- OVMF
+         * especially -- is fond of putting a 64-bit BAR far above that. Then
+         * there is no USB at all: not the disk, and not the keyboard. */
+        kprintf("[xhci] BAR0 at 0x%lx is outside the low 4 GiB the kernel maps, "
+                "so there is no USB on this machine -- including its keyboard "
+                "and mouse\n", bar.phys);
         return;
     }
     xh.cap = bar.virt;
@@ -1002,6 +1314,19 @@ void xhci_init(void) {
     kprintf("[xhci] %x:%x up: %u slots, %u ports, %u-byte ctx\n",
             pd.vendor, pd.device, xh.maxslots, xh.maxports, ctxsz());
 
+    /* Let the connects settle before looking for them.
+     *
+     * The reset a few lines up dropped every device the firmware had
+     * enumerated, and the ports come back the way a port comes back from any
+     * reset: empty, and then occupied a moment later. USB 2.0 7.1.7.3 gives a
+     * connect 100 ms to debounce, and a SuperSpeed port spends comparable time
+     * training its link. Reading PORTSC.CCS in the microsecond after R/S
+     * therefore finds nothing on real silicon -- and everything under an
+     * emulator, where a port's connect bit is set the instant the device model
+     * exists and this wait looks like dead weight. It is the difference
+     * between a keyboard and no keyboard. */
+    delay_us(W_ATTACH_US);
+
     uint64_t t_enum = now_us();
     for (uint32_t p = 0; p < xh.maxports; p++) enumerate_port(p);
     t_enum = now_us() - t_enum;
@@ -1019,15 +1344,38 @@ void xhci_init(void) {
      * interrupts. Route an MSI/MSI-X vector to the IDT, enable interrupter 0
      * (IMAN.IE) and the controller's master interrupt (USBCMD.INTE). From here
      * key/mouse reports raise IRQs that xhci_irq services. */
-    if (pci_msi_enable(&pd, XHCI_MSI_VECTOR) == 0) {
-        msi_install(XHCI_MSI_VECTOR, xhci_irq);
-        op_wr(OP_USBSTS, USBSTS_EINT);                       /* clear stale EINT */
-        rt_wr(IR0_IMAN, 0x2);                                /* IE = 1           */
-        op_wr(OP_USBCMD, op_rd(OP_USBCMD) | USBCMD_INTE);    /* master INT enable */
+    if (pci_msi_enable(&pd, XHCI_MSI_VECTOR) != 0) {
+        kprintf("[xhci] no MSI capability; HID input stays polled\n");
+        return;
+    }
+    msi_install(XHCI_MSI_VECTOR, xhci_irq);
+    op_wr(OP_USBSTS, USBSTS_EINT);                       /* clear stale EINT */
+    rt_wr(IR0_IMAN, 0x2);                                /* IE = 1           */
+    op_wr(OP_USBCMD, op_rd(OP_USBCMD) | USBCMD_INTE);    /* master INT enable */
+
+    /* Prove the vector before trusting it.
+     *
+     * "The device has an MSI capability" and "the message arrives at the CPU"
+     * are different claims, and only the first one was ever checked. The cost
+     * of getting it wrong is not a slow keyboard: xhci_poll() stands down the
+     * moment irq_ok is set, so a vector that goes nowhere takes the working
+     * fallback with it and the machine has no input at all.
+     *
+     * So: issue a No Op command, which exists for exactly this and touches no
+     * device, and wait a moment for the completion to arrive as an interrupt
+     * rather than as an event we went looking for. */
+    xh.irqs = 0;
+    ring_push(&xh.cmd, 0, 0, 0, (TRB_NOOP_CMD << 10));
+    __asm__ volatile("" ::: "memory");
+    xh.db[0] = 0;
+    if (wait_until(xh.irqs != 0, W_MSI_US)) {
         xh.irq_ok = 1;
         kprintf("[xhci] HID input on MSI vector 0x%x (interrupt-driven)\n",
                 XHCI_MSI_VECTOR);
     } else {
-        kprintf("[xhci] no MSI capability; HID input stays polled\n");
+        op_wr(OP_USBCMD, op_rd(OP_USBCMD) & ~USBCMD_INTE);
+        rt_wr(IR0_IMAN, 0);
+        kprintf("[xhci] MSI vector 0x%x delivered nothing in %u ms; HID input "
+                "stays polled\n", XHCI_MSI_VECTOR, (unsigned)(W_MSI_US / 1000));
     }
 }

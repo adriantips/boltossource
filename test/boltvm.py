@@ -567,7 +567,15 @@ class BoltVM:
         `altgr` is the RIGHT Alt key and is deliberately separate from `alt`,
         because on the machine it is not the same key: on a German, French,
         Spanish or Italian layout it is a third-level shift and the only way
-        to type an at-sign. QEMU calls it alt_r."""
+        to type an at-sign. QEMU calls it alt_r.
+
+        There is no way to aim a keystroke at one of several keyboards from
+        here. `input-send-event` takes a `device`, but it names a *display*,
+        and routing only happens for an input device bound to one through
+        multiseat. QEMU picks a single handler for each event instead, and a
+        usb-kbd takes that place from the emulated PS/2 controller when it is
+        attached -- which is why t_usbhid.py can tell where a keystroke went by
+        reading the guest's own USB report counters rather than by aiming."""
         ev = []
         if shift: ev.append(self._keyev("shift", True))
         if ctrl:  ev.append(self._keyev("ctrl", True))
@@ -628,6 +636,17 @@ class BoltVM:
             {"type": "rel", "data": {"axis": "y", "value": y - self.pos[1]}}]}})
         self.pos = [x, y]
         time.sleep(0.2)
+
+    def nudge(self, dx, dy):
+        """A relative mouse movement.
+
+        move() sends absolute coordinates and tracks where it left the pointer.
+        This sends a raw delta, which is what a USB boot mouse actually reports
+        and what a test driving one has to send to see anything at all."""
+        self._cmd({"execute": "input-send-event", "arguments": {"events": [
+            {"type": "rel", "data": {"axis": "x", "value": dx}},
+            {"type": "rel", "data": {"axis": "y", "value": dy}}]}})
+        time.sleep(0.05)
 
     def click(self, x, y, double=False):
         self.move(x, y)
