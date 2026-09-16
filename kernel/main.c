@@ -8,6 +8,7 @@
 #include "boot.h"
 #include "io.h"
 #include "kprintf.h"
+#include "buildid.h"
 #include "serial.h"
 #include "console.h"
 #include "framebuffer.h"
@@ -319,6 +320,7 @@ void kmain(struct bootinfo *bi) {
 
     kprintf("==================================================\n");
     kprintf("   BoltOS kernel  -  64-bit long mode\n");
+    kprintf("   build %s\n", BOLT_BUILD_ID);
     kprintf("==================================================\n");
     kprintf("[ok] boot mode: %s%s\n", boot_mode_name(),
             (g_boot_flags & BOOT_FSCK) ? " (+fsck)" : "");
@@ -528,6 +530,18 @@ void kmain(struct bootinfo *bi) {
     evlog("memory managers initialised");
     evlog("timer and keyboard online");
     evlog("ramfs mounted and shell started");
+
+    /* Last, and deliberately so. On a machine that will not answer a keypress
+     * this is the only part of the boot log anybody can read: everything above
+     * it has scrolled off the top of the screen, and scrolling back needs the
+     * keyboard that is the thing being diagnosed. Twice the one line naming the
+     * fault was three rows above the top of a photograph of the screen. */
+    kprintf("\n--- input (build %s) ---\n", BOLT_BUILD_ID);
+    xhci_report();
+    kprintf("[ps2] 8042 %s, keyboard %s, mouse %s\n",
+            kbd_ps2_present()  ? "answers"  : "absent",
+            kbd_ps2_keyboard() ? "present"  : "none on the port",
+            mouse_ps2_present() ? "present" : "none on the port");
 
     if (fb_present() && !boot_is_safe()) {
         kprintf("\nBoltOS is up. Launching desktop.\n");

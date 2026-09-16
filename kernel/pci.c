@@ -117,16 +117,16 @@ const char *pci_class_name(uint8_t cls) {
 }
 
 int pci_find_by_id(uint16_t vendor, uint16_t device, struct pci_dev *out) {
-    struct pci_dev buf[64];
-    int n = pci_scan(buf, 64);
+    struct pci_dev buf[128];
+    int n = pci_scan(buf, 128);
     for (int i = 0; i < n; i++)
         if (buf[i].vendor == vendor && buf[i].device == device) { *out = buf[i]; return 1; }
     return 0;
 }
 
 int pci_find_by_class(uint8_t cls, uint8_t subclass, struct pci_dev *out) {
-    struct pci_dev buf[64];
-    int n = pci_scan(buf, 64);
+    struct pci_dev buf[128];
+    int n = pci_scan(buf, 128);
     for (int i = 0; i < n; i++)
         if (buf[i].class == cls && (subclass == 0xFF || buf[i].subclass == subclass)) {
             *out = buf[i]; return 1;

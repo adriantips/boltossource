@@ -64,11 +64,22 @@ def counters(vm, timeout=60):
     return got, out
 
 
-def run(uefi=False):
+def run(uefi=False, hub=False):
     # usb-kbd and usb-mouse are boot-protocol devices (subclass 1, protocol 1
     # and 2), which is exactly what this driver claims to drive.
-    with BoltVM(name="usbhid-efi" if uefi else "usbhid", net=False, uefi=uefi,
-                usb=["usb-kbd,id=ukbd", "usb-mouse,id=umouse"]) as vm:
+    #
+    # `hub` puts both of them behind a hub instead of on root ports, which is
+    # where a real keyboard usually is: a Dell keyboard has a hub inside it, a
+    # monitor has one, a dock has one. QEMU addresses that with a port path --
+    # port=1 is the hub on a root port, port=1.1 is the first socket on it.
+    # Worth knowing that this also exercises transaction translation, because
+    # QEMU's usb-hub is high speed and its usb-kbd is full speed, so the
+    # keyboard is only reachable through the hub's TT.
+    devs = (["usb-hub,port=1", "usb-kbd,id=ukbd,port=1.1",
+             "usb-mouse,id=umouse,port=1.2"] if hub else
+            ["usb-kbd,id=ukbd", "usb-mouse,id=umouse"])
+    name = "usbhid" + ("-hub" if hub else "") + ("-efi" if uefi else "")
+    with BoltVM(name=name, net=False, uefi=uefi, usb=devs) as vm:
         # Safe mode: a serial shell, and USB is probed either way -- xhci_init
         # runs well before the branch that skips the network and the audio.
         log = vm.reach_shell(420 if uefi else 240, "2")
@@ -142,10 +153,12 @@ def run(uefi=False):
 
 
 def main():
-    print("-- legacy BIOS")
+    print("-- legacy BIOS, devices on root ports")
     run(uefi=False)
+    print("-- legacy BIOS, devices behind a hub")
+    run(uefi=False, hub=True)
     if find_ovmf()[0]:
-        print("-- UEFI")
+        print("-- UEFI, devices on root ports")
         run(uefi=True)
     else:
         print("  SKIP: no OVMF firmware, so the UEFI half did not run")
