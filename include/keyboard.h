@@ -38,11 +38,14 @@
 #define KEY_SHOME  0x06
 #define KEY_SEND   0x15
 
-/* Returns 1 if the 8042 answered, 0 if there is no PS/2 controller behind the
- * legacy ports -- which is normal on a modern board, where the keyboard is a
- * USB device and reaches this driver through kbd_inject(). */
+/* Returns 1 if a keyboard answered ECHO on the PS/2 port. Zero is normal on a
+ * modern board, where the keyboard is a USB device and reaches this driver
+ * through kbd_inject() -- note that the 8042 itself usually still answers there
+ * with nothing plugged into it, which is why these are two separate questions:
+ * kbd_ps2_present() is the controller, kbd_ps2_keyboard() is a keyboard. */
 int keyboard_init(void);
 int kbd_ps2_present(void);
+int kbd_ps2_keyboard(void);
 int  kbd_ctrl_down(void);  /* 1 while either Ctrl key is held */
 int  kbd_alt_down(void);   /* 1 while either Alt key is held  */
 int  kbd_shift_down(void); /* 1 while either Shift key is held */

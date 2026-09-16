@@ -362,7 +362,9 @@ void kmain(struct bootinfo *bi) {
     timeout_init();
     int ps2_kbd = keyboard_init();
     kprintf("[%s] PS/2 keyboard%s\n", ps2_kbd ? "ok" : "--",
-            ps2_kbd ? "" : ": no 8042 behind the legacy ports");
+            ps2_kbd ? "" :
+            kbd_ps2_present() ? ": the 8042 answers, but no keyboard on the port"
+                              : ": no 8042 behind the legacy ports");
     int ps2_mouse = 0;
     if (fb_present()) {
         ps2_mouse = mouse_init((int)fb_width(), (int)fb_height());
@@ -399,12 +401,21 @@ void kmain(struct bootinfo *bi) {
                 "(%d PS/2, %d USB)\n", (keys && points) ? "ok" : "--",
                 keys, keys == 1 ? "" : "s", ps2_kbd, usb_kbd,
                 points, points == 1 ? "" : "s", ps2_mouse, usb_mouse);
-        if (!keys || !points)
-            kprintf("[--] nothing will respond to the %s. A USB device behind "
-                    "a hub is invisible to this kernel; try a port on the "
-                    "machine itself.\n",
+        if (!keys || !points) {
+            kprintf("[--] nothing will respond to the %s.\n",
                     !keys && !points ? "keyboard or the mouse"
                                      : (!keys ? "keyboard" : "mouse"));
+            /* Which of these it is, the [xhci] lines above have already said.
+             * Naming them here is for the person reading a screen that has
+             * scrolled past those lines, on a machine they cannot type on. */
+            if (!usb_kbd && !usb_mouse)
+                kprintf("[--] no USB input was found. Either the controller "
+                        "did not come up -- see the [xhci] lines -- or the "
+                        "device is behind a hub, which this kernel does not "
+                        "drive. On a UEFI boot the firmware stops driving your "
+                        "keyboard the moment this kernel starts, so USB is the "
+                        "only way it can work.\n");
+        }
     }
     fs_init();       kprintf("[ok] ramfs mounted (/)\n");
     fs_persist_init();/* back the tree with a real disk + load saved image */

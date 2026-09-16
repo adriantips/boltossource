@@ -29,8 +29,8 @@ uint64_t vmm_new_address_space(void);
 
 /* Free every frame the low (user) half of an address space owns -- the data
  * pages and the page tables that map them -- and then the PML4 itself. The
- * shared kernel entries (256, 511) are left alone: they belong to the kernel
- * PML4, and freeing them would unmap the kernel from every other process.
+ * shared kernel entries (256, 257, 511) are left alone: they belong to the
+ * kernel PML4, and freeing one would unmap the kernel from every other process.
  *
  * Must not be called while the address space is loaded in CR3. Process teardown
  * therefore defers it until the scheduler has switched away (see the zombie

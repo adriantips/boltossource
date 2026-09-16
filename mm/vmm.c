@@ -25,7 +25,20 @@ void vmm_switch(uint64_t pml4_phys) {
 
 uint64_t vmm_kernel_pml4(void) { return kernel_pml4; }
 
-void vmm_init(void) { kernel_pml4 = vmm_current_pml4(); }
+void vmm_init(void) {
+    kernel_pml4 = vmm_current_pml4();
+    /* Force the tables behind the device-MMIO window into existence now, while
+     * there is still only one address space to put them in.
+     *
+     * vmm_new_address_space() copies PML4 entries, not the trees under them, so
+     * an entry that is still empty when a process is created stays empty in
+     * that process for ever -- and a BAR mapped afterwards would be missing
+     * from exactly the address space a syscall or an interrupt runs in. Mapping
+     * and immediately unmapping one page leaves the PDPT, PD and PT allocated
+     * and the slot filled, which is all the copy needs to pick up. */
+    vmm_map(kernel_pml4, MMIO_BASE, 0, PTE_WRITE);
+    vmm_unmap(kernel_pml4, MMIO_BASE);
+}
 
 /* Walk PML4 -> PDPT -> PD -> &PTE. When create, missing tables are allocated
  * and zeroed; intermediate entries carry PRESENT|WRITE and gain USER when the
@@ -81,7 +94,8 @@ uint64_t vmm_new_address_space(void) {
     uint64_t *np = table(p);
     uint64_t *kp = table(kernel_pml4);
     for (int i = 0; i < 512; i++) np[i] = 0;
-    np[256] = kp[256];     /* direct physical map  */
+    np[256] = kp[256];     /* direct physical map   */
+    np[257] = kp[257];     /* device MMIO window    */
     np[511] = kp[511];     /* higher-half kernel    */
     return p;
 }
@@ -109,9 +123,10 @@ static void free_level(uint64_t table_phys, int lvl) {
 
 void vmm_free_address_space(uint64_t pml4_phys) {
     if (!pml4_phys || pml4_phys == kernel_pml4) return;
-    /* Only the low half is the process's own. Entries 256 and 511 are the
-     * shared kernel mappings, borrowed from the kernel PML4 -- freeing those
-     * would unmap the kernel out from under every other address space. */
+    /* Only the low half is the process's own. Entries 256, 257 and 511 are the
+     * shared kernel mappings -- direct map, device MMIO window, kernel image --
+     * borrowed from the kernel PML4, and freeing one would unmap the kernel out
+     * from under every other address space. */
     uint64_t *t = table(pml4_phys);
     for (int i = 0; i < 256; i++) {
         if (!(t[i] & PTE_PRESENT) || (t[i] & PTE_PS)) { t[i] = 0; continue; }

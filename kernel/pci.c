@@ -2,6 +2,7 @@
 #include "hw.h"
 #include "io.h"
 #include "mm.h"
+#include "vmm.h"
 #include "apic.h"
 #include "kprintf.h"
 
@@ -201,13 +202,51 @@ int pci_bar(const struct pci_dev *d, int idx, struct pci_bar *out) {
     return 0;
 }
 
+/* Device MMIO above the direct map, handed out from MMIO_BASE upwards.
+ *
+ * This used to be `if (bar->phys >= 4 GiB) return 0;` with a TODO under it, and
+ * the TODO was the bug: UEFI firmware assigns 64-bit BARs out of a window far
+ * above 4 GiB, so on that boot path the xHCI controller could not be mapped --
+ * and a controller that cannot be mapped is a machine with no USB. No disk, and
+ * no keyboard, on a machine whose keyboard is USB, which is every machine now.
+ *
+ * Mapped uncached (PCD|PWT), which the direct-mapped ones below still are not.
+ * MMIO the CPU may cache is MMIO whose writes land when the line happens to be
+ * evicted rather than when they are made, and whose reads may not happen at
+ * all. The low path gets away with it because QEMU does not model caching and
+ * the drivers that use it were all written against QEMU. */
+static uint64_t mmio_next = MMIO_BASE;
+
+static volatile void *mmio_map(uint64_t phys, uint64_t size) {
+    uint64_t base = phys & ~(PAGE_SIZE - 1);
+    uint64_t off  = phys - base;
+    uint64_t len  = (off + size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    if (!len) len = PAGE_SIZE;
+
+    uint64_t virt = mmio_next;
+    for (uint64_t i = 0; i < len; i += PAGE_SIZE) {
+        if (vmm_map(vmm_kernel_pml4(), virt + i, base + i,
+                    PTE_WRITE | PTE_PCD | PTE_PWT) != 0) {
+            kprintf("[pci] could not map MMIO 0x%lx (+0x%lx)\n", base, i);
+            return 0;
+        }
+    }
+    mmio_next += len;
+    return (volatile void *)(virt + off);
+}
+
 volatile void *pci_map_bar(struct pci_bar *bar) {
     if (!bar->is_mmio) return 0;
-    /* BoltOS direct-maps phys 0..4 GiB (shared PML4 slot -> valid under any CR3).
-     * QEMU does not model caching, so the cached direct map is fine for MMIO.
-     * TODO(real-HW/P5): remap these pages uncached (PCD) in a dedicated window. */
-    if (bar->phys >= 0x100000000ull) return 0;   /* above the direct map */
-    bar->virt = (volatile void *)P2V(bar->phys);
+    /* The low 4 GiB are mapped already, by the bootloader's identity map and by
+     * the direct map, in a PML4 slot every address space shares. */
+    if (bar->phys < 0x100000000ull) {
+        bar->virt = (volatile void *)P2V(bar->phys);
+        return bar->virt;
+    }
+    bar->virt = mmio_map(bar->phys, bar->size ? bar->size : PAGE_SIZE);
+    if (bar->virt)
+        kprintf("[pci] BAR 0x%lx is above the direct map; mapped at 0x%lx\n",
+                bar->phys, (uint64_t)bar->virt);
     return bar->virt;
 }
 

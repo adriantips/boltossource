@@ -281,7 +281,31 @@ char kbd_getc(void) {
 }
 
 static int ps2_present;                  /* the 8042 answered its config read */
-int kbd_ps2_present(void) { return ps2_present; }
+static int ps2_keyboard;                 /* ...and something answered ECHO     */
+int kbd_ps2_present(void)  { return ps2_present; }
+int kbd_ps2_keyboard(void) { return ps2_keyboard; }
+
+/* Is there a keyboard on the port, or only a controller?
+ *
+ * These are different facts and the boot log used to print the first one while
+ * claiming the second. On a machine whose keyboard is USB the 8042 is still
+ * there -- it is part of the chipset -- and it answers its config read with the
+ * port empty, so the log said "[ok] PS/2 keyboard" on a machine that could not
+ * be typed on. That is a comforting thing to read while hunting a dead
+ * keyboard, and it cost an evening.
+ *
+ * 0xEE is ECHO: a keyboard replies 0xEE, an empty port replies nothing. This is
+ * for the log only. The IRQ, the ring and the config byte are set up either
+ * way, because a keyboard that ignores ECHO -- some KVM switches do -- still
+ * has to work. */
+static int kbd_echo(void) {
+    for (int i = 0; i < 16 && (inb(0x64) & 1); i++) inb(0x60);
+    if (ctl_wait_write() != 0) return 0;
+    outb(0x60, 0xEE);
+    int r = ctl_read();
+    if (r == 0xFA) r = ctl_read();       /* some answer ACK before the echo */
+    return r == 0xEE;
+}
 
 int keyboard_init(void) {
     /* The built-in bindings, so shortcuts work from the first keypress.
@@ -352,6 +376,7 @@ int keyboard_init(void) {
         ctl_cmd(0x60);
         ctl_write((uint8_t)cfg);
         ps2_present = 1;
+        ps2_keyboard = kbd_echo();
     }
 
     /* Whatever that exchange stirred up is not a keystroke anybody made. */
@@ -359,7 +384,8 @@ int keyboard_init(void) {
     rhead = rtail = 0;
     /* The ring, the layout and the shortcut table are up either way: a USB
      * keyboard feeds the same ring through kbd_inject(). What this returns is
-     * only whether there is an 8042 answering, which is a question the boot
-     * log should be able to put to somebody whose keyboard does nothing. */
-    return ps2_present;
+     * only whether a keyboard answered on the PS/2 port, which is a question
+     * the boot log should be able to put to somebody whose keyboard does
+     * nothing. */
+    return ps2_keyboard;
 }
