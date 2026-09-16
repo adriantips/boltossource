@@ -46,7 +46,7 @@ broken.
 """
 import os, re, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from boltvm import BoltVM
+from boltvm import BoltVM, find_ovmf
 
 
 def counters(vm, timeout=60):
@@ -64,14 +64,26 @@ def counters(vm, timeout=60):
     return got, out
 
 
-def main():
+def run(uefi=False):
     # usb-kbd and usb-mouse are boot-protocol devices (subclass 1, protocol 1
     # and 2), which is exactly what this driver claims to drive.
-    with BoltVM(name="usbhid", net=False,
+    with BoltVM(name="usbhid-efi" if uefi else "usbhid", net=False, uefi=uefi,
                 usb=["usb-kbd,id=ukbd", "usb-mouse,id=umouse"]) as vm:
         # Safe mode: a serial shell, and USB is probed either way -- xhci_init
         # runs well before the branch that skips the network and the audio.
-        log = vm.reach_shell(240, "2")
+        log = vm.reach_shell(420 if uefi else 240, "2")
+
+        # The UEFI half is the whole reason this test has two passes. Firmware
+        # puts 64-bit BARs above the 4 GiB the kernel direct-maps -- OVMF at
+        # 768 GiB -- and pci_map_bar() used to refuse them and return, so the
+        # controller below was never mapped and the machine had no USB at all.
+        # It also has no fallback: on a UEFI boot the firmware's own USB driver
+        # stops at ExitBootServices, and there is no legacy PS/2 emulation
+        # behind it, so a keyboard that is USB is a keyboard or nothing.
+        if uefi:
+            for bad in ("outside the low 4 GiB", "could not map MMIO"):
+                assert bad not in log, \
+                    "a BAR was refused on the UEFI path: %r\n%s" % (bad, log[-2000:])
 
         kb = re.search(r"\[xhci\] slot (\d+) iface (\d+): boot keyboard armed on "
                        r"DCI (\d+) \((\d+)-byte reports\)", log)
@@ -126,6 +138,17 @@ def main():
               % (after["keyboard"] - before["keyboard"],
                  after["mouse"] - before["mouse"]))
 
+    return 0
+
+
+def main():
+    print("-- legacy BIOS")
+    run(uefi=False)
+    if find_ovmf()[0]:
+        print("-- UEFI")
+        run(uefi=True)
+    else:
+        print("  SKIP: no OVMF firmware, so the UEFI half did not run")
     print("PASS usbhid: a USB keyboard and mouse enumerate, arm, and deliver")
     return 0
 

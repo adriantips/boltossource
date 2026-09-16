@@ -9,6 +9,14 @@ little about the memory map the loader handed over: with the E820 entries
 misaligned the kernel booted anyway and ran on 62 free frames, and every
 assertion above passed while it did.
 
+The device check is not decoration either, and it is the one this file was
+missing. UEFI assigns 64-bit BARs out of a window far above 4 GiB -- OVMF uses
+768 GiB -- and the kernel direct-maps only the low 4 GiB, so pci_map_bar() used
+to refuse every one of them and return. Nothing reported that: the machine
+booted, reached the desktop, passed every assertion in this file, and had no
+USB controller, no NVMe and no keyboard. A boot test that only asks whether the
+desktop appeared cannot see a machine with no devices in it.
+
 The timeouts are large because this path is genuinely slow, not because it is
 flaky. Measured 2026-09-14 on the same image and the same device set: 13s to
 the desktop over legacy BIOS, 162s over OVMF, with 148 of those 148-odd extra
@@ -48,6 +56,25 @@ def main():
         "booted with %d MiB free of %d MiB managed -- the E820 map built in "
         "boot/uefi_boot.c is being misread. Check that struct e820 there is "
         "still the same 24 bytes wide as the one in mm/pmm.c." % (free, managed))
+    # Every BAR this firmware put above the direct map has to have been mapped
+    # into the MMIO window instead of refused. On OVMF there is always at least
+    # one, so an empty list here means the window stopped being exercised and
+    # this assertion has quietly stopped testing anything.
+    high = re.findall(r"\[pci\] BAR (0x[0-9a-f]+) is above the direct map; "
+                      r"mapped at (0x[0-9a-f]+)", log)
+    assert high, ("no BAR was mapped above the direct map. OVMF puts its "
+                  "64-bit BARs at 768 GiB, so either the firmware changed or "
+                  "pci_map_bar() is refusing them again -- which costs this "
+                  "machine its USB, its NVMe and its keyboard:\n" + log[-2000:])
+    for bad in ("outside the low 4 GiB", "could not map MMIO"):
+        assert bad not in log, "a BAR was refused: %r\n%s" % (bad, log[-2000:])
+    print("  ok: %d BAR%s above 4 GiB mapped into the MMIO window (%s)"
+          % (len(high), "" if len(high) == 1 else "s",
+             ", ".join(a for a, _ in high)))
+
+    # Whether a USB controller then works on this path is t_usbhid.py's UEFI
+    # pass; this machine has no USB controller in its device set at all.
+
     print("PASS uefi: BOOTX64.EFI booted the kernel to the desktop "
           "(%d MiB free of %d)" % (free, managed))
     return 0
