@@ -208,6 +208,8 @@ extern const uint8_t _binary_blip_wav_start[];
 extern const uint8_t _binary_blip_wav_end[];
 extern const uint8_t _binary_netget_elf_start[];
 extern const uint8_t _binary_netget_elf_end[];
+extern const uint8_t _binary_boltcraft_elf_start[];
+extern const uint8_t _binary_boltcraft_elf_end[];
 extern const uint8_t _binary_mountain_1024x768_jpg_start[];
 extern const uint8_t _binary_mountain_1024x768_jpg_end[];
 extern const uint8_t _binary_mountain_1280x720_jpg_start[];
@@ -284,6 +286,10 @@ static void launch_user_demo(void) {
     seed_blob("/bin/browser", _binary_browser_elf_start, _binary_browser_elf_end);
     seed_blob("/bin/crashme", _binary_crashme_elf_start, _binary_crashme_elf_end);
     seed_blob("/bin/netget",  _binary_netget_elf_start,  _binary_netget_elf_end);
+    /* boltcraft. Nothing in the kernel calls into it and nothing in it calls
+     * into the kernel except through the syscall table -- it is here so that
+     * `run boltcraft`, and the launcher on the desktop, find something. */
+    seed_blob("/bin/boltcraft", _binary_boltcraft_elf_start, _binary_boltcraft_elf_end);
     if (seed_blob("/bin/hello", _binary_hello_elf_start, _binary_hello_elf_end) != 0)
         return;
 

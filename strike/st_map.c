@@ -73,6 +73,11 @@ static const char *const rows[ST_H] = {
     "                                                ",
 };
 
+/* The zone centres, worked out once here because bot_goal() wants them every
+ * tick and they only move when the map does. See st_zone_centre(). */
+static float zc_x[5], zc_y[5];
+static void zone_centre_slow(int zone, float *x, float *y);
+
 void st_map_load(void) {
     for (int y = 0; y < ST_H; y++) {
         const char *r = rows[y];
@@ -100,6 +105,8 @@ void st_map_load(void) {
             st_zone[y][x]  = zn;
         }
     }
+
+    for (int z = 0; z < 5; z++) zone_centre_slow(z, &zc_x[z], &zc_y[z]);
 }
 
 int st_solid(int cx, int cy) {
@@ -220,8 +227,15 @@ int st_flow_step(const uint8_t *field, int cx, int cy, int *nx, int *ny) {
  * not one: bot_goal() feeds this straight to st_flow_build(), and a goal on a
  * solid cell produces a flow field of 255s, which is a whole team standing in
  * spawn doing nothing for the rest of the round. So: average the cells, then
- * return the nearest cell that is actually in the zone and actually walkable. */
-void st_zone_centre(int zone, float *x, float *y) {
+ * return the nearest cell that is actually in the zone and actually walkable.
+ *
+ * Two passes over 2,304 cells, which is fine once and was not fine at all when
+ * bot_goal() was calling it: the desktop loop wakes on every PIT tick, so every
+ * roaming bot was scanning the whole map a thousand times a second and the game
+ * crawled from the moment a round went live. The answers only change when the
+ * map does, so they are worked out once in st_map_load() and read out of a
+ * table after that. */
+static void zone_centre_slow(int zone, float *x, float *y) {
     long sx = 0, sy = 0, n = 0;
     for (int cy = 0; cy < ST_H; cy++)
         for (int cx = 0; cx < ST_W; cx++)
@@ -242,4 +256,10 @@ void st_zone_centre(int zone, float *x, float *y) {
     if (bx < 0) { *x = ax + 0.5f; *y = ay + 0.5f; return; }
     *x = (float)bx + 0.5f;
     *y = (float)by + 0.5f;
+}
+
+void st_zone_centre(int zone, float *x, float *y) {
+    if ((unsigned)zone >= 5) { *x = ST_W / 2.0f; *y = ST_H / 2.0f; return; }
+    *x = zc_x[zone];
+    *y = zc_y[zone];
 }

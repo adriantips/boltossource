@@ -45,7 +45,8 @@
 #define SC_SPC 0x39
 #define SC_LCT 0x1D
 
-#define FRAME_MS 33
+#define FRAME_MS 33     /* ~30 fps of drawing  */
+#define STEP_MS  16     /* ~60 Hz of thinking  */
 
 static window_t *g_win;
 static int   captured;              /* the mouse belongs to the game          */
@@ -108,6 +109,7 @@ static void sfx_at(int id, float x, float y) {
 static int  seen_phase = -1, seen_round = -1;
 static int  seen_hp = 100, seen_alive[ST_MAX_ENT];
 static int  seen_mag = -1;
+static int  seen_loose, seen_carry;
 static int  beep_acc;
 
 static void watch(int dt) {
@@ -118,6 +120,11 @@ static void watch(int dt) {
         seen_phase = -1;
         for (int i = 0; i < ST_MAX_ENT; i++) seen_alive[i] = st_w.ent[i].alive;
         seen_hp = you->hp;
+        seen_loose = st_w.bomb_loose;
+        seen_carry = you->has_bomb;
+        if (st_w.swapped)
+            say(you->team == T_SIDE ? "Halftime -- you are a Terrorist now"
+                                    : "Halftime -- you are a Counter-Terrorist now");
     }
     if (st_w.phase != seen_phase) {
         if (st_w.phase == R_LIVE) say("Go!");
@@ -149,6 +156,18 @@ static void watch(int dt) {
 
     if (you->hp < seen_hp && you->alive) st_sfx_play(S_HIT, 200, 0);
     seen_hp = you->hp;
+
+    /* The bomb changing hands is the single most important thing that can
+     * happen without anybody shooting, and until the drop worked at all there
+     * was nothing here to say so. */
+    if (st_w.bomb_loose != seen_loose) {
+        if (st_w.bomb_loose) say("The bomb has been dropped.");
+        seen_loose = st_w.bomb_loose;
+    }
+    if (you->has_bomb != seen_carry) {
+        if (you->has_bomb) say("You have the bomb -- hold E on a site to plant.");
+        seen_carry = you->has_bomb;
+    }
 
     if (you->mag[you->wep] != seen_mag) {
         if (seen_mag >= 0 && you->mag[you->wep] > seen_mag) st_sfx_play(S_RELOAD, 170, 0);
@@ -244,6 +263,14 @@ static void do_input(int dt) {
     if (captured) {
         int dx = 0, dy = 0;
         mouse_take_delta(&dx, &dy);
+        /* A frame's worth of hand, and no more. If the desktop stalls -- a
+         * disk flush, a window being dragged over us -- the accumulator keeps
+         * filling and the whole backlog arrives in one frame, which reads as
+         * the view being flung somewhere at random. */
+        if (dx >  180) dx =  180;
+        if (dx < -180) dx = -180;
+        if (dy >  120) dy =  120;
+        if (dy < -120) dy = -120;
         float sens = zoomed ? 0.0012f : 0.0038f;
         you->ang += (float)dx * sens;
         pitch -= (float)dy * (zoomed ? 0.25f : 0.60f);
@@ -443,14 +470,26 @@ static void draw_minimap(int cx, int cy) {
     const int px = 2, pad = 8;
     int x0 = cx + pad, y0 = cy + pad;
     g_blend(x0 - 2, y0 - 2, ST_W * px + 4, ST_H * px + 4, 0x000000, 160);
+    /* One fill per run of same-coloured cells, not one per cell. A 48x48 grid
+     * is 2,304 calls into the clipper every frame if you do it the obvious way,
+     * and this map is mostly long stretches of rock and sand, so the runs take
+     * it down to about three hundred. */
     for (int y = 0; y < ST_H; y++) {
-        for (int x = 0; x < ST_W; x++) {
-            uint32_t c;
-            if (st_cell[y][x] != C_OPEN) c = 0x2A2A2E;
-            else if (st_zone[y][x] == Z_SITE_A) c = 0x7A5A28;
-            else if (st_zone[y][x] == Z_SITE_B) c = 0x2A5A58;
-            else c = 0x585048;
-            g_fill(x0 + x * px, y0 + y * px, px, px, c);
+        int run = 0;
+        uint32_t runc = 0;
+        for (int x = 0; x <= ST_W; x++) {
+            uint32_t c = 0;
+            if (x < ST_W) {
+                if (st_cell[y][x] != C_OPEN)      c = 0x2A2A2E;
+                else if (st_zone[y][x] == Z_SITE_A) c = 0x7A5A28;
+                else if (st_zone[y][x] == Z_SITE_B) c = 0x2A5A58;
+                else                                c = 0x585048;
+            }
+            if (run && (x == ST_W || c != runc)) {
+                g_fill(x0 + (x - run) * px, y0 + y * px, run * px, px, runc);
+                run = 0;
+            }
+            if (x < ST_W) { if (!run) runc = c; run++; }
         }
     }
     for (int i = 0; i < st_w.nent; i++) {
@@ -460,8 +499,12 @@ static void draw_minimap(int cx, int cy) {
         uint32_t c = (i == 0) ? 0xFFFFFF : 0x50C070;
         g_fill(x0 + (int)(e->x * px) - 1, y0 + (int)(e->y * px) - 1, 3, 3, c);
     }
-    if (st_w.bomb_down)
-        g_fill(x0 + (int)(st_w.bomb_x * px) - 1, y0 + (int)(st_w.bomb_y * px) - 1, 3, 3, 0xFF4040);
+    /* Planted is red and urgent; dropped is amber and only says "over here".
+     * Both show to both sides -- the bomb is the round, and hiding where it is
+     * makes a dropped one impossible to find in a map this size. */
+    if (st_w.bomb_down || st_w.bomb_loose)
+        g_fill(x0 + (int)(st_w.bomb_x * px) - 1, y0 + (int)(st_w.bomb_y * px) - 1, 3, 3,
+               st_w.bomb_down ? 0xFF4040 : 0xE0A030);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -497,7 +540,17 @@ static void strike_draw(window_t *win, int cx, int cy, int cw, int ch) {
 static void strike_click(window_t *win, int lx, int ly) {
     (void)win; (void)lx; (void)ly;
     if (!started || failed) return;
-    if (!buymenu) captured = 1;
+    if (buymenu) return;
+    /* Throw away everything the hand did before it was ours. The driver
+     * accumulates relative motion whether or not anybody is reading it, and
+     * nobody reads it until the mouse is captured -- so the first frame of
+     * play used to receive every pixel the pointer had travelled since the
+     * desktop came up, in one go. You clicked to play and the camera snapped
+     * to the sky and stayed there, which looked like the renderer was broken
+     * and was really one unread accumulator. */
+    int dx, dy;
+    mouse_take_delta(&dx, &dy);
+    captured = 1;
 }
 
 void strike_pump(void) {
@@ -526,6 +579,16 @@ void strike_pump(void) {
 
     uint64_t now = pit_ticks();
     int dt = (int)(now - last_step);
+
+    /* The desktop loop wakes on every PIT tick and the PIT is at 1000 Hz, so
+     * this is called a thousand times a second. Only the draw used to be
+     * throttled, which meant the bots -- nine of them, each reading the map --
+     * thought thirty times harder than anything on screen could show. Under an
+     * emulator that was most of the machine. One simulation step per STEP_MS,
+     * one draw per FRAME_MS, and the frame the mouse deltas arrive in is the
+     * frame they are applied in either way, because the driver accumulates
+     * them between reads. */
+    if (dt < STEP_MS) return;
     last_step = now;
     if (dt > 150) dt = 150;
 

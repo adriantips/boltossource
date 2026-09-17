@@ -118,6 +118,9 @@ extern const st_weapon st_weap[W_COUNT];
 #define DEFUSE_KIT_MS   4800
 #define ROUND_MS      115000
 #define FREEZE_MS       7000
+#define HURT_FLASH_MS    450       /* how long the screen stays red after a hit */
+#define CORPSE_MS       9000       /* and how long a body stays on the floor    */
+#define HALF_ROUNDS        6       /* rounds per half; sides swap in between    */
 
 enum { T_SIDE = 0, CT_SIDE = 1 };
 
@@ -132,6 +135,8 @@ typedef struct {
     int   has[W_COUNT];
     int   mag[W_COUNT], res[W_COUNT];
     int   fire_cd, reload_cd, flash_ms;
+    int   hurt_ms;                 /* counts the red flash down after a hit    */
+    int   corpse_ms;               /* how long this body is still worth drawing*/
     int   has_bomb, has_kit;
     int   kills, deaths;
     float recoil, bob;
@@ -154,11 +159,16 @@ typedef struct {
     int    phase, phase_ms;
     int    round, score_t, score_ct;
     int    bomb_down, bomb_ms;
+    /* Dropped by a carrier who was killed, lying on the floor at bomb_x/y and
+     * waiting for a T to walk over it. Distinct from bomb_down, which means
+     * planted and counting: a loose bomb is not something a CT can defuse. */
+    int    bomb_loose;
     float  bomb_x, bomb_y;
     int    bomb_site;              /* Z_SITE_A / Z_SITE_B                     */
     int    defusing, defuse_ms, defuser;
     int    planting, plant_ms;
     int    winner;                 /* T_SIDE / CT_SIDE, valid in R_OVER       */
+    int    swapped;                /* this round is the first of a new half   */
     int    use_held;               /* slot 0 is holding the use key           */
     const char *win_why;
     uint32_t seed;
