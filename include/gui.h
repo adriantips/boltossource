@@ -96,7 +96,7 @@ struct window {
 enum { SNAP_NONE = 0, SNAP_L, SNAP_R, SNAP_TL, SNAP_TR, SNAP_BL, SNAP_BR, SNAP_MAX };
 
 enum { ICON_NONE = 0, ICON_TERMINAL, ICON_TASKMGR, ICON_START, ICON_FILES, ICON_SETTINGS,
-       ICON_BROWSER, ICON_FOLDER, ICON_FILE, ICON_TRASH, ICON_CALC, ICON_CLOCK, ICON_NOTES, ICON_CALENDAR, ICON_PIANO, ICON_PAINT, ICON_MINES, ICON_SNAKE, ICON_2048, ICON_STOPWATCH, ICON_SYSINFO, ICON_LIFE, ICON_TTT, ICON_COLOR, ICON_MEMORY, ICON_MATRIX, ICON_CODE, ICON_DOOM, ICON_OLDBROWSER, ICON_SHEETS, ICON_IMAGE, ICON_MUSIC, ICON_TASKS, ICON_CONTACTS, ICON_INSTALL, ICON_SECURITY, ICON_SOFTWARE, ICON_MEDIA, ICON_NETWORK, ICON_MIXER, ICON_DEVICE, ICON_CHARMAP, ICON_SNIP, ICON_CARDS, ICON_CLIPBOARD };
+       ICON_BROWSER, ICON_FOLDER, ICON_FILE, ICON_TRASH, ICON_CALC, ICON_CLOCK, ICON_NOTES, ICON_CALENDAR, ICON_PIANO, ICON_PAINT, ICON_MINES, ICON_SNAKE, ICON_2048, ICON_STOPWATCH, ICON_SYSINFO, ICON_LIFE, ICON_TTT, ICON_COLOR, ICON_MEMORY, ICON_MATRIX, ICON_CODE, ICON_DOOM, ICON_OLDBROWSER, ICON_SHEETS, ICON_IMAGE, ICON_MUSIC, ICON_TASKS, ICON_CONTACTS, ICON_INSTALL, ICON_SECURITY, ICON_SOFTWARE, ICON_MEDIA, ICON_NETWORK, ICON_MIXER, ICON_DEVICE, ICON_CHARMAP, ICON_SNIP, ICON_CARDS, ICON_CLIPBOARD, ICON_STRIKE, ICON_GAMEBOY };
 
 window_t *gui_add_window(const char *title, int w, int h, uint32_t accent, int icon);
 void      gui_open(window_t *win);          /* show + focus + raise           */
@@ -247,5 +247,9 @@ void memory_app_init(void);
 void matrix_app_init(void);
 void doom_app_init(void);
 void doom_pump(void);    /* advance DOOM one frame slice; called from the desktop loop */
+void strike_app_init(void);
+void strike_pump(void);  /* BoltStrike: one frame slice, same deal as DOOM */
+void gameboy_app_init(void);
+void gameboy_pump(void); /* the Game Boy emulator, likewise */
 void files_open_node(struct fs_node *n);   /* open a folder in the explorer / a file in its viewer */
 void files_launch(struct fs_node *n);      /* the same, but honouring file associations */
