@@ -54,7 +54,10 @@ static int g_font = FONT_ARIAL;
 #define TITLE_H    32
 #define TASKBAR_H  48
 #define RADIUS     9
-#define MAX_WIN    40
+/* 41 apps register a window at startup and this was 40, so Settings -- the last
+ * one initialised -- got a null back from gui_add_window and silently had no
+ * window at all. Counted, not guessed: grep -c gui_add_window kernel/app_*.c. */
+#define MAX_WIN    48
 #define DI_W       80              /* desktop icon cell width  */
 #define DI_H       86              /* desktop icon cell height */
 #define MAX_PW     3840            /* largest panel we allocate backbuffers for */
@@ -696,6 +699,29 @@ static void draw_icon(int id, int x, int y, int s, uint32_t c) {
         g_fill(x + 7 * s, y + 3 * s, s, 8 * s, c);       /* the slash (vertical hint) */
         g_fill(x + 8 * s, y + 3 * s, s, 8 * s, COL_ACCENT);
         break;
+    case ICON_STRIKE: {                         /* crosshair in a ring */
+        int cxx = x + 8 * s, cyy = y + 7 * s, r = 6 * s;
+        for (int dy = -r; dy <= r; dy++)
+            for (int dx = -r; dx <= r; dx++) {
+                int d2 = dx * dx + dy * dy;
+                if (d2 > r * r || d2 < (r - s) * (r - s)) continue;
+                g_fill(cxx + dx, cyy + dy, 1, 1, c);
+            }
+        g_fill(cxx - r - s, cyy, r - s, s, c);              /* W arm */
+        g_fill(cxx + 2 * s, cyy, r - s, s, c);              /* E arm */
+        g_fill(cxx, cyy - r - s, s, r - s, c);              /* N arm */
+        g_fill(cxx, cyy + 2 * s, s, r - s, c);              /* S arm */
+        break;
+    }
+    case ICON_GAMEBOY: {                        /* handheld: screen, pad, two buttons */
+        uint32_t dk = (c >> 2) & 0x3F3F3F;
+        g_round(x + 3 * s, y + s, 10 * s, 13 * s, 2 * s, c, 255);
+        g_fill(x + 5 * s, y + 3 * s, 6 * s, 5 * s, dk);     /* screen */
+        g_fill(x + 5 * s, y + 11 * s, 3 * s, s, dk);        /* d-pad  */
+        g_fill(x + 6 * s, y + 10 * s, s, 3 * s, dk);
+        g_fill(x + 10 * s, y + 10 * s, 2 * s, 2 * s, dk);   /* buttons */
+        break;
+    }
     case ICON_DOOM:                              /* a snarling demon face */
         g_round(x, y, 16 * s, 16 * s, 4 * s, 0x3A0A08, 255);
         g_round(x + s, y + s, 14 * s, 13 * s, 3 * s, 0x8A1A12, 255);
@@ -3278,6 +3304,8 @@ void gui_run(void) {
     memory_app_init();
     matrix_app_init();
     doom_app_init();
+    strike_app_init();
+    gameboy_app_init();
     installer_app_init();
     software_app_init();
     logs_app_init();
@@ -3373,6 +3401,8 @@ void gui_run(void) {
         }
 
         doom_pump();        /* DOOM self-throttles to ~35 fps and only when focused */
+        strike_pump();      /* same arrangement: caps itself, idles unless focused  */
+        gameboy_pump();     /* one emulated frame per 16 ms, focused only           */
 
         uint64_t now = pit_ticks();
         if (now - tick_pit >= 150) {                 /* ~6.6 Hz: app ticks, animation, sampling
