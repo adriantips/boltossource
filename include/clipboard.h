@@ -46,3 +46,28 @@ int         clip_set_files(const char *paths, int len);
 int         clip_file_count(void);
 /* The i'th path into `out`; 0 if there is no such entry. */
 int         clip_file_at(int i, char *out, uint32_t cap);
+
+/* ---- history ------------------------------------------------------------- *
+ *  A clipboard that holds one thing loses the thing you copied two minutes
+ *  ago, which is the one you wanted. So every write is also pushed onto a
+ *  ring, newest first, and the Clipboard History app puts any of them back.
+ *
+ *  Text costs nothing to keep. Images do not, so the ring holds a byte budget
+ *  for them and evicts the oldest image when a new one will not fit -- a
+ *  screenshot is three megabytes and sixteen of those is a third of the heap.
+ *  Pinned entries are exempt from every kind of eviction, including Clear,
+ *  which is the whole reason to pin one.
+ * -------------------------------------------------------------------------*/
+#define CLIP_HIST      16
+#define CLIP_HIST_IMG  (24u * 1024 * 1024)   /* total bytes of kept images */
+
+int             clip_hist_count(void);
+int             clip_hist_kind(int i);                 /* CLIP_*; CLIP_EMPTY if no entry */
+const char     *clip_hist_text(int i);                 /* "" for an image  */
+int             clip_hist_len(int i);
+const uint32_t *clip_hist_image(int i, int *w, int *h);
+int             clip_hist_pinned(int i);
+void            clip_hist_pin(int i, int on);
+int             clip_hist_restore(int i);              /* entry i becomes the clipboard; 0 ok */
+void            clip_hist_remove(int i);
+void            clip_hist_clear(void);                 /* everything except the pins */

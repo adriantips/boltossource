@@ -189,6 +189,18 @@ static inline int glyph_bit(unsigned char bits, int rx) {
 
 int g_font_height(int scale) { return (g_font == FONT_ARIAL ? 16 : 8) * scale; }
 
+/* Does the active face have any ink for this code point? Character Map needs
+ * to tell a space from a hole, and the Latin-1 tables are padded with zero
+ * rows right across the unassigned C1 range -- so "glyph_rows returned
+ * something" is not the same question. */
+int g_glyph_ink(char ch) {
+    int rows;
+    const unsigned char *g = glyph_rows((unsigned char)ch, &rows);
+    if (!g) return 0;
+    for (int i = 0; i < rows; i++) if (g[i]) return 1;
+    return 0;
+}
+
 void g_char(int x, int y, char ch, uint32_t color, int s) {
     int rows;
     const unsigned char *g = glyph_rows((unsigned char)ch, &rows);
@@ -815,6 +827,53 @@ static void draw_icon(int id, int x, int y, int s, uint32_t c) {
         uint32_t in = 0x0E0E16;
         g_fill(cxx - s, cyy - 4 * s, 2 * s, 2 * s, in);          /* dot  */
         g_fill(cxx - s, cyy - s, 2 * s, 5 * s, in);             /* stem */
+        break;
+    }
+    case ICON_DEVICE: {                          /* device manager: a board with a chip */
+        g_round(x, y + s, 16 * s, 13 * s, 2 * s, c, 255);
+        uint32_t in = 0x0E0E16;
+        g_round(x + 4 * s, y + 5 * s, 8 * s, 8 * s, s, in, 255);   /* the package */
+        for (int i = 0; i < 3; i++) {                              /* legs */
+            g_fill(x + (5 + i * 3) * s, y + 2 * s, s, 3 * s, in);
+            g_fill(x + (5 + i * 3) * s, y + 13 * s, s, 2 * s, in);
+        }
+        break;
+    }
+    case ICON_CHARMAP: {                         /* character map: an A in a grid */
+        g_rect(x, y, 16 * s, 14 * s, c);
+        g_fill(x + 8 * s, y, s, 14 * s, (c >> 1) & 0x7F7F7F);
+        g_fill(x, y + 7 * s, 16 * s, s, (c >> 1) & 0x7F7F7F);
+        g_text(x + s, y + s, "A", c, s);
+        g_text(x + 10 * s, y + 8 * s, "a", c, s);
+        break;
+    }
+    case ICON_SNIP: {                            /* snipping tool: a dashed crop box */
+        for (int i = 0; i < 16 * s; i += 4 * s) {
+            g_fill(x + i, y + s, 2 * s, s, c);
+            g_fill(x + i, y + 13 * s, 2 * s, s, c);
+        }
+        for (int i = 0; i < 13 * s; i += 4 * s) {
+            g_fill(x, y + s + i, s, 2 * s, c);
+            g_fill(x + 15 * s, y + s + i, s, 2 * s, c);
+        }
+        g_round(x + 5 * s, y + 5 * s, 6 * s, 5 * s, s, c, 160);
+        break;
+    }
+    case ICON_CARDS: {                           /* solitaire: two cards, one fanned */
+        g_round(x, y + 3 * s, 9 * s, 12 * s, 2 * s, 0x2E5AA8, 255);
+        g_round(x + 6 * s, y, 10 * s, 13 * s, 2 * s, 0xFAFAF6, 255);
+        g_fill(x + 8 * s, y + 2 * s, 2 * s, 2 * s, 0xC62828);       /* a red pip */
+        g_fill(x + 11 * s, y + 6 * s, 3 * s, 3 * s, 0xC62828);
+        (void)c;
+        break;
+    }
+    case ICON_CLIPBOARD: {                       /* clipboard: board plus clip */
+        g_round(x + s, y + 2 * s, 14 * s, 13 * s, 2 * s, c, 255);
+        uint32_t in = 0x0E0E16;
+        g_round(x + 3 * s, y + 5 * s, 10 * s, 8 * s, s, in, 255);
+        g_fill(x + 5 * s, y, 6 * s, 4 * s, c);                      /* the clip */
+        g_fill(x + 4 * s, y + 7 * s, 6 * s, s, c);                  /* lines of text */
+        g_fill(x + 4 * s, y + 10 * s, 8 * s, s, c);
         break;
     }
     case ICON_STOPWATCH: {                       /* stopwatch */
@@ -2829,6 +2888,7 @@ static void gui_do_action(int a) {
     case ACT_LOCK:         gui_lock(); dirty = 1; break;
     case ACT_SCREENSHOT:   gui_screenshot(); dirty = 1; break;
     case ACT_RECORD:       gui_record_toggle(); dirty = 1; break;
+    case ACT_CLIPBOARD:    clipboard_app_open(); menu_open = 0; dirty = 1; break;
     case ACT_SNAP_LEFT:    case ACT_SNAP_RIGHT:
     case ACT_SNAP_MAX:     case ACT_SNAP_RESTORE: {
         int t = topmost();
@@ -3206,6 +3266,11 @@ void gui_run(void) {
     snake_app_init();
     g2048_app_init();
     stopwatch_app_init();
+    charmap_app_init();
+    clipboard_app_init();
+    snip_app_init();
+    devmgr_app_init();
+    solitaire_app_init();
     sysinfo_app_init();
     life_app_init();
     ttt_app_init();

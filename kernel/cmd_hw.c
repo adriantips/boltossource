@@ -268,6 +268,63 @@ int cmd_clip(int argc, char **argv) {
         return 0;
     }
     if (strcmp(sub, "clear") == 0) { clip_clear(); kprintf("clipboard cleared\n"); return 0; }
+
+    /* The history is a desktop feature with a window, so it needs a prompt
+     * front end too: over SSH there is no Win+V to press, and a test that
+     * drives the ring by clicking rows is mostly testing the compositor. */
+    if (strcmp(sub, "history") == 0 || strcmp(sub, "hist") == 0) {
+        if (argc > 2 && strcmp(argv[2], "clear") == 0) {
+            clip_hist_clear();
+            kprintf("history cleared (%d pinned kept)\n", clip_hist_count());
+            return 0;
+        }
+        int n = clip_hist_count();
+        if (!n) { kprintf("clipboard history is empty\n"); return 0; }
+        kprintf("clipboard history: %d of %d\n", n, CLIP_HIST);
+        for (int i = 0; i < n; i++) {
+            int k = clip_hist_kind(i);
+            char mark = clip_hist_pinned(i) ? '*' : ' ';
+            if (k == CLIP_IMAGE) {
+                int w = 0, h = 0;
+                clip_hist_image(i, &w, &h);
+                kprintf(" %c%2d image  %dx%d\n", mark, i, w, h);
+                continue;
+            }
+            /* One line, truncated: an entry is frequently a whole file and
+             * printing it would push the rest of the list off the screen. */
+            const char *t = clip_hist_text(i);
+            char line[61];
+            int j = 0;
+            for (; t[j] && j < (int)sizeof(line) - 1; j++) {
+                if (t[j] == '\n' || t[j] == '\r' || t[j] == '\t') { line[j] = ' '; continue; }
+                line[j] = t[j];
+            }
+            line[j] = 0;
+            kprintf(" %c%2d %-6s %s%s\n", mark, i, k == CLIP_FILES ? "files" : "text",
+                    line, clip_hist_len(i) > j ? "..." : "");
+        }
+        return 0;
+    }
+    if (strcmp(sub, "restore") == 0 && argc > 2) {
+        int i = atoi(argv[2]);
+        if (clip_hist_restore(i) != 0) { kprintf("clip: no history entry %d\n", i); return 1; }
+        kprintf("clipboard: %s\n", clip_kind_name());
+        return 0;
+    }
+    if (strcmp(sub, "pin") == 0 && argc > 2) {
+        int i = atoi(argv[2]);
+        if (i < 0 || i >= clip_hist_count()) { kprintf("clip: no history entry %d\n", i); return 1; }
+        clip_hist_pin(i, !clip_hist_pinned(i));
+        kprintf("entry %d %s\n", i, clip_hist_pinned(i) ? "pinned" : "unpinned");
+        return 0;
+    }
+    if (strcmp(sub, "forget") == 0 && argc > 2) {
+        int i = atoi(argv[2]);
+        if (i < 0 || i >= clip_hist_count()) { kprintf("clip: no history entry %d\n", i); return 1; }
+        clip_hist_remove(i);
+        kprintf("entry %d dropped\n", i);
+        return 0;
+    }
     if (strcmp(sub, "set") == 0 && argc > 2) {
         /* join the remaining args with spaces */
         static char buf[CLIP_CAP]; int n = 0;
@@ -279,7 +336,8 @@ int cmd_clip(int argc, char **argv) {
         kprintf("copied %d bytes to clipboard\n", n);
         return 0;
     }
-    kprintf("usage: clip show | set TEXT... | clear\n");
+    kprintf("usage: clip show | set TEXT... | clear\n"
+            "       clip history [clear] | restore N | pin N | forget N\n");
     return 1;
 }
 

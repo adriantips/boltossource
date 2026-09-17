@@ -20,6 +20,29 @@ static int       g_kind;
 static uint32_t *g_img;
 static int       g_iw, g_ih;
 
+/* ---- history ------------------------------------------------------------- *
+ *  Every write lands here too, newest first. `recording` is the guard that
+ *  stops clip_hist_restore() -- which puts an old entry back by calling
+ *  clip_set() -- from pushing a copy of it onto the front; without it,
+ *  restoring the third entry three times leaves you with four of them.
+ * -------------------------------------------------------------------------*/
+typedef struct {
+    int       kind;
+    char     *text;        /* NUL-terminated; TEXT and FILES both live here */
+    int       len;
+    uint32_t *img;
+    int       iw, ih;
+    int       pinned;
+} hist_t;
+
+static hist_t   g_hist[CLIP_HIST];
+static int      g_nhist;
+static uint32_t g_imgbytes;       /* what the kept images add up to */
+static int      recording = 1;
+
+static void hist_push_text(int kind, const char *s, int len);
+static void hist_push_image(const uint32_t *px, int w, int h);
+
 static void drop_image(void) {
     if (g_img) { kfree(g_img); g_img = 0; }
     g_iw = g_ih = 0;
@@ -50,6 +73,7 @@ void clip_set(const char *s, int len) {
     g_clip[len] = 0;
     g_len = len;
     g_kind = CLIP_TEXT;
+    hist_push_text(CLIP_TEXT, g_clip, g_len);
 }
 
 /* An image and a file list both read back as text, because every existing
@@ -78,6 +102,7 @@ int clip_set_image(const uint32_t *px, int w, int h) {
     g_img = copy; g_iw = w; g_ih = h;
     g_clip[0] = 0; g_len = 0;
     g_kind = CLIP_IMAGE;
+    hist_push_image(g_img, w, h);
     return 0;
 }
 
@@ -94,6 +119,11 @@ int clip_set_files(const char *paths, int len) {
     clip_set(paths, len);                        /* stores it, sets CLIP_TEXT */
     if (!g_len) return -1;
     g_kind = CLIP_FILES;
+    /* clip_set has already pushed it as text; the only thing wrong with that
+     * history entry is its label, and re-pushing would duplicate it. Not while
+     * restoring, though -- nothing was pushed then, and stamping entry 0 would
+     * relabel whatever happens to be sitting at the front. */
+    if (recording && g_nhist) g_hist[0].kind = CLIP_FILES;
     return 0;
 }
 
@@ -126,5 +156,134 @@ int clip_file_at(int i, char *out, uint32_t cap) {
         line++;
         p = e;
     }
+    return 0;
+}
+
+/* ===========================================================================
+ *  History, the implementation.
+ * ===========================================================================*/
+static void hist_free(hist_t *h) {
+    if (h->text) kfree(h->text);
+    if (h->img)  { g_imgbytes -= (uint32_t)h->iw * (uint32_t)h->ih * 4; kfree(h->img); }
+    memset(h, 0, sizeof *h);
+}
+
+static void hist_drop(int i) {
+    if (i < 0 || i >= g_nhist) return;
+    hist_free(&g_hist[i]);
+    for (int k = i; k < g_nhist - 1; k++) g_hist[k] = g_hist[k + 1];
+    memset(&g_hist[--g_nhist], 0, sizeof g_hist[0]);
+}
+
+/* Evict from the back, skipping pins. 0 if no slot could be freed, which means
+ * every entry is pinned -- and then the right answer is to not record, rather
+ * than to throw away something somebody asked to keep. */
+static int hist_make_room(void) {
+    if (g_nhist < CLIP_HIST) return 1;
+    for (int i = g_nhist - 1; i >= 0; i--)
+        if (!g_hist[i].pinned) { hist_drop(i); return 1; }
+    return 0;
+}
+
+static int hist_free_image_bytes(uint32_t need) {
+    while (g_imgbytes + need > CLIP_HIST_IMG) {
+        int victim = -1;
+        for (int i = g_nhist - 1; i >= 0; i--)
+            if (g_hist[i].img && !g_hist[i].pinned) { victim = i; break; }
+        if (victim < 0) return 0;
+        hist_drop(victim);
+    }
+    return 1;
+}
+
+static void hist_to_front(int i) {
+    if (i <= 0 || i >= g_nhist) return;
+    hist_t t = g_hist[i];
+    for (int k = i; k > 0; k--) g_hist[k] = g_hist[k - 1];
+    g_hist[0] = t;
+}
+
+/* Copying the same thing twice moves it to the front rather than filling the
+ * ring with it -- Ctrl+C on a selection you are re-reading is a common idle
+ * habit and it used to flush everything else out. */
+static void hist_push_text(int kind, const char *s, int len) {
+    if (!recording || !s || len <= 0) return;
+    for (int i = 0; i < g_nhist; i++) {
+        hist_t *h = &g_hist[i];
+        if (h->text && h->len == len && !memcmp(h->text, s, (uint32_t)len)) {
+            h->kind = kind;
+            hist_to_front(i);
+            return;
+        }
+    }
+    if (!hist_make_room()) return;
+    char *copy = (char *)kmalloc((uint64_t)len + 1);
+    if (!copy) return;                         /* a full heap is not worth a panic */
+    memcpy(copy, s, (uint32_t)len);
+    copy[len] = 0;
+
+    for (int k = g_nhist; k > 0; k--) g_hist[k] = g_hist[k - 1];
+    memset(&g_hist[0], 0, sizeof g_hist[0]);
+    g_hist[0].kind = kind; g_hist[0].text = copy; g_hist[0].len = len;
+    g_nhist++;
+}
+
+static void hist_push_image(const uint32_t *px, int w, int h) {
+    if (!recording || !px || w <= 0 || h <= 0) return;
+    uint32_t bytes = (uint32_t)w * (uint32_t)h * 4;
+    if (bytes > CLIP_HIST_IMG) return;         /* too big to be worth keeping */
+    if (!hist_free_image_bytes(bytes)) return;
+    if (!hist_make_room()) return;
+
+    uint32_t *copy = (uint32_t *)kmalloc(bytes);
+    if (!copy) return;
+    memcpy(copy, px, bytes);
+
+    for (int k = g_nhist; k > 0; k--) g_hist[k] = g_hist[k - 1];
+    memset(&g_hist[0], 0, sizeof g_hist[0]);
+    g_hist[0].kind = CLIP_IMAGE; g_hist[0].img = copy;
+    g_hist[0].iw = w; g_hist[0].ih = h;
+    g_nhist++;
+    g_imgbytes += bytes;
+}
+
+static int hvalid(int i) { return i >= 0 && i < g_nhist; }
+
+int clip_hist_count(void)   { return g_nhist; }
+int clip_hist_kind(int i)   { return hvalid(i) ? g_hist[i].kind : CLIP_EMPTY; }
+int clip_hist_len(int i)    { return hvalid(i) ? g_hist[i].len : 0; }
+int clip_hist_pinned(int i) { return hvalid(i) ? g_hist[i].pinned : 0; }
+
+const char *clip_hist_text(int i) {
+    if (!hvalid(i) || !g_hist[i].text) return "";
+    return g_hist[i].text;
+}
+
+const uint32_t *clip_hist_image(int i, int *w, int *h) {
+    if (!hvalid(i) || g_hist[i].kind != CLIP_IMAGE) return 0;
+    if (w) *w = g_hist[i].iw;
+    if (h) *h = g_hist[i].ih;
+    return g_hist[i].img;
+}
+
+void clip_hist_pin(int i, int on) { if (hvalid(i)) g_hist[i].pinned = on ? 1 : 0; }
+void clip_hist_remove(int i)      { hist_drop(i); }
+
+void clip_hist_clear(void) {
+    for (int i = g_nhist - 1; i >= 0; i--) if (!g_hist[i].pinned) hist_drop(i);
+}
+
+int clip_hist_restore(int i) {
+    if (!hvalid(i)) return -1;
+    hist_t *h = &g_hist[i];
+    recording = 0;
+    int rc = 0;
+    if (h->kind == CLIP_IMAGE)      rc = clip_set_image(h->img, h->iw, h->ih);
+    else if (h->kind == CLIP_FILES) rc = clip_set_files(h->text, h->len);
+    else                            clip_set(h->text, h->len);
+    recording = 1;
+    if (rc != 0) return rc;
+    /* It is the most recent thing copied now, whatever it was before. */
+    hist_to_front(i);
     return 0;
 }
