@@ -296,7 +296,7 @@ a machine administered over SSH has no taskbar. Today the ring-3 crash path post
 where the core dump is, and the storage layer posts when a disk has been
 protected read-only and changes are RAM-only.
 
-Bundled apps (34):
+Bundled apps (39):
 
 - Terminal — the full interactive shell in a window
 - File Explorer — browse/open the persistent filesystem
@@ -326,11 +326,24 @@ Bundled apps (34):
   playback is fed from the compositor's main loop rather than the window's tick,
   so it keeps playing while the window is minimised, on another desktop, or
   while the session is locked
+- Device Manager — the hardware tree: a real PCI rescan grouped into the
+  categories you go looking in, with the vendor/device pair, the bus address,
+  the IRQ and the decoded BARs for whatever you select, and a plain "no driver
+  is bound to this device" for the ones nothing claimed
+- Snipping Tool — capture the panel (it minimises itself first), drag a
+  rectangle on the picture to crop, then Copy or Save it into `~/Pictures` as
+  a PNG. A 3/10-second delay for grabbing a menu that a click would close
+- Character Map — every glyph both faces have, greyed where the font has a
+  hole rather than a space; pick several, then copy them as one string
+- Clipboard — the last sixteen things copied, newest first, any of them back
+  onto the clipboard with a click; pinned entries survive both eviction and
+  Clear. Win+V, or `clip history` from a prompt
 - Calculator, Clock, Stopwatch, Calendar, Notes (saved to FS)
 - Paint, Color Picker, Piano (PC-speaker, zoomable multi-octave)
 - System Info, Matrix rain
-- Games: DOOM (real doomgeneric port, playable E1M1), Minesweeper,
-  Snake, 2048, Tic-Tac-Toe, Memory match, Conway's Game of Life
+- Games: DOOM (real doomgeneric port, playable E1M1), Solitaire (Klondike,
+  draw-1 or draw-3, undo), Minesweeper, Snake, 2048, Tic-Tac-Toe,
+  Memory match, Conway's Game of Life
 
 > The kernel logic is fixed-point / integer math, but **SSE is enabled and the
 > FPU/SSE register file is saved and restored across context switches**: the

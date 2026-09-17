@@ -588,14 +588,18 @@ static const manpage_t MAN[] = {
   "codec, and the command says so rather than appearing to work." },
 { "dhcp", "dhcp",
   "Request a lease now, rather than waiting for the boot-time attempt." },
-{ "clip", "clip show | clip set TEXT... | clip clear",
+{ "clip", "clip show | set TEXT... | clear | history [clear] | restore N | pin N | forget N",
   "The system clipboard, shared with every GUI app. It carries one item of one\n"
   "kind: text, an image, or a list of files. `show` says which -- an image\n"
   "reports its size, files list their paths.\n"
   "Copy a picture with Ctrl+C in Photos or Paint; paste it into Paint, or into\n"
   "a folder in File Explorer, where it is written out as a PNG. Copying a file\n"
   "in File Explorer also puts its path here as text, so it can be pasted into\n"
-  "Notes or a Terminal." },
+  "Notes or a Terminal.\n"
+  "Every write is also kept: `history` lists the last sixteen newest-first,\n"
+  "`restore N` puts one back on the clipboard, and `pin N` exempts it from\n"
+  "both eviction and `history clear`. The Clipboard app is the same ring with\n"
+  "a window on it; Win+V opens it." },
 { "crash", "crash ring3 [null|div|ud|stack] | crash null|div|ud",
   "Fault on purpose. `crash ring3` runs /bin/crashme, which dies while the\n"
   "machine carries on -- that is the per-process isolation demonstration, and\n"
