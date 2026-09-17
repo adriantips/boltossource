@@ -26,6 +26,15 @@ uint8_t mouse_take_pressed(void);
 void    mouse_inject(int dx, int dy, uint8_t buttons, int wheel);
 /* Returns 1 (and clears the flag) if a packet arrived since the last call. */
 int     mouse_poll_event(void);
+/* Movement since the last call, in device counts, and clears the accumulator.
+ * This is the raw hand motion, not the difference between two cursor
+ * positions -- the cursor is clamped to the screen, so it stops reporting at
+ * the edge while the hand is still moving, which is fatal to a first-person
+ * camera and invisible in any other use. Reading it does not disturb the
+ * cursor; a caller that wants both can have both. */
+void    mouse_take_delta(int *dx, int *dy);
+/* Move the cursor without generating any relative motion. */
+void    mouse_warp(int x, int y);
 /* Accumulated scroll-wheel delta since last call (+ up / - down), then clears.
  * Always 0 on a plain 3-byte mouse with no wheel. */
 int     mouse_wheel(void);

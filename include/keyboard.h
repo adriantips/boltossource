@@ -60,6 +60,22 @@ char kbd_getc(void);      /* block (hlt) until a key is available, then return i
 void kbd_raw_enable(int on);
 int  kbd_raw_get(void);
 
+/* Held-key state, which is a different question from the queue above and has
+ * to be, because the queue has exactly one consumer: DOOM drains every event
+ * each pass of the desktop loop and throws away the ones that arrived while it
+ * was not focused, so a second game reading kbd_raw_get() would find it empty
+ * every time. This is a level, not an edge -- poll it. Code is a scancode with
+ * 0x200 set for the extended (0xE0) page, the same encoding kbd_raw_get uses.
+ * Tracked unconditionally, so it does not depend on who called raw_enable. */
+int  kbd_key_down(int code);
+void kbd_keys_clear(void);      /* forget everything held; call on focus loss */
+
+/* Feed a make/break from a transport that is not the 8042 -- the USB HID path
+ * in drivers/xhci.c. Without this a USB keyboard produces characters and no
+ * key-up at all, which is every keyboard on a machine built after about 2015
+ * and the reason DOOM does not respond on real hardware. */
+void kbd_raw_inject(int sc, int pressed, int ext);
+
 /* Is this byte a character somebody meant to type?
  *
  * Every text field in the OS was asking `c >= 32 && c < 127`, in about a dozen

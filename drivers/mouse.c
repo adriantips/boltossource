@@ -23,6 +23,13 @@ static volatile uint8_t btns;            /* current button bitmask */
  * double-click) simply never happened. */
 static volatile uint8_t btn_latch;
 static volatile int     evt;             /* set on every decoded packet */
+/* Relative motion, accumulated alongside the absolute cursor rather than
+ * instead of it. A first-person camera wants "how far did the hand move", and
+ * the clamped cursor cannot answer that: at the edge of the screen it stops
+ * moving while the hand keeps going, so a turn to the right dies the moment
+ * the pointer reaches the last column. Nothing here is consumed unless
+ * somebody calls mouse_take_delta, so the cursor is unaffected. */
+static volatile int     gdx, gdy;
 
 static volatile uint8_t pkt[4];
 static volatile uint8_t phase;           /* which byte of the packet is next */
@@ -76,6 +83,7 @@ static void decode_packet(void) {
     if (f & 0xC0) return;                      /* X/Y overflow -> drop packet */
     int dx = (int)pkt[1] - (int)((f << 4) & 0x100);   /* sign-extend 9-bit */
     int dy = (int)pkt[2] - (int)((f << 3) & 0x100);
+    gdx += dx; gdy -= dy;
     mx += dx;
     my -= dy;                                  /* screen Y grows downward */
     if (mx < 0)      mx = 0;
@@ -97,6 +105,7 @@ static void decode_packet(void) {
  * mouse). Deltas are already sign-extended; USB Y grows downward, matching the
  * screen, so it is added directly (unlike the PS/2 path which inverts it). */
 void mouse_inject(int dx, int dy, uint8_t buttons, int wheel) {
+    gdx += dx; gdy += dy;
     mx += dx; my += dy;
     if (mx < 0)      mx = 0;
     if (my < 0)      my = 0;
@@ -134,6 +143,24 @@ static void on_irq(struct registers *r) {
     case 3:
         pkt[3] = data; phase = 0; decode_packet(); break;
     }
+}
+
+/* Put the cursor somewhere without inventing motion. A game that has captured
+ * the mouse recenters it every frame so it can never leave the window and
+ * start clicking on the desktop behind; the relative accumulator above is
+ * deliberately untouched, because the hand did not move. */
+void mouse_warp(int x, int y) {
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x > sw - 1) x = sw - 1;
+    if (y > sh - 1) y = sh - 1;
+    mx = x; my = y;
+}
+
+void mouse_take_delta(int *dx, int *dy) {
+    if (dx) *dx = gdx;
+    if (dy) *dy = gdy;
+    gdx = gdy = 0;
 }
 
 /* Re-clamp the cursor to a new panel size after a resolution change. Keeps the

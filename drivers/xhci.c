@@ -699,6 +699,37 @@ static int nhid;
 
 /* HID usage id -> char, honouring shift/ctrl. 0 == produce nothing. Mirrors the
  * PS/2 driver's control-byte conventions (KEY_*, KEY_COPY/PASTE/...). */
+/* HID usage id -> PS/2 set-1 scancode, so the raw make/break tap works on a USB
+ * keyboard too. Only the keys a game asks about are here; 0 means "no set-1
+ * equivalent I care about" and the entry is skipped. The high bit marks the
+ * extended (0xE0) page -- cursor up is 0xC8 here and numeric 8 is 0x48, which
+ * is the same distinction the 8042 makes with a prefix byte. */
+static const uint8_t hid_sc[0x68] = {
+    [0x04]=0x1E,[0x05]=0x30,[0x06]=0x2E,[0x07]=0x20,[0x08]=0x12,[0x09]=0x21,
+    [0x0A]=0x22,[0x0B]=0x23,[0x0C]=0x17,[0x0D]=0x24,[0x0E]=0x25,[0x0F]=0x26,
+    [0x10]=0x32,[0x11]=0x31,[0x12]=0x18,[0x13]=0x19,[0x14]=0x10,[0x15]=0x13,
+    [0x16]=0x1F,[0x17]=0x14,[0x18]=0x16,[0x19]=0x2F,[0x1A]=0x11,[0x1B]=0x2D,
+    [0x1C]=0x15,[0x1D]=0x2C,
+    [0x1E]=0x02,[0x1F]=0x03,[0x20]=0x04,[0x21]=0x05,[0x22]=0x06,[0x23]=0x07,
+    [0x24]=0x08,[0x25]=0x09,[0x26]=0x0A,[0x27]=0x0B,
+    [0x28]=0x1C,[0x29]=0x01,[0x2A]=0x0E,[0x2B]=0x0F,[0x2C]=0x39,
+    [0x2D]=0x0C,[0x2E]=0x0D,[0x2F]=0x1A,[0x30]=0x1B,[0x31]=0x2B,
+    [0x33]=0x27,[0x34]=0x28,[0x35]=0x29,[0x36]=0x33,[0x37]=0x34,[0x38]=0x35,
+    [0x39]=0x3A,
+    [0x3A]=0x3B,[0x3B]=0x3C,[0x3C]=0x3D,[0x3D]=0x3E,[0x3E]=0x3F,[0x3F]=0x40,
+    [0x40]=0x41,[0x41]=0x42,[0x42]=0x43,[0x43]=0x44,[0x44]=0x57,[0x45]=0x58,
+    [0x4F]=0xCD,[0x50]=0xCB,[0x51]=0xD0,[0x52]=0xC8,
+};
+/* The eight modifier bits of report byte 0, in order. Same encoding. */
+static const uint8_t hid_mod_sc[8] = { 0x1D, 0x2A, 0x38, 0xDB, 0x9D, 0x36, 0xB8, 0xDC };
+
+static void hid_raw(uint8_t usage, int pressed) {
+    if (usage >= 0x68) return;
+    uint8_t sc = hid_sc[usage];
+    if (!sc) return;
+    kbd_raw_inject(sc & 0x7F, pressed, (sc & 0x80) != 0);
+}
+
 static const char hid_unshift[] = "abcdefghijklmnopqrstuvwxyz1234567890\n\x1b\b\t -=[]\\#;'`,./";
 static const char hid_shift[]   = "ABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()\n\x1b\b\t _+{}|~:\"~<>?";
 static char hid_translate(uint8_t u, int shift, int ctrl) {
@@ -1175,9 +1206,25 @@ static void xhci_drain(void) {
                     int was = 0;
                     for (int j = 2; j < 8; j++) if (h->last[j] == u) { was = 1; break; }
                     if (was) continue;             /* held since last report */
+                    hid_raw(u, 1);
                     char c = hid_translate(u, shift, ctrl);
                     if (c) kbd_inject(c);
                 }
+                /* Keys that were in the last report and are not in this one are
+                 * releases. Nothing above needs them -- kbd_inject deals in
+                 * characters -- but a game holding W does. */
+                for (int j = 2; j < 8; j++) {
+                    uint8_t u = h->last[j];
+                    if (u == 0) continue;
+                    int still = 0;
+                    for (uint32_t i = 2; i < got && i < 8; i++) if (r[i] == u) { still = 1; break; }
+                    if (!still) hid_raw(u, 0);
+                }
+                uint8_t mchg = (uint8_t)(r[0] ^ h->last[0]);
+                for (int b = 0; b < 8; b++)
+                    if (mchg & (1 << b))
+                        kbd_raw_inject(hid_mod_sc[b] & 0x7F, (r[0] >> b) & 1,
+                                       (hid_mod_sc[b] & 0x80) != 0);
                 for (uint32_t i = 0; i < 8; i++) h->last[i] = i < got ? r[i] : 0;
             }
             hid_arm(h);                            /* ready for the next report */
