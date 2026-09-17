@@ -38,6 +38,7 @@ are within a round. Nobody's files were involved.
 | `1` `2` `3` | primary / pistol / knife |
 | `R` | reload |
 | `E` | hold to plant, or to defuse |
+| walk over it | pick a dropped bomb back up |
 | `B` | buy menu, during freeze time and in your own spawn |
 | `Tab` | scoreboard |
 | `Esc` | release the mouse, or close the buy menu |
@@ -56,8 +57,23 @@ someone pays according to the gun you used, winning a round pays 3,250 and
 losing pays 1,900, capped at 16,000. Armour carries between rounds and your
 magazines are refilled at the start of each one.
 
-Defusing takes 9.5 seconds, or 4.8 with a kit -- one CT in three gets one.
-Planting takes 3 seconds and pays 800.
+Defusing takes 9.5 seconds, or 4.8 with a kit -- one CT in three gets one, and
+it takes that long however many people are standing on it. Planting takes 3
+seconds and pays 800.
+
+**Halves.** Six rounds a side, then everybody changes ends: money back to 800,
+armour and guns gone, kills kept, the two side scores untouched. You start as a
+CT because defending is the friendlier side to learn a map from -- the map comes
+to you -- and you are a T from round seven, which is when the plant key starts
+meaning something. Before this existed you were a CT for ever, which made half
+of a game about planting a bomb something you watched other people do.
+
+**The bomb on the floor.** Kill the carrier and the bomb drops where it fell;
+any T who walks over it picks it up, and it sits on both minimaps in amber until
+somebody does. A CT cannot pick it up and cannot defuse it -- it was never
+planted. This is the first thing a CT tries every round, and it used to remove
+the objective from the round entirely and silently: the drop was written, the
+pickup was not, and nothing was drawn.
 
 A head shot is a shot through the middle of the silhouette. There is no
 vertical axis in this game, so that is the only honest way to have head shots
@@ -93,7 +109,21 @@ ground.
 
 Sprites are billboards, depth-tested per column against the wall pass. Each
 soldier has five drawn views mirrored into eight facings, two walk frames and
-a body, built out of a dozen rounded boxes each.
+a body, built out of a dozen rounded boxes each. The mirror happens while the
+sprite is being drawn, not before: the whole list is gathered and sorted first,
+so a mirrored view baked into one shared scratch buffer at gather time meant
+every mirrored soldier in the frame wore the last one's pose. Effects went the
+same way and were all the colour of whichever one was gathered last.
+
+The wall pass records what it covered, per column, and the sky and floor passes
+skip those pixels. The floor used to be drawn under the walls and thrown away,
+which cost a third of the frame in a bombsite -- where the walls are close, they
+cover everything, and standing still next to the bomb is exactly what the game
+asks you to do for three seconds.
+
+Getting shot flashes the frame red for 450 ms. It used to key off health alone,
+so one graze early in a round left the screen tinted, and repainted 64,000
+pixels every frame for the rest of it.
 
 The frame is 320x200 and the window scales it. The HUD is drawn afterwards at
 the window's own resolution, so the numbers stay sharp however coarse the 3D
@@ -111,6 +141,35 @@ told about two seconds ago.
 They see in a cone, not a sphere: a bot that shoots you from behind its own
 head is the fastest way to make a game feel cheap. Skill sets the turn rate
 and the residual aim error, and nothing else.
+
+The objective outranks the other three. A bot standing on the site with the
+bomb plants it unless there is somebody in sight right now -- which sounds
+obvious and was not what happened: planting lived at the bottom of the roam
+case, and seeing anybody at all sets a four-second hunt timer, so a carrier that
+caught one glimpse of a CT on the way in spent the rest of the round hunting.
+Over four hundred rounds, forty per cent ended on "Time expired" with the bomb
+still in somebody's hands. It is zero now.
+
+The map is CT-sided -- they are already there, and whoever is looking at the
+doorway first wins the fight -- and the bots win about a third of rounds as Ts.
+That is a property of the layout rather than a bug, but it is why
+`test/host/strike.c` plays fifty rounds before asserting that both sides win
+sometimes, and not eight.
+
+## What it costs
+
+The desktop loop wakes on every PIT tick and the PIT runs at 1000 Hz, so
+`strike_pump` is called a thousand times a second. Only the draw was throttled.
+Everything else -- nine bots thinking, the input, the mixer, the mouse recentre
+-- ran on every one of those ticks, and each roaming bot was scanning all 2,304
+cells of the map twice to find out where the middle of a bombsite was. That is
+about thirty million cell visits a second, on a machine with no acceleration,
+to answer a question whose answer is in the map file.
+
+The centres are worked out once in `st_map_load` now, and the simulation runs on
+a 16 ms step instead of a 1 ms one. Measured on the host, a live round's
+`st_step` went from 19 to 1.3 microseconds; multiplied by sixteen times fewer
+calls, that is most of what the game was spending.
 
 ---
 
@@ -154,6 +213,13 @@ Without `--host-only` it also boots a real machine and opens the app.
 No multiplayer -- the socket layer is there and two BoltOS machines on one
 wire is a tested arrangement elsewhere in this tree, but none of it is wired
 up here. No grenades, no crouching, no ladders, no vertical aim beyond a
-cosmetic pitch. The bots do not hear gunfire, only see it; `noise_ms` is
-plumbed through and never set by anything but sight, which is a loose end
-rather than a design.
+cosmetic pitch. You cannot pick up a dead man's rifle; the bomb is the only
+thing in the game that changes hands. The bots do not hear gunfire, only see
+it; `noise_ms` is plumbed through and never set by anything but sight, which is
+a loose end rather than a design.
+
+Bodies lie there for nine seconds and fade out over the last one. They used to
+stay for the whole round, which was an `if` with an empty body rather than a
+decision, and by the time the bomb went down there were nine of them in the
+draw list every frame -- all facing the wrong way, because the mirror was
+skipped for the dead.

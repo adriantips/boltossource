@@ -519,9 +519,17 @@ window_t *gui_add_window(const char *title, int w, int h, uint32_t accent, int i
     win->w = w; win->h = h;
     win->min_w = 260; win->min_h = 160;
     win->accent = accent; win->icon = icon;
-    /* cascade initial placement so windows don't perfectly overlap */
+    /* Cascade initial placement so windows don't perfectly overlap -- and wrap
+     * it back to the top left when it runs off the panel, which it did not.
+     * There are forty-five apps and the step is 48 by 40, so anything
+     * registered after about the fifteenth opened at coordinates off the side
+     * of a 1024x768 screen. Most apps set their own x/y and so never met this;
+     * the ones that did not just appeared to do nothing when you clicked them,
+     * with a taskbar button and no window. */
     win->x = 80 + nwin * 48;
     win->y = 60 + nwin * 40;
+    if (W > 0 && win->x + w > W) win->x = 40 + (win->x % 200);
+    if (H > 0 && win->y + h > H - TASKBAR_H) win->y = 30 + (win->y % 140);
     win->z = ++ztop;
     nwin++;
     return win;
@@ -711,6 +719,23 @@ static void draw_icon(int id, int x, int y, int s, uint32_t c) {
         g_fill(cxx + 2 * s, cyy, r - s, s, c);              /* E arm */
         g_fill(cxx, cyy - r - s, s, r - s, c);              /* N arm */
         g_fill(cxx, cyy + 2 * s, s, r - s, c);              /* S arm */
+        break;
+    }
+    case ICON_CRAFT: {                          /* a grass block, drawn in isometric */
+        uint32_t dirt = 0x8A6A46, side = 0x6E5436, grass = 0x5FA046;
+        /* top face: a squashed diamond, one row at a time */
+        for (int r = 0; r < 4 * s; r++) {
+            int half = r * 2;
+            g_fill(x + 8 * s - half, y + 2 * s + r, half * 2, 1, grass);
+        }
+        for (int r = 0; r < 4 * s; r++) {
+            int half = (4 * s - r) * 2;
+            g_fill(x + 8 * s - half, y + 6 * s + r, half * 2, 1, grass);
+        }
+        /* and the two sides under it, lit and unlit */
+        g_fill(x + 1 * s, y + 6 * s, 7 * s, 6 * s, side);
+        g_fill(x + 8 * s, y + 6 * s, 7 * s, 6 * s, dirt);
+        (void)c;
         break;
     }
     case ICON_GAMEBOY: {                        /* handheld: screen, pad, two buttons */
@@ -2077,7 +2102,13 @@ static void draw_cursor(void) {
 /* ===========================================================================
  *  Desktop icons + drag-and-drop
  * ===========================================================================*/
-#define MAX_DESKICON 48
+/* 64, not 48. Every app gets a launcher icon and there are 45 of them, plus the
+ * four shortcuts the desktop seeds -- which came to 49 the moment boltcraft was
+ * added, and gui_desktop_add_app's loop simply returns when it finds no free
+ * slot. The app that goes missing is whichever registered last, silently, and
+ * it looked for all the world like the app had failed to start. 64 is eight
+ * columns at DI_W, which still leaves half the screen. */
+#define MAX_DESKICON 64
 /* A desktop shortcut is either an app launcher (win != 0, double-click opens the
  * window) or a file/folder shortcut (node != 0, opened via the explorer). */
 typedef struct { int used, x, y, icon; char label[40]; fs_node *node; window_t *win; } deskicon_t;
@@ -3306,6 +3337,7 @@ void gui_run(void) {
     doom_app_init();
     strike_app_init();
     gameboy_app_init();
+    boltcraft_app_init();
     installer_app_init();
     software_app_init();
     logs_app_init();

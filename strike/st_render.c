@@ -22,6 +22,11 @@
 uint32_t st_frame[RW * RH];
 
 static float zbuf[RW];
+/* What the wall pass covered, per column, so the sky and the floor can stop
+ * painting pixels a wall is about to sit on. wbot < wtop means no wall in that
+ * column. It is one compare per pixel and it takes a third off the frame in a
+ * bombsite, where the walls are close and used to cover the lot. */
+static int16_t wtop[RW], wbot[RW];
 
 #define PI_F 3.14159265f
 
@@ -56,16 +61,16 @@ static const uint32_t floor_col[F_COUNT] = {
 
 /* ---- sky ----------------------------------------------------------------- */
 static void draw_sky(int horizon) {
-    for (int y = 0; y < RH; y++) {
-        if (y >= horizon) break;
+    for (int y = 0; y < horizon && y < RH; y++) {
         /* A late-afternoon gradient: pale and hot at the horizon, deeper up top */
-        int t = horizon > 0 ? (y * 255) / (horizon > 0 ? horizon : 1) : 0;
+        int t = horizon > 0 ? (y * 255) / horizon : 0;
         int r = 92 + (t * 120) / 255;
         int g = 120 + (t * 96) / 255;
         int b = 168 - (t * 44) / 255;
         uint32_t c = 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
         uint32_t *row = &st_frame[y * RW];
-        for (int x = 0; x < RW; x++) row[x] = c;
+        for (int x = 0; x < RW; x++)
+            if (y < wtop[x] || y > wbot[x]) row[x] = c;
     }
 }
 
@@ -73,7 +78,12 @@ static void draw_sky(int horizon) {
 static void draw_floor(float px, float py, float dxl, float dyl, float dxr, float dyr,
                        int horizon) {
     for (int y = horizon + 1; y < RH; y++) {
-        int p = y - RH / 2;
+        /* Measured from the horizon, not from the middle of the frame. Getting
+         * that wrong is invisible until you look up or down, and then the floor
+         * slides out from under the walls -- the wall pass puts its bottom edge
+         * at the horizon and this used to put the matching floor row somewhere
+         * else entirely. */
+        int p = y - horizon;
         if (p <= 0) continue;
         /* Distance to the row: the camera is half a wall high, hence 0.5. */
         float rowdist = (0.5f * (float)RH) / (float)p;
@@ -87,6 +97,7 @@ static void draw_floor(float px, float py, float dxl, float dyl, float dxr, floa
         int num = fog_num(rowdist);
         uint32_t *row = &st_frame[y * RW];
         for (int x = 0; x < RW; x++) {
+            if (y <= wbot[x] && y >= wtop[x]) { fx += stepx; fy += stepy; continue; }
             int cx = (int)fx, cy = (int)fy;
             uint32_t base;
             if ((unsigned)cx < (unsigned)ST_W && (unsigned)cy < (unsigned)ST_H) {
@@ -125,6 +136,8 @@ static void draw_walls(float px, float py, float dirx, float diry,
         if (ry < 0) { stepy = -1; sdy = (py - (float)mapy) * ddy; }
         else        { stepy =  1; sdy = ((float)mapy + 1.0f - py) * ddy; }
 
+        wtop[x] = RH; wbot[x] = -1;                 /* nothing covered yet     */
+
         int side = 0, hit = 0, guard = 0;
         while (!hit && guard++ < 128) {
             if (sdx < sdy) { sdx += ddx; mapx += stepx; side = 0; }
@@ -162,6 +175,9 @@ static void draw_walls(float px, float py, float dirx, float diry,
 
         /* 16.16 fixed point: the texture row advances by a constant, so the
          * inner loop has no divide in it. */
+        wtop[x] = (int16_t)cy0;
+        wbot[x] = (int16_t)cy1;
+
         uint32_t tstep = (uint32_t)((TEXW << 16) / (lineh > 0 ? lineh : 1));
         uint32_t tpos  = (uint32_t)((cy0 - y0) * (int)tstep);
         uint32_t *dst  = &st_frame[cy0 * RW + x];
@@ -174,8 +190,25 @@ static void draw_walls(float px, float py, float dirx, float diry,
     }
 }
 
-/* ---- sprites ------------------------------------------------------------- */
-typedef struct { float d; float x, y; const uint32_t *img; int w, h, lift, scale; } vis_t;
+/* ---- sprites ------------------------------------------------------------- *
+ *  A billboard. `img` is the pixels; when it is null the entry is an effect
+ *  and `col`/`radius` describe a disc instead, which is all an effect has ever
+ *  been. Both the mirror and the disc used to be built into one shared scratch
+ *  buffer at gather time -- and the whole list is gathered before any of it is
+ *  drawn, so every mirrored soldier in the frame ended up wearing the last
+ *  one's pose and every puff of blood came out the colour of whatever the last
+ *  effect was. Nothing is baked now; the flag and the two numbers travel with
+ *  the entry and the blit reads them. */
+typedef struct {
+    float    d;                      /* squared distance, for the sort        */
+    float    x, y;
+    const uint32_t *img;             /* null for an effect                    */
+    int      w, h, lift, scale;
+    int      mirror;
+    uint32_t col;                    /* effects: the colour of the disc       */
+    int      radius;                 /* effects: in the disc's own 16x16 box  */
+    int      fade;                   /* 0..256; 256 is fully opaque           */
+} vis_t;
 
 static void blit_sprite(const vis_t *v, float px, float py,
                         float dirx, float diry, float planex, float planey, int horizon) {
@@ -196,18 +229,43 @@ static void blit_sprite(const vis_t *v, float px, float py,
     int y0 = y1 - h;
 
     int x0 = scr - w / 2, x1 = x0 + w;
-    int num = fog_num(ty);
+    int cx0 = x0 < 0 ? 0 : x0, cx1 = x1 > RW ? RW : x1;
+    int cy0 = y0 < 0 ? 0 : y0, cy1 = y1 > RH ? RH : y1;
+    if (cx1 <= cx0 || cy1 <= cy0) return;
 
-    for (int x = x0 < 0 ? 0 : x0; x < x1 && x < RW; x++) {
-        if (ty >= zbuf[x]) continue;                    /* behind a wall       */
+    int num = fog_num(ty);
+    if (v->fade < 256) num = (num * v->fade) / 256;
+
+    /* The source column for each screen column, worked out once. The loop that
+     * follows walks rows on the outside so the stores run along the frame
+     * rather than down it; it was the other way round and every pixel of a
+     * soldier landed in a different cache line. */
+    static int16_t colmap[RW];
+    for (int x = cx0; x < cx1; x++) {
         int sx = ((x - x0) * v->w) / w;
-        if ((unsigned)sx >= (unsigned)v->w) continue;
-        for (int y = y0 < 0 ? 0 : y0; y < y1 && y < RH; y++) {
-            int sy = ((y - y0) * v->h) / h;
-            if ((unsigned)sy >= (unsigned)v->h) continue;
-            uint32_t c = v->img[sy * v->w + sx];
-            if (!(c & 0xFF000000u)) continue;           /* alpha 0 = not drawn */
-            st_frame[y * RW + x] = shade(c, num, 256);
+        if (v->mirror) sx = v->w - 1 - sx;
+        colmap[x] = (int16_t)((unsigned)sx < (unsigned)v->w ? sx : -1);
+    }
+
+    for (int y = cy0; y < cy1; y++) {
+        int sy = ((y - y0) * v->h) / h;
+        if ((unsigned)sy >= (unsigned)v->h) continue;
+        const uint32_t *src = v->img ? &v->img[sy * v->w] : 0;
+        uint32_t *row = &st_frame[y * RW];
+        for (int x = cx0; x < cx1; x++) {
+            if (ty >= zbuf[x]) continue;                /* behind a wall       */
+            int sx = colmap[x];
+            if (sx < 0) continue;
+            uint32_t c;
+            if (src) {
+                c = src[sx];
+                if (!(c & 0xFF000000u)) continue;       /* alpha 0 = not drawn */
+            } else {
+                int dx = sx - v->w / 2, dy = sy - v->h / 2;
+                if (dx * dx + dy * dy > v->radius * v->radius) continue;
+                c = v->col;
+            }
+            row[x] = shade(c, num, 256);
         }
     }
 }
@@ -225,34 +283,12 @@ static int pick_view(const st_ent *e, float px, float py, int *mirror) {
     return view_of[oct];
 }
 
-/* The mirrored half of the sheet is made on demand into one scratch buffer.
- * Two soldiers facing opposite ways in the same frame each get it in turn,
- * which is fine because blit_sprite consumes it before the next one is built. */
-static uint32_t mirror_buf[SPR_W * SPR_H];
-static const uint32_t *mirrored(const uint32_t *src) {
-    for (int y = 0; y < SPR_H; y++)
-        for (int x = 0; x < SPR_W; x++)
-            mirror_buf[y * SPR_W + x] = src[y * SPR_W + (SPR_W - 1 - x)];
-    return mirror_buf;
-}
-
-static uint32_t fx_buf[16 * 16];
-static const uint32_t *fx_image(int kind, int age_ms) {
-    uint32_t col;
+static uint32_t fx_colour(int kind) {
     switch (kind) {
-    case FX_SPARK: col = 0xFFFFD070; break;
-    case FX_SMOKE: col = 0xFF9A9A96; break;
-    default:       col = 0xFFB01818; break;
+    case FX_SPARK: return 0xFFFFD070;
+    case FX_SMOKE: return 0xFF9A9A96;
+    default:       return 0xFFB01818;
     }
-    int r = 3 + age_ms / 120;
-    if (r > 7) r = 7;
-    for (int y = 0; y < 16; y++) {
-        for (int x = 0; x < 16; x++) {
-            int dx = x - 8, dy = y - 8;
-            fx_buf[y * 16 + x] = (dx * dx + dy * dy <= r * r) ? col : 0;
-        }
-    }
-    return fx_buf;
 }
 
 /* ---- the gun in your hands ---------------------------------------------- */
@@ -350,38 +386,55 @@ void st_render(const st_ent *eye, float pitch, int zoomed) {
     for (int i = 0; i < st_w.nent; i++) {
         const st_ent *e = &st_w.ent[i];
         if (!e->used || e == eye) continue;
-        if (!e->alive && e->hp > -400) { /* corpses stay, but only for a while */ }
+        /* A body lies there for CORPSE_MS and then is not there. Leaving them
+         * for the whole round was not a decision, it was an `if` with an empty
+         * body -- and by the time the bomb went down there were nine of them in
+         * the draw list, all of them facing the wrong way because the mirror
+         * was skipped for the dead. */
+        if (!e->alive && e->corpse_ms <= 0) continue;
         int mirror = 0;
         int view = pick_view(e, px, py, &mirror);
         int frame = !e->alive ? 2 : ((e->step_acc / 260) & 1);
         const uint32_t *img = st_ply_spr[e->team][view][frame];
         if (!img) continue;
-        if (mirror && e->alive) img = mirrored(img);
         float dx = e->x - px, dy = e->y - py;
+        vis[nv] = (vis_t){ 0 };
         vis[nv].d = dx * dx + dy * dy;
         vis[nv].x = e->x; vis[nv].y = e->y;
         vis[nv].img = img; vis[nv].w = SPR_W; vis[nv].h = SPR_H;
-        vis[nv].lift = e->alive ? 0 : 0;
+        vis[nv].mirror = mirror;
         vis[nv].scale = e->alive ? 74 : 40;
+        vis[nv].fade = 256;
+        /* The last second of a corpse is spent going dark, so bodies leave
+         * rather than blink out from under you. */
+        if (!e->alive && e->corpse_ms < 1000) vis[nv].fade = e->corpse_ms / 4 + 6;
         nv++;
     }
 
-    if (st_w.bomb_down && st_item_spr[IT_BOMB]) {
+    if ((st_w.bomb_down || st_w.bomb_loose) && st_item_spr[IT_BOMB]) {
         float dx = st_w.bomb_x - px, dy = st_w.bomb_y - py;
+        vis[nv] = (vis_t){ 0 };
         vis[nv].d = dx * dx + dy * dy;
         vis[nv].x = st_w.bomb_x; vis[nv].y = st_w.bomb_y;
         vis[nv].img = st_item_spr[IT_BOMB];
-        vis[nv].w = ITEM_W; vis[nv].h = ITEM_H; vis[nv].lift = 0; vis[nv].scale = 26;
+        vis[nv].w = ITEM_W; vis[nv].h = ITEM_H; vis[nv].scale = 26;
+        vis[nv].fade = 256;
         nv++;
     }
 
     for (int i = 0; i < ST_MAX_FX && nv < (int)(sizeof(vis) / sizeof(vis[0])); i++) {
         if (st_fx_list[i].ms <= 0) continue;
         float dx = st_fx_list[i].x - px, dy = st_fx_list[i].y - py;
+        int age = 700 - st_fx_list[i].ms;
+        int r = 3 + age / 120;
+        vis[nv] = (vis_t){ 0 };
         vis[nv].d = dx * dx + dy * dy;
         vis[nv].x = st_fx_list[i].x; vis[nv].y = st_fx_list[i].y;
-        vis[nv].img = fx_image(st_fx_list[i].kind, 700 - st_fx_list[i].ms);
+        vis[nv].img = 0;
+        vis[nv].col = fx_colour(st_fx_list[i].kind);
+        vis[nv].radius = r > 7 ? 7 : r;
         vis[nv].w = 16; vis[nv].h = 16; vis[nv].lift = 30; vis[nv].scale = 22;
+        vis[nv].fade = 256;
         nv++;
     }
 
@@ -398,10 +451,18 @@ void st_render(const st_ent *eye, float pitch, int zoomed) {
     else if (eye->alive) draw_viewmodel(eye);
     if (eye->alive) draw_crosshair(zoomed);
 
-    /* Taking a hit washes the frame red, briefly and not subtly. */
-    if (eye->hp < 100 && eye->hp > 0) {
+    /* Taking a hit washes the frame red, briefly and not subtly.
+     *
+     * "Briefly" is the fix: this keyed off hp alone, so one graze at the start
+     * of a round left the screen tinted and re-tinted -- 64,000 read-modify-
+     * writes a frame -- until you died. It is a flash now, driven by the timer
+     * st_hurt sets, and the tint is worth something again because it means you
+     * are being shot at right now. */
+    if (eye->hurt_ms > 0 && eye->hp > 0) {
         int hurt = (100 - eye->hp) / 3;
         if (hurt > 26) hurt = 26;
+        hurt = hurt * eye->hurt_ms / HURT_FLASH_MS;
+        if (hurt < 1) hurt = 1;
         for (int y = 0; y < RH; y++) {
             int edge = (y < 12 || y > RH - 12) ? hurt : hurt / 3;
             uint32_t *row = &st_frame[y * RW];

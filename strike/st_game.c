@@ -160,18 +160,24 @@ void st_hurt(st_ent *v, st_ent *by, int dmg, int head) {
     }
 
     v->hp -= dmg;
+    v->hurt_ms = HURT_FLASH_MS;
     st_fx_add(v->x, v->y, FX_BLOOD);
     if (v->hp > 0) return;
 
     v->alive = 0;
     v->hp = 0;
+    v->hurt_ms = 0;
+    v->corpse_ms = CORPSE_MS;
     v->deaths++;
     /* Whatever it was carrying is gone with it, except the bomb, which drops
      * where it fell -- otherwise killing the carrier ends the round by
      * accident and nobody can work out why. */
     if (v->has_bomb) {
         v->has_bomb = 0;
-        if (!st_w.bomb_down) { st_w.bomb_x = v->x; st_w.bomb_y = v->y; }
+        if (!st_w.bomb_down) {
+            st_w.bomb_x = v->x; st_w.bomb_y = v->y;
+            st_w.bomb_loose = 1;
+        }
     }
     if (by && by != v) {
         by->kills++;
@@ -274,6 +280,7 @@ static void reset_entity(st_ent *e, int idx) {
     e->hp = 100;
     e->vx = e->vy = 0.0f;
     e->fire_cd = e->reload_cd = e->flash_ms = 0;
+    e->hurt_ms = e->corpse_ms = 0;
     e->recoil = 0.0f;
     e->bstate = 0; e->bcool = 0; e->btarget = -1; e->bsee = 0;
     e->bgx = e->bgy = -1;
@@ -290,10 +297,40 @@ static void reset_entity(st_ent *e, int idx) {
     st_switch(e, best_gun(e));
 }
 
+/* Halftime. Everybody changes ends, buys from scratch, and keeps their kills.
+ *
+ * Without this you were a CT for ever, and being a CT for ever means the plant
+ * key does nothing, the bomb is never yours, the buy menu never offers the
+ * AR-47 and the whole T half of a game about planting a bomb is something you
+ * watch other people do. The scores stay attached to the sides, which is how
+ * the HUD reads them and how a half of anything is scored. */
+static void swap_sides(void) {
+    for (int i = 0; i < st_w.nent; i++) {
+        st_ent *e = &st_w.ent[i];
+        if (!e->used) continue;
+        e->team = e->team == T_SIDE ? CT_SIDE : T_SIDE;
+        e->money = 800;
+        e->armor = 0;
+        e->helmet = 0;
+        e->has_kit = 0;
+        /* Guns do not cross the line with you. Keeping the rifle you bought as
+         * a T would make the first round of the second half a rout. */
+        for (int w = 0; w < W_COUNT; w++) e->has[w] = 0;
+    }
+}
+
 void st_round_start(void) {
+    if (st_w.round > 0 && st_w.round % HALF_ROUNDS == 0) {
+        swap_sides();
+        st_w.swapped = 1;
+    } else {
+        st_w.swapped = 0;
+    }
+
     st_w.phase = R_FREEZE;
     st_w.phase_ms = FREEZE_MS;
     st_w.bomb_down = 0;
+    st_w.bomb_loose = 0;
     st_w.bomb_ms = 0;
     st_w.planting = st_w.plant_ms = 0;
     st_w.defusing = st_w.defuse_ms = 0;
@@ -348,6 +385,13 @@ static void bot_goal(st_ent *e, int *gx, int *gy) {
         *gx = (int)st_w.bomb_x; *gy = (int)st_w.bomb_y;
         return;
     }
+    /* A dropped bomb is worth walking to, and only the Ts can do anything with
+     * it. The CTs carry on holding the sites, which is what they should be
+     * doing anyway -- camping a bomb nobody can plant wins nothing. */
+    if (st_w.bomb_loose && e->team == T_SIDE) {
+        *gx = (int)st_w.bomb_x; *gy = (int)st_w.bomb_y;
+        return;
+    }
     if (e->team == T_SIDE) {
         st_zone_centre(st_w.bomb_site, &fx, &fy);
     } else {
@@ -381,6 +425,41 @@ static st_ent *bot_spot(st_ent *e) {
 }
 
 static void move_towards(st_ent *e, float tx, float ty, float speed, int dt);
+
+/* Standing on the objective and doing something about it. Returns 1 if this
+ * bot is busy and has nothing else to decide this tick.
+ *
+ * This used to live at the bottom of the roam case, which meant a bot only ever
+ * planted while it was wandering -- and `bot_spot` sets noise_ms to four seconds
+ * every time it lays eyes on anybody, so a carrier that caught one glimpse of a
+ * CT spent the next four seconds hunting instead of planting, saw somebody else
+ * on the way, and so on until the clock ran out. Over four hundred rounds, more
+ * than a third ended on "Time expired" with the bomb still in somebody's hands.
+ * The objective goes first now, as long as nothing is actually in sight. */
+static int bot_objective(st_ent *e) {
+    if (e->has_bomb && !st_w.bomb_down &&
+        st_zone[(int)e->y][(int)e->x] == st_w.bomb_site) {
+        st_w.planting = (int)(e - st_w.ent) + 1;
+        e->vx = e->vy = 0.0f;
+        e->bstate = B_PLANT;
+        return 1;
+    }
+    if (e->team == CT_SIDE && st_w.bomb_down) {
+        float dx = st_w.bomb_x - e->x, dy = st_w.bomb_y - e->y;
+        if (dx * dx + dy * dy < 1.4f) {
+            e->vx = e->vy = 0.0f;
+            e->bstate = B_DEFUSE;
+            /* First claim of the tick wins; st_step runs the clock once. Three
+             * CTs stacked on one bomb used to defuse it three times as fast. */
+            if (!st_w.defusing) {
+                st_w.defusing = 1;
+                st_w.defuser = (int)(e - st_w.ent);
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
 
 static void bot_think(st_ent *e, int dt) {
     if (!e->alive) return;
@@ -421,6 +500,8 @@ static void bot_think(st_ent *e, int dt) {
     }
 
     if (e->noise_ms > 0) e->noise_ms -= dt;
+
+    if (!tgt && bot_objective(e)) return;
 
     switch (e->bstate) {
     case B_FIGHT: {
@@ -463,25 +544,6 @@ static void bot_think(st_ent *e, int dt) {
     default: {
         int gx, gy;
         bot_goal(e, &gx, &gy);
-
-        /* Plant, if this is the carrier and it is standing on the site. */
-        if (e->has_bomb && st_zone[(int)e->y][(int)e->x] == st_w.bomb_site && !st_w.bomb_down) {
-            st_w.planting = (int)(e - st_w.ent) + 1;
-            st_w.plant_ms += dt;
-            e->vx = e->vy = 0.0f;
-            break;
-        }
-        /* Defuse, if this is a CT standing on a live bomb. */
-        if (e->team == CT_SIDE && st_w.bomb_down) {
-            float dx = st_w.bomb_x - e->x, dy = st_w.bomb_y - e->y;
-            if (dx * dx + dy * dy < 1.4f) {
-                st_w.defusing = 1;
-                st_w.defuser = (int)(e - st_w.ent);
-                st_w.defuse_ms += dt;
-                e->vx = e->vy = 0.0f;
-                break;
-            }
-        }
 
         if (e->bgx != gx || e->bgy != gy || !e->field) {
             if (!e->field) e->field = kmalloc(ST_W * ST_H);
@@ -538,10 +600,31 @@ static void move_towards(st_ent *e, float tx, float ty, float speed, int dt) {
     }
 }
 
+/* Walk over a dropped bomb and it is yours again.
+ *
+ * There was none of this: st_hurt dropped the bomb where the carrier fell, the
+ * comment said so, and then nothing on earth could pick it up. Kill the T with
+ * the bomb -- which is the first thing any CT tries -- and the objective simply
+ * left the round, invisibly, with the site still lit up on the minimap and no
+ * bomb anywhere near it. Half the game was unreachable for the price of a
+ * missing loop. */
+static void bomb_pickup(void) {
+    if (!st_w.bomb_loose) return;
+    for (int i = 0; i < st_w.nent; i++) {
+        st_ent *e = &st_w.ent[i];
+        if (!e->used || !e->alive || e->team != T_SIDE) continue;
+        float dx = st_w.bomb_x - e->x, dy = st_w.bomb_y - e->y;
+        if (dx * dx + dy * dy > 0.64f) continue;      /* about a stride away   */
+        e->has_bomb = 1;
+        st_w.bomb_loose = 0;
+        return;
+    }
+}
+
 /* What slot 0 is doing with the use key, which app_strike.c sets each frame.
  * It is a held state and not an event: a plant is nine tenths of a second of
  * deciding not to let go. */
-static void human_use(int dt) {
+static void human_use(void) {
     st_ent *e = st_you();
     if (!e->used || !e->alive || !st_w.use_held) return;
     int cx = (int)e->x, cy = (int)e->y;
@@ -550,7 +633,6 @@ static void human_use(int dt) {
     if (e->team == T_SIDE && e->has_bomb && !st_w.bomb_down &&
         st_zone[cy][cx] == st_w.bomb_site) {
         st_w.planting = 1;
-        st_w.plant_ms += dt;
         return;
     }
     if (e->team == CT_SIDE && st_w.bomb_down) {
@@ -558,7 +640,6 @@ static void human_use(int dt) {
         if (dx * dx + dy * dy < 1.4f) {
             st_w.defusing = 1;
             st_w.defuser = 0;
-            st_w.defuse_ms += dt;
         }
     }
 }
@@ -575,8 +656,10 @@ void st_step(int dt_ms) {
     for (int i = 0; i < st_w.nent; i++) {
         st_ent *e = &st_w.ent[i];
         if (!e->used) continue;
-        if (e->fire_cd > 0)  e->fire_cd -= dt_ms;
-        if (e->flash_ms > 0) e->flash_ms -= dt_ms;
+        if (e->fire_cd > 0)   e->fire_cd -= dt_ms;
+        if (e->flash_ms > 0)  e->flash_ms -= dt_ms;
+        if (e->hurt_ms > 0)   e->hurt_ms -= dt_ms;
+        if (e->corpse_ms > 0) e->corpse_ms -= dt_ms;
         if (e->reload_cd > 0) {
             e->reload_cd -= dt_ms;
             if (e->reload_cd <= 0) {
@@ -592,21 +675,23 @@ void st_step(int dt_ms) {
         if (e->alive && e->has[e->wep] == 0) st_switch(e, best_gun(e));
     }
 
+    bomb_pickup();
+
     st_w.planting = 0;
     st_w.defusing = 0;
 
     /* You first, so a bot walking onto the same bomb cannot take the
      * defuse out from under you in the frame you started it. */
-    human_use(dt_ms);
+    human_use();
 
     for (int i = 0; i < st_w.nent; i++)
         if (st_w.ent[i].used && st_w.ent[i].bot) bot_think(&st_w.ent[i], dt_ms);
 
-    /* The human's plant/defuse progress is driven from app_strike.c, which
-     * sets planting/defusing before calling in; the bots set theirs above.
-     * Either way the timers are settled here, in one place. */
-    if (!st_w.planting) st_w.plant_ms = 0;
-    if (!st_w.defusing) { st_w.defuse_ms = 0; st_w.defuser = -1; }
+    /* Everyone above says only whether they are working on it; the clock runs
+     * here, once, whatever the size of the crowd standing on the bomb. */
+    if (st_w.planting) st_w.plant_ms += dt_ms; else st_w.plant_ms = 0;
+    if (st_w.defusing) st_w.defuse_ms += dt_ms;
+    else { st_w.defuse_ms = 0; st_w.defuser = -1; }
 
     switch (st_w.phase) {
     case R_FREEZE:

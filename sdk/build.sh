@@ -53,8 +53,16 @@ mkdir -p "$WORK" "$(dirname "$OUT")"
 
 # The C runtime and library the OS links its own programs against. Built here
 # rather than reused out of build/, so this works in a fresh checkout.
+#
+# kernel/font8x8.c is in the list because sdk/bolt.ps1 has it and this did not,
+# which meant the bash half of the SDK could not link any program that drew a
+# character -- boltcraft, for one, exactly as its own README told you to build
+# it. A graphical program needs text and there is no other way to get a glyph
+# in ring 3; 3 KiB of rodata in a console program that never asks for one is
+# cheaper than a build flag people have to learn about.
 "$NASM" -f elf64 "$ROOT/user/crt0.asm" -o "$WORK/crt0.o"
-for c in user/ulibc.c user/stdlib_ext.c user/libm.c libc/string.c libc/string_ext.c; do
+for c in user/ulibc.c user/stdlib_ext.c user/libm.c libc/string.c libc/string_ext.c \
+         kernel/font8x8.c; do
     "$CLANG" "${UCFLAGS[@]}" "$ROOT/$c" -o "$WORK/$(basename "${c%.c}").o"
 done
 
@@ -70,7 +78,7 @@ done
 "$LLD" -m elf_x86_64 -T "$ROOT/user/user.ld" -no-pie -o "$OUT" \
        "$WORK/crt0.o" "${OBJS[@]}" \
        "$WORK/ulibc.o" "$WORK/stdlib_ext.o" "$WORK/libm.o" \
-       "$WORK/string.o" "$WORK/string_ext.o"
+       "$WORK/string.o" "$WORK/string_ext.o" "$WORK/font8x8.o"
 
 echo "OK -> $OUT  ($(wc -c < "$OUT") bytes)"
 echo "   put it on a machine and run it:"

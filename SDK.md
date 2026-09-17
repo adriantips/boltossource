@@ -174,11 +174,19 @@ clang --target=x86_64-elf -ffreestanding -fno-stack-protector -fno-pic -fno-pie 
       -O2 -std=c11 -Iuser -Iinclude -c myapp.c -o myapp.o
 ld.lld -m elf_x86_64 -T user/user.ld -no-pie -o myapp \
        build/u_crt0.o myapp.o build/u_ulibc.o build/u_stdlib.o \
-       build/u_libm.o build/u_string.o build/u_string_ext.o
+       build/u_libm.o build/u_string.o build/u_string_ext.o build/u_font8x8.o
 ```
 
 Keep `-fno-omit-frame-pointer`: it is what makes `core show` able to walk a
 backtrace out of your program's crash, and it costs one register.
+
+`font8x8.o` is linked into everything rather than being an option. A graphical
+program needs text and there is no other way to get a glyph in ring 3; 3 KiB of
+rodata in a console program that never asks for one is cheaper than a build flag
+people have to learn about. Leaving it out of `sdk/build.sh` -- while
+`sdk/bolt.ps1` had it -- meant the bash half of the SDK could not link any
+program that drew a character, which is how boltcraft ended up documented with a
+build line that did not work.
 
 ## 6. Getting it onto a machine, and running it
 

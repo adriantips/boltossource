@@ -168,6 +168,21 @@ UCORE=(build/u_ulibc.o build/u_stdlib.o build/u_libm.o build/u_string.o build/u_
 "$LLD" -m elf_x86_64 -T user/user.ld -no-pie -o build/netget.elf build/u_crt0.o build/u_netget.o "${UCORE[@]}"
 ( cd build && "$OBJCOPY" -I binary -O elf64-x86-64 netget.elf netget_blob.o )
 
+echo "[2b3/6] boltcraft -> ELF64 -> embed blob"
+# The voxel sandbox under boltcraft/. It is a third-party program in every way
+# that matters -- built against the published headers, talking to the kernel
+# only through the syscalls in SDK.md, and the kernel links not one line of it.
+# It is shipped in the image anyway, because a game you can only get by running
+# an HTTP server on another machine and typing a `download` line is a game
+# nobody on a fresh install will ever see. 90 KiB.
+for c in main world tex render hud; do
+    "$CLANG" "${UCFLAGS[@]}" "boltcraft/$c.c" -o "build/u_craft_$c.o"
+done
+"$LLD" -m elf_x86_64 -T user/user.ld -no-pie -o build/boltcraft.elf \
+       build/u_crt0.o build/u_craft_main.o build/u_craft_world.o build/u_craft_tex.o \
+       build/u_craft_render.o build/u_craft_hud.o build/u_font8x8.o "${UCORE[@]}"
+( cd build && "$OBJCOPY" -I binary -O elf64-x86-64 boltcraft.elf boltcraft_blob.o )
+
 echo "[2c/6] windows program (user/winhello.c) -> real PE32+ EXE -> embed blob"
 # A genuine Windows x86-64 console .exe: freestanding, imports kernel32, linked
 # by the mingw toolchain. BoltOS's PE loader binds the imports to its shim.
@@ -213,7 +228,7 @@ SRCS=(
     kernel/html.c kernel/dom.c kernel/layout.c kernel/image.c kernel/ttf.c
     kernel/gui.c kernel/app_terminal.c kernel/app_taskmgr.c kernel/app_settings.c kernel/app_browser.c kernel/app_files.c
     kernel/app_oldbrowser.c oldbrowser/ob_nsurl.c oldbrowser/ob_llcache.c oldbrowser/ob_content.c oldbrowser/ob_window.c oldbrowser/ob_hotlist.c oldbrowser/ob_fbtk.c oldbrowser/ob_gui.c
-    kernel/app_ide.c kernel/app_calc.c kernel/app_clock.c kernel/app_notes.c kernel/app_tasks.c kernel/app_contacts.c kernel/app_sheets.c kernel/app_imgview.c kernel/app_music.c kernel/app_media.c kernel/cmd_media.c kernel/app_calendar.c kernel/app_piano.c kernel/app_paint.c kernel/app_mines.c kernel/app_snake.c kernel/app_2048.c kernel/app_stopwatch.c kernel/app_charmap.c kernel/app_clipboard.c kernel/app_snip.c kernel/app_devmgr.c kernel/app_solitaire.c kernel/app_sysinfo.c kernel/app_life.c kernel/app_ttt.c kernel/app_colorpick.c kernel/app_memory.c kernel/app_matrix.c kernel/app_doom.c kernel/app_strike.c kernel/app_gameboy.c
+    kernel/app_ide.c kernel/app_calc.c kernel/app_clock.c kernel/app_notes.c kernel/app_tasks.c kernel/app_contacts.c kernel/app_sheets.c kernel/app_imgview.c kernel/app_music.c kernel/app_media.c kernel/cmd_media.c kernel/app_calendar.c kernel/app_piano.c kernel/app_paint.c kernel/app_mines.c kernel/app_snake.c kernel/app_2048.c kernel/app_stopwatch.c kernel/app_charmap.c kernel/app_clipboard.c kernel/app_snip.c kernel/app_devmgr.c kernel/app_solitaire.c kernel/app_sysinfo.c kernel/app_life.c kernel/app_ttt.c kernel/app_colorpick.c kernel/app_memory.c kernel/app_matrix.c kernel/app_doom.c kernel/app_strike.c kernel/app_gameboy.c kernel/app_boltcraft.c
     strike/st_map.c strike/st_tex.c strike/st_render.c strike/st_game.c strike/st_sfx.c
     gb/gb_cpu.c gb/gb_mem.c gb/gb_ppu.c gb/gb_apu.c kernel/app_installer.c kernel/app_security.c kernel/app_network.c
     kernel/core.c kernel/cmd_core.c kernel/pkgcat.c kernel/settings.c kernel/clipboard.c kernel/stackguard.c kernel/users.c kernel/vault.c kernel/cmd_vault.c kernel/pkg.c kernel/install.c kernel/klog.c
@@ -231,7 +246,7 @@ LIBC_SRCS=(
     libc/string.c libc/string_ext.c libc/malloc.c libc/printf.c libc/scanf.c
     libc/stdlib.c libc/support.c libc/math.c libc/stdio_file.c libc/time.c
 )
-KOBJS=(build/kboot.o build/isr.o build/sc_entry.o build/ap_boot_blob.o build/s3_wake_blob.o build/hello_blob.o build/js_blob.o build/browser_blob.o build/winhello_blob.o build/boltrt_blob.o build/crashme_blob.o build/netget_blob.o
+KOBJS=(build/kboot.o build/isr.o build/sc_entry.o build/ap_boot_blob.o build/s3_wake_blob.o build/hello_blob.o build/js_blob.o build/browser_blob.o build/winhello_blob.o build/boltrt_blob.o build/crashme_blob.o build/netget_blob.o build/boltcraft_blob.o
        build/stage1_blob.o build/stage2_blob.o build/bootx64_blob.o)
 # libc non-local jump (asm); clang's integrated assembler handles the .S
 "$CLANG" --target=x86_64-elf -mcmodel=kernel -c libc/setjmp.S -o build/setjmp.o
