@@ -93,10 +93,15 @@ static int can_stack_tab(uint8_t card, uint8_t onto) {
     if (onto == NOCARD) return RANK(card) == 12;             /* only a king */
     return RED(card) != RED(onto) && RANK(card) + 1 == RANK(onto);
 }
+/* Foundation f belongs to suit f. It does not have to -- any ace could claim
+ * any empty one and the game plays identically -- but the empty ones are drawn
+ * with a ghost pip, and a hint that tells you where the hearts go had better be
+ * telling the truth. The first version let the first ace take slot 0 and the
+ * pips underneath were decoration. */
 static int can_stack_found(uint8_t card, int f, const game_t *g) {
+    if (SUIT(card) != f) return 0;
     if (g->nfound[f] == 0) return RANK(card) == 0;
-    uint8_t top = g->found[f][g->nfound[f] - 1];
-    return SUIT(card) == SUIT(top) && RANK(card) == RANK(top) + 1;
+    return RANK(card) == RANK(g->found[f][g->nfound[f] - 1]) + 1;
 }
 
 static void snapshot(void) { S.undo = S.g; S.have_undo = 1; }
@@ -346,10 +351,12 @@ static void sol_draw(window_t *w, int cx, int cy, int cw, int ch) {
             g_fill(mx + 4, my - 10, 2, 8, 0x8FD6B0);
         }
     }
-    /* the waste fans the last three, so draw-3 shows what you actually got */
+    /* Draw-3 fans what it just dealt; draw-1 shows one card, because fanning
+     * three there would put two unplayable cards where a playable one goes. */
     int wx = left + cardw + gap;
     int fan = cardw / 4;
-    int shown = S.g.nwaste < 3 ? S.g.nwaste : 3;
+    int cap = S.draw3 ? 3 : 1;
+    int shown = S.g.nwaste < cap ? S.g.nwaste : cap;
     for (int i = 0; i < shown; i++) {
         int idx = S.g.nwaste - shown + i;
         int held = (S.held_src == SRC_WASTE && i == shown - 1);
@@ -419,7 +426,8 @@ static int hit(int lx, int ly, int *pile, int *idx) {
     if (ly >= top && ly < top + cardh) {
         if (lx >= left && lx < left + cardw) { *pile = 0; *idx = 0; return -1; }   /* stock */
         int wx = left + cardw + gap;
-        int shown = S.g.nwaste < 3 ? S.g.nwaste : 3;
+        int cap = S.draw3 ? 3 : 1;
+        int shown = S.g.nwaste < cap ? S.g.nwaste : cap;
         int fan = cardw / 4;
         int wend = wx + (shown ? (shown - 1) * fan + cardw : cardw);
         if (lx >= wx && lx < wend && S.g.nwaste) { *pile = 0; *idx = S.g.nwaste - 1; return SRC_WASTE; }
@@ -526,11 +534,12 @@ static void sol_click(window_t *w, int lx, int ly) {
     int pile = 0, idx = 0;
     int src = hit(lx, ly, &pile, &idx);
 
-    /* double-click: the WM does not report one, so time two clicks on the
-     * same card. 400ms is about where a deliberate second click stops
-     * feeling like a double. */
+    /* Double-click: the WM does not report one, so time two clicks on the same
+     * card. 500ms, which is what Windows has defaulted to for thirty years --
+     * 400 was mine and it was noticeably mean on a slow compositor, where the
+     * two clicks are a frame apart rather than a millisecond. */
     uint64_t now = pit_ticks();
-    int dbl = (now - S.last_click < 400 && src == S.last_src &&
+    int dbl = (now - S.last_click < 500 && src == S.last_src &&
                pile == S.last_pile && idx == S.last_idx && src > 0);
     S.last_click = now; S.last_src = src; S.last_pile = pile; S.last_idx = idx;
 

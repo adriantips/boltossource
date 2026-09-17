@@ -659,6 +659,22 @@ class BoltVM:
             time.sleep(0.1)
         time.sleep(0.4)
 
+    def rclick(self, x, y):
+        """Right-click. The desktop, the taskbar and several apps put a real
+        action on the right button, and a test that can only left-click has to
+        reach those the long way round -- or, worse, by double-clicking, which
+        is the one gesture a guest at five frames a second cannot reliably
+        receive: the compositor samples the buttons once per frame, so the
+        second press of a double lands in the same frame as the first and is
+        never seen as a separate click."""
+        self.move(x, y)
+        self._cmd({"execute": "input-send-event", "arguments": {"events": [
+            {"type": "btn", "data": {"button": "right", "down": True}}]}})
+        time.sleep(0.1)
+        self._cmd({"execute": "input-send-event", "arguments": {"events": [
+            {"type": "btn", "data": {"button": "right", "down": False}}]}})
+        time.sleep(0.4)
+
     def drag(self, x0, y0, x1, y1, steps=6, hold=None):
         """Press at (x0,y0), move to (x1,y1) in steps, release -- unless `hold`
         is given, in which case it is called with the button still down and the
