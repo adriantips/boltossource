@@ -125,6 +125,29 @@ static void raw_push(uint16_t v) {
 }
 void kbd_raw_enable(int on) { raw_on = on ? 1 : 0; krhead = krtail = 0; }
 
+/* Held-key state. Indexed by scancode with bit7 standing in for the extended
+ * page, so 0x48 (numeric 8) and 0xC8 (cursor up) are different keys. Kept up to
+ * date whether or not anyone enabled the raw tap -- it costs one store per
+ * interrupt and it means two games can both ask what is held without fighting
+ * over a queue that only survives being read once. */
+static volatile uint8_t kdown[256];
+
+static void key_state(uint8_t sc, int ext, int pressed) {
+    kdown[(ext ? 0x80u : 0u) | (sc & 0x7Fu)] = pressed ? 1 : 0;
+}
+int kbd_key_down(int code) {
+    return kdown[((code & 0x200) ? 0x80u : 0u) | ((unsigned)code & 0x7Fu)] != 0;
+}
+void kbd_keys_clear(void) {
+    for (int i = 0; i < 256; i++) kdown[i] = 0;
+}
+
+void kbd_raw_inject(int sc, int pressed, int ext) {
+    key_state((uint8_t)sc, ext, pressed);
+    if (raw_on)
+        raw_push((uint16_t)(sc & 0x7F) | (pressed ? 0 : 0x100) | (ext ? 0x200 : 0));
+}
+
 /* Resolved global shortcuts, in their own ring. Small, because these are
  * chords a person pressed and nobody presses sixteen of them before the
  * compositor next looks. */
@@ -173,6 +196,7 @@ static void on_key(struct registers *r) {
     uint8_t sc = inb(0x60);
     if (sc == 0xE0) { extended = 1; return; }       /* prefix: next byte is extended */
     int ext = extended; extended = 0;
+    key_state(sc, ext, !(sc & 0x80));               /* held-key state, always tracked */
     if (raw_on)                                     /* feed the raw tap (real up/down) */
         raw_push((uint16_t)(sc & 0x7F) | ((sc & 0x80) ? 0x100 : 0) | (ext ? 0x200 : 0));
 
