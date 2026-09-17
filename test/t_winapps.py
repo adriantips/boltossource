@@ -197,6 +197,134 @@ def charmap_tests(vm):
     print("  ok: Character Map put the picked glyph on the clipboard")
 
 
+# --- Solitaire's table, located by its own colour -------------------------- #
+# The baize is one exact RGB that nothing else on the desktop uses, so the
+# window's client rectangle can be found without asking the compositor where it
+# put it -- which matters, because there is no way to ask.
+BAIZE = (0x0B, 0x6E, 0x3C)
+BAR_H = 24                  # the status strip, blended over the baize
+
+
+def read_ppm(path):
+    with open(path, "rb") as fh:
+        data = fh.read()
+    parts = data.split(b"\n", 3)
+    w, h = [int(v) for v in parts[1].split()]
+    return w, h, parts[3]
+
+
+def baize_rect(path):
+    """Solitaire's client rect, or None. The blended status strip is not the
+    exact colour, so the box comes back BAR_H short and is grown back."""
+    w, h, px = read_ppm(path)
+    x0, y0, x1, y1 = w, h, -1, -1
+    for y in range(h):
+        row = y * w * 3
+        for x in range(w):
+            i = row + x * 3
+            if px[i] == BAIZE[0] and px[i + 1] == BAIZE[1] and px[i + 2] == BAIZE[2]:
+                if x < x0: x0 = x
+                if y < y0: y0 = y
+                if x > x1: x1 = x
+                if y > y1: y1 = y
+    if x1 < 0:
+        return None
+    return x0, y0, x1 - x0 + 1, y1 - y0 + 1 + BAR_H
+
+
+def card_layout(cw, ch):
+    """The same arithmetic as layout() in kernel/app_solitaire.c. If that
+    changes, this has to change with it -- which is the cost of driving a GUI
+    that cannot report its own geometry."""
+    gap = max(cw // 60, 6)
+    cardw = max((cw - gap * 8) // 7, 28)
+    cardh = cardw * 7 // 5
+    maxh = (ch - 24) // 3
+    if cardh > maxh and maxh > 30:
+        cardh = maxh
+    ox = (cw - (cardw * 7 + gap * 6)) // 2
+    return gap, cardw, cardh, ox, 10
+
+
+def pip_ink(px, w, x0, y0, bw, bh):
+    """(white, red, black) pixel counts in a rectangle -- enough to tell an
+    empty foundation from one holding a red card from one holding a black."""
+    white = red = black = 0
+    for y in range(y0, y0 + bh, 2):
+        for x in range(x0, x0 + bw, 2):
+            i = (y * w + x) * 3
+            r, g, b = px[i], px[i + 1], px[i + 2]
+            if r > 220 and g > 220 and b > 215:
+                white += 1
+            elif r > 140 and g < 90 and b < 90:
+                red += 1
+            elif r < 60 and g < 60 and b < 60:
+                black += 1
+    return white, red, black
+
+
+def play_tests(vm):
+    """Play far enough to put an ace on a foundation, with the mouse.
+
+    This is the only test here that exercises the rules rather than the
+    painting, and it reaches a long way: turning the stock, hit-testing the
+    fanned waste, the double-click timer the window manager does not provide,
+    and can_stack_found(). Turning a 24-card stock forty times sees every card
+    in it, so at least one ace passes through the waste on any deal.
+
+    Each foundation belongs to a suit -- 0 clubs, 1 diamonds, 2 hearts, 3
+    spades -- so a card that landed on the wrong one shows up as red ink in a
+    black slot, which is checked too. That rule exists because the empty slots
+    are drawn with a ghost pip and the hint has to be true.
+    """
+    shot = vm.screenshot("play-start.ppm")
+    box = baize_rect(shot)
+    assert box, "the card table is not on screen; Solitaire is not in front"
+    cx, cy, cw, ch = box
+    gap, cardw, cardh, ox, oy = card_layout(cw, ch)
+
+    stock = (cx + ox + cardw // 2, cy + oy + cardh // 2)
+    waste = (cx + ox + cardw + gap + cardw // 2, cy + oy + cardh // 2)
+    found_x = cx + ox + 3 * (cardw + gap)
+
+    # Right-click, not double-click. Both send the top of the waste to its
+    # foundation, but a double-click cannot be delivered reliably to a guest
+    # painting at five frames a second -- the compositor samples the mouse
+    # buttons once per frame, so both presses land in one frame and arrive as
+    # a single click. That picks the card up instead, and forty turns later
+    # nothing has moved. It is a property of the test rig, not of the app.
+    for _ in range(40):
+        vm.click(*stock)
+        time.sleep(0.2)
+        vm.rclick(*waste)
+        time.sleep(0.25)
+
+    shot = vm.screenshot("play-foundations.ppm")
+    w, _, px = read_ppm(shot)
+    filled = []
+    for f in range(4):
+        white, red, black = pip_ink(px, w, found_x + f * (cardw + gap) + 6,
+                                    cy + oy + 6, cardw - 12, cardh - 12)
+        if white < 20:
+            continue
+        filled.append(f)
+        want_red = f in (1, 2)          # diamonds and hearts
+        if want_red:
+            assert red > black, \
+                "a black card is sitting on the %s foundation (red %d, black %d)" \
+                % ("diamond" if f == 1 else "heart", red, black)
+        else:
+            assert black > red, \
+                "a red card is sitting on the %s foundation (red %d, black %d)" \
+                % ("club" if f == 0 else "spade", red, black)
+
+    assert filled, ("forty turns of the stock put no ace on a foundation -- "
+                    "the deal, the waste hit-test or the double-click is wrong")
+    print("  ok: playing by mouse put %d ace%s on the right foundation%s"
+          % (len(filled), "" if len(filled) == 1 else "s",
+             "" if len(filled) == 1 else "s"))
+
+
 def main():
     with BoltVM(name="winapps", net=False) as vm:
         vm.sign_in(LOGIN_USER, LOGIN_PASS)
@@ -261,6 +389,14 @@ def main():
                 break
         assert gf > 0.10, "Solitaire's table is not on screen (green %.3f)" % gf
         print("  ok: the card table is drawn (green %.1f%% of the frame)" % (gf * 100))
+
+        # Rules before keys, and specifically before the draw-3 toggle below:
+        # in draw-3 the recycle restores the stock in its original order, so
+        # the same eight cards come up on top every pass and the other sixteen
+        # are unreachable with no other move available. That is real Klondike,
+        # not a bug, but it means a test that only turns the stock has to be
+        # in draw-1 or it can legitimately find nothing.
+        play_tests(vm)
 
         # Its own keys, now that it is certainly in front: three deals, draw-3,
         # and a turn of the stock. Nothing here can be read back from a shell,
