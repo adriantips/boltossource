@@ -2585,15 +2585,18 @@ and lives at physical `0x0500`.
 ## Fuzzing the parts a stranger writes
 
 Everything else on the machine parses something the user typed or a disk we
-formatted. Two subsystems parse whatever arrives from outside, and both of them
+formatted. Three subsystems parse whatever arrives from outside, and all of them
 do it in ring 0: the network stack (`net/tcp.c` takes segments before any port
 is open; `net/tls.c` and `net/x509.c` run the record layer and the certificate
 parser *before* the certificate has been checked; `net/http.c` and
 `net/inflate.c` take the response afterwards) and the browser (`kernel/html.c`,
-`kernel/dom.c`, `kernel/layout.c`, `kernel/js.c`).
+`kernel/dom.c`, `kernel/layout.c`, `kernel/js.c`), and the decoders —
+`kernel/image.c`, which is what an `<img>` hands its bytes to, and
+`kernel/mp3.c` / `kernel/wav.c`, because the guide's own workflow is
+`download` a track and then `play` it. Same trust boundary, same ring.
 
-`test/t_fuzz.py` builds three harnesses over those sources and runs 23 targets
-in about a minute. It is the one test in the suite that boots no machine: a
+`test/t_fuzz.py` builds five harnesses over those sources and runs 37 targets
+in about two minutes. It is the one test in the suite that boots no machine: a
 fuzzer wants millions of inputs and QEMU gives you one boot a minute.
 
 ```sh

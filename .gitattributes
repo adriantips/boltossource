@@ -8,3 +8,11 @@ test/corpus/**/*.bin binary
 # newline rewritten inside a frame is a frame that decodes to noise, and the
 # diff that did it shows nothing.
 test/seeds/**/*.mp3 binary
+
+# And for the image seeds, where a rewritten byte lands inside a DEFLATE
+# stream, an LZW table or a JPEG scan and the file simply stops being one.
+test/seeds/**/*.png binary
+test/seeds/**/*.jpg binary
+test/seeds/**/*.gif binary
+test/seeds/**/*.bmp binary
+test/seeds/**/*.tga binary

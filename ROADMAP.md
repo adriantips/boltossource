@@ -514,19 +514,78 @@ which of these it is rather than failing quietly.
         a misaligned arena is every well-formed document, and starving the
         connection table takes sixteen segments in a row -- so those are
         assertions in the harnesses' own selftests instead
-        **Known gap, said out loud rather than left unsaid:** kernel/mp3.c is
-        not fuzzed, and it should be. It is 1500 lines of bit-level parsing in
-        ring 0 over a whole file buffer, and the file is not one we made --
-        GUIDE.md's own workflow is to `download` an MP3 and then `play` it, so
-        it is the same trust boundary as a web page. Three parts of Layer III
-        make it worse than the line count suggests: the bit reservoir decodes
-        from a file-controlled offset backwards into a kernel buffer,
-        part2_3_length says how many bits the Huffman data occupies and nothing
-        in the format makes it agree with the frame, and codebooks 16-31 read
-        up to 13 extra bits per value and produce indices into a power table.
-        test/host/mp3.c already compiles the shipping decoder on the host with
-        only the heap stubbed, so a harness is cheap; test/seeds/mp3/ holds six
-        files that reach branches a mutator would never find on its own
+        **The known gap is closed.** This entry used to end by admitting that
+        kernel/mp3.c was not fuzzed and should be -- 1500 lines of bit-level
+        parsing in ring 0 over a file nobody here made, GUIDE.md's own workflow
+        being to `download` an MP3 and then `play` it. test/host/fuzzaudio.c is
+        the fourth harness: seven targets over the MP3 decoder, the WAV parser
+        and the snd_open() dispatch that chooses between them, the last of
+        those reached through a VFS that serves the input as a file, so the
+        whole path a track actually takes is covered rather than just the
+        codec. The corpus is test/seeds/mp3/, which was put there for this.
+        Three defects, and the two memory-safety ones are both the same
+        mistake -- doing the arithmetic first and checking afterwards:
+          * synth() converted each sample to an int and clamped it *after*,
+            so a value that did not fit converted to whatever the hardware
+            does (INT_MIN on SSE2) and the clamp then turned the loudest
+            possible positive sample into the loudest possible negative one.
+            A click, not a clip, and a corrupt frame can drive the filterbank
+            to infinity and then to NaN, which compared false against both
+            bounds and sailed through
+          * every 8-bit WAV sample below the centre was `(p[0] - 128) << 8`,
+            a left shift of a negative value, on every sample of every 8-bit
+            file the machine has ever played
+          * the Xing/Info header was looked for at 4 + side_info rather than
+            after the CRC as well, so a CRC-protected VBR file lost its frame
+            count and its seek table and fell back to the constant-bitrate
+            estimate. No memory safety in it, just a wrong answer nobody had
+            a file to notice with -- the harness's selftest builds one, by
+            moving two bytes inside the first frame of a seed
+        **And the same again for kernel/image.c**, which is a worse trust
+        boundary than either: app_browser.c hands an <img>'s bytes straight to
+        image_decode(), and behind that one call sit five decoders and an
+        inflate -- PNG, baseline JPEG with its own Huffman and IDCT, GIF with
+        LZW, BMP and TGA. test/host/fuzzimage.c calls each of the five
+        directly, because the dispatch is by magic byte and a mutation that
+        flips the first one would otherwise send the input somewhere else and
+        quietly stop fuzzing what the target is named after. Eight defects and one
+        missing feature, grouped by cause rather than by site, and two of them
+        need no hostile file at all -- an ordinary picture written by an
+        ordinary encoder was enough:
+          * GIF's four interlace passes step 8, 8, 4 and 2. All four were
+            written as 8, so the de-interlace row map filled half of itself and
+            left the rest as whatever the heap held -- and dy is a row index
+            taken straight out of it, so px[dy*iw+x] wrote wherever that
+            pointed. A progressive GIF is a completely ordinary thing to put on
+            a web page, and Pillow writes one by default
+          * PNG refused every packed bit depth, which is most icons and line
+            art on the web: a 16-colour image is 4 bits a pixel at every
+            encoder there is. That is a missing feature rather than a bug, but
+            it is the same line of code, and the decoder's own header claimed
+            to support colour type 3
+          * eight bytes of JPEG hung the kernel: a segment length that runs
+            past the end of the file left the DQT and DHT loops waiting for a
+            cursor that stops advancing at EOF. Not a crash -- a hang, which is
+            the one failure a fuzzer cannot report, because the target never
+            returns. test/t_fuzz.py puts a clock on the replays now
+          * a DHT's sixteen counts were summed and that many codes written into
+            size[257] and values[256]: sixteen 0xFF bytes is 4080, which is
+            3.8 KB past the end of the block holding the decoder
+          * the quantisation table index, the two Huffman table indices and the
+            DC category were all used unchecked -- 8-bit fields indexing arrays
+            of 4, 4, 4 and 17
+          * the GIF LZW prefix walk followed entries nothing had ever written
+            -- an undefined uint16_t prefix indexes 4096 entries with 65535 --
+            and the byte pushed after the walk was pushed without the bounds
+            check the walk itself had, so a chain of exactly 4095 wrote one
+            past a 4096-byte stack array
+          * the chunk-length check in PNG and the pixel-offset check in BMP
+            were 32-bit sums of numbers the file chooses, so both wrapped
+          * the IDCT's intermediate values were multiplied by up to 3.07 << 12
+            and summed four at a time, in an int, from coefficients the file
+            picked and a quantiser it also picked
+          * a short PLTE left the palette lookup reading this function's own
+            stack frame and painting it
 - [x] 100. User guide (GUIDE.md: install, daily use, troubleshooting, and an
         honest list of what the OS cannot do) and developer guide
         (DEVELOPING.md: the on-machine toolchain, projects, debugging,

@@ -1,7 +1,8 @@
 /* ===========================================================================
  *  BoltOS  -  kernel/image.c
  *  Self-contained, integer-only image decoders for the browser:
- *      - PNG   (8/16-bit, colour types 0/2/3/4/6, non-interlaced) + DEFLATE
+ *      - PNG   (1/2/4/8/16-bit grey and palette, 8/16-bit colour;
+ *               types 0/2/3/4/6, non-interlaced) + DEFLATE
  *      - JPEG  (baseline sequential, Huffman, 4:4:4 / 4:2:2 / 4:2:0)
  *      - GIF   (87a/89a, first frame, LZW, transparency)
  *      - BMP   (24/32-bit uncompressed)
@@ -240,16 +241,25 @@ static image_t *decode_png(const uint8_t *d, uint32_t len) {
     if (len < 8) return 0;
     uint32_t w = 0, h = 0;
     int bitdepth = 0, colortype = 0, interlace = 0;
-    uint8_t pal[256*3]; int npal = 0;
-    uint8_t trns[256];  int ntrns = 0;
+    /* Zeroed because an index past a short PLTE is legal-ish input and the
+     * lookup below does not check: without this the picture is painted with
+     * whatever this function's stack frame happened to contain. */
+    uint8_t pal[256*3] = { 0 }; int npal = 0;
+    uint8_t trns[256]  = { 0 }; int ntrns = 0;
 
     /* size the concatenated IDAT buffer first */
     uint32_t idat_total = 0;
     for (uint32_t p = 8; p + 8 <= len; ) {
         uint32_t clen = rd_be32(d + p);
         const uint8_t *type = d + p + 4;
-        if (p + 12 + clen > len) break;
-        if (type[0]=='I'&&type[1]=='D'&&type[2]=='A'&&type[3]=='T') idat_total += clen;
+        /* In 64 bits: clen is whatever the file says, and p + 12 + clen in 32
+         * wraps for a chunk claiming most of the address space -- which passes
+         * the check and then moves p backwards. */
+        if ((uint64_t)p + 12 + clen > len) break;
+        if (type[0]=='I'&&type[1]=='D'&&type[2]=='A'&&type[3]=='T') {
+            if (idat_total + clen < idat_total) break;      /* the sum wraps too */
+            idat_total += clen;
+        }
         if (type[0]=='I'&&type[1]=='E'&&type[2]=='N'&&type[3]=='D') break;
         p += 12 + clen;
     }
@@ -260,7 +270,7 @@ static image_t *decode_png(const uint8_t *d, uint32_t len) {
     for (uint32_t p = 8; p + 8 <= len; ) {
         uint32_t clen = rd_be32(d + p);
         const uint8_t *type = d + p + 4, *body = d + p + 8;
-        if (p + 12 + clen > len) break;
+        if ((uint64_t)p + 12 + clen > len) break;
         if (type[0]=='I'&&type[1]=='H'&&type[2]=='D'&&type[3]=='R' && clen >= 13) {
             w = rd_be32(body); h = rd_be32(body + 4);
             bitdepth = body[8]; colortype = body[9]; interlace = body[12];
@@ -270,20 +280,38 @@ static image_t *decode_png(const uint8_t *d, uint32_t len) {
         } else if (type[0]=='t'&&type[1]=='R'&&type[2]=='N'&&type[3]=='S') {
             ntrns = clen > 256 ? 256 : clen; memcpy(trns, body, (uint32_t)ntrns);
         } else if (type[0]=='I'&&type[1]=='D'&&type[2]=='A'&&type[3]=='T') {
+            if (clen > idat_total - zlen) break;   /* the two passes disagreed */
             memcpy(zbuf + zlen, body, clen); zlen += clen;
         } else if (type[0]=='I'&&type[1]=='E'&&type[2]=='N'&&type[3]=='D') break;
         p += 12 + clen;
     }
 
     if (!w || !h || interlace != 0 || (uint64_t)w*h > img_max_px) { kfree(zbuf); return 0; }
-    if (bitdepth != 8 && bitdepth != 16) { kfree(zbuf); return 0; }
 
     int channels = colortype==0?1 : colortype==2?3 : colortype==3?1 : colortype==4?2 : colortype==6?4 : 0;
     if (!channels) { kfree(zbuf); return 0; }
+
+    /* Which depths go with which colour type is Table 11.1 of the spec, and it
+     * is not "8 or 16": grey and palette may pack two, four or eight pixels
+     * into a byte, colour and alpha may not, and a palette index is never 16
+     * bits wide. Refusing the packed depths meant refusing most icons and line
+     * art on the web -- a 16-colour PNG is written at 4 bits by every encoder
+     * there is, which is how a plain palette image made by Pillow came back as
+     * "not an image at all". */
+    if (bitdepth != 1 && bitdepth != 2 && bitdepth != 4 &&
+        bitdepth != 8 && bitdepth != 16)                  { kfree(zbuf); return 0; }
+    if (bitdepth < 8 && colortype != 0 && colortype != 3) { kfree(zbuf); return 0; }
+    if (bitdepth == 16 && colortype == 3)                 { kfree(zbuf); return 0; }
+
     int sample = bitdepth == 16 ? 2 : 1;
-    uint32_t bpp = (uint32_t)channels * sample;
-    uint32_t stride = w * bpp;
-    uint32_t rawsize = (stride + 1) * h;
+    /* The filter distance is in whole bytes and is one for anything packed --
+     * it is the pixel *stride*, rounded up, not the pixel size. */
+    uint32_t bpp = bitdepth < 8 ? 1u : (uint32_t)channels * (uint32_t)sample;
+    uint64_t stride64 = ((uint64_t)w * (uint32_t)channels * (uint32_t)bitdepth + 7) / 8;
+    uint64_t rawsize64 = (stride64 + 1) * h;
+    if (rawsize64 > 0xFFFFFFFFu) { kfree(zbuf); return 0; }
+    uint32_t stride = (uint32_t)stride64;
+    uint32_t rawsize = (uint32_t)rawsize64;
 
     uint8_t *raw = (uint8_t *)kmalloc(rawsize);
     if (!raw) { kfree(zbuf); return 0; }
@@ -322,8 +350,25 @@ static image_t *decode_png(const uint8_t *d, uint32_t len) {
     for (uint32_t y = 0; y < h; y++) {
         const uint8_t *row = lines + y * stride;
         for (uint32_t x = 0; x < w; x++) {
-            const uint8_t *s = row + x * bpp;
             uint8_t r, g, b, al = 255;
+            if (bitdepth < 8) {
+                /* Packed: most significant bits first, left pixel first. */
+                uint32_t bit = x * (uint32_t)bitdepth;
+                int v = (row[bit >> 3] >> (8 - bitdepth - (int)(bit & 7))) &
+                        ((1 << bitdepth) - 1);
+                if (colortype == 3) {
+                    r = pal[v*3]; g = pal[v*3+1]; b = pal[v*3+2];
+                    if (v < ntrns) al = trns[v];
+                } else {
+                    /* Spread the range rather than shifting it: at one bit,
+                     * a shift makes white 0x80 and the picture look like a
+                     * fog. 1 -> 255, 3 -> 255, 15 -> 255. */
+                    r = g = b = (uint8_t)(v * 255 / ((1 << bitdepth) - 1));
+                }
+                px[y*w+x] = argb(al, r, g, b);
+                continue;
+            }
+            const uint8_t *s = row + x * bpp;
             if (colortype == 0)      { r = g = b = s[0]; }
             else if (colortype == 2) { r = s[0]; g = s[sample]; b = s[2*sample]; }
             else if (colortype == 3) { int idx = s[0]; r = pal[idx*3]; g = pal[idx*3+1]; b = pal[idx*3+2];
@@ -354,7 +399,11 @@ static image_t *decode_bmp(const uint8_t *d, uint32_t len) {
     if (w <= 0 || h <= 0 || (uint64_t)w*h > img_max_px) return 0;
     int bytespp = bpp / 8;
     uint32_t rowsz = ((uint32_t)w * bytespp + 3) & ~3u;
-    if (off + rowsz * (uint32_t)h > len) return 0;
+    /* 64-bit, because all three of these came out of the file: a pixel offset
+     * near 4 GB plus a row that is megabytes wraps back to something small,
+     * the check passes, and every row read after that is off the end of the
+     * buffer. */
+    if ((uint64_t)off + (uint64_t)rowsz * (uint32_t)h > len) return 0;
     uint32_t *px = (uint32_t *)kmalloc((uint32_t)w * h * 4);
     if (!px) return 0;
     for (int y = 0; y < h; y++) {
@@ -484,11 +533,26 @@ static image_t *decode_gif(const uint8_t *d, uint32_t len) {
                 bitbuf >>= codesize; bits -= codesize;
                 if (code == clear) { codesize = mincode + 1; next = end + 1; oldcode = -1; continue; }
                 if (code == end) break;
-                if (oldcode == -1) { firstbyte = code; oldcode = code;
+                /* The first code after a clear can only be a literal --
+                 * nothing else has been defined yet -- and taking one on
+                 * trust is what let the walk below start on an entry that was
+                 * never written. */
+                if (oldcode == -1) { if (code >= clear) goto lzw_done;
+                    firstbyte = code; oldcode = code;
                     if (outp < total) idx[outp++] = (uint8_t)code; continue; }
                 int in = code;
                 if (code >= next) { stack[sp++] = (uint8_t)firstbyte; code = oldcode; }
-                while (code >= clear) { if (sp >= 4096) goto lzw_done; stack[sp++] = suf[code]; code = pref[code]; }
+                /* Two bounds, and both of them were missing. `code >= next`
+                 * is an entry nothing ever wrote -- the tables are stack arrays
+                 * and an undefined uint16_t prefix is up to 65535, which then
+                 * indexes 4096 entries. And the stack guard stops one short of
+                 * the end rather than at it, because the byte below is pushed
+                 * after the walk and used to be pushed without a check. */
+                while (code >= clear) {
+                    if (code >= next || sp >= 4095) goto lzw_done;
+                    stack[sp++] = suf[code]; code = pref[code];
+                }
+                if (sp >= 4096) goto lzw_done;
                 firstbyte = code; stack[sp++] = (uint8_t)code;
                 while (sp > 0 && outp < total) idx[outp++] = stack[--sp];
                 sp = 0;
@@ -504,11 +568,25 @@ static image_t *decode_gif(const uint8_t *d, uint32_t len) {
             int *rowmap = 0;
             if (interlaced) {
                 rowmap = (int *)kmalloc((uint32_t)ih * sizeof(int));
-                if (rowmap) { int oi = 0;
-                    for (int y = 0; y < ih; y += 8) rowmap[oi++] = y;
-                    for (int y = 4; y < ih; y += 8) rowmap[oi++] = y;
-                    for (int y = 2; y < ih; y += 8) rowmap[oi++] = y;
-                    for (int y = 1; y < ih; y += 8) rowmap[oi++] = y;
+                if (rowmap) {
+                    /* The four interlace passes are not four passes of eight.
+                     * The third steps by four and the fourth by two -- 87a,
+                     * section 20, and it is the one thing about interlaced GIF
+                     * that everyone gets wrong once. Written as 8,8,8,8 this
+                     * filled half the map and left the rest as whatever the
+                     * heap had in it, and dy is a row index taken straight out
+                     * of it: px[dy*iw+x] then writes wherever that garbage
+                     * points. Reachable from any page with a progressive GIF on
+                     * it, which is most of them. The identity fill first is
+                     * belt and braces -- a map that is somehow short now paints
+                     * the wrong rows instead of the wrong memory. */
+                    static const int first[4] = { 0, 4, 2, 1 };
+                    static const int step[4]  = { 8, 8, 4, 2 };
+                    for (int y = 0; y < ih; y++) rowmap[y] = y;
+                    int oi = 0;
+                    for (int pass = 0; pass < 4; pass++)
+                        for (int y = first[pass]; y < ih && oi < ih; y += step[pass])
+                            rowmap[oi++] = y;
                 }
             }
             for (int y = 0; y < ih; y++) {
@@ -561,6 +639,14 @@ typedef struct {
 
 static int jbuild_huff(jhuff_t *h, const uint8_t *count) {
     int i, j, k = 0, code;
+    /* A Huffman table holds at most 256 codes -- the values are bytes, so
+     * there is nothing else for a 257th to mean. The sixteen counts come
+     * straight out of the file and sum to as much as 4080, which used to be
+     * written into size[257] and values[256] regardless: 3.8 KB off the end of
+     * the block holding the whole decoder, from any <img> on any page. */
+    int total = 0;
+    for (i = 0; i < 16; i++) total += count[i];
+    if (total > 256) return 0;
     for (i = 0; i < 16; i++) for (j = 0; j < count[i]; j++) h->size[k++] = (uint8_t)(i + 1);
     h->size[k] = 0;
     code = 0; k = 0;
@@ -586,6 +672,11 @@ static uint8_t jget8(jpg_t *j) { return j->pos < j->len ? j->d[j->pos++] : 0; }
 static int jget16(jpg_t *j) { int a = jget8(j); return (a << 8) | jget8(j); }
 
 static void jgrow(jpg_t *j) {
+    /* 24 - code_bits is the shift below, so a full buffer makes it negative and
+     * a count that has gone negative makes it enormous. Both are undefined, and
+     * jhuff_decode's give-up path really can leave the count below zero. */
+    if (j->code_bits > 24) return;
+    if (j->code_bits < 0) { j->code_bits = 0; j->code_buffer = 0; }
     do {
         unsigned b = j->nomore ? 0 : jget8(j);
         if (b == 0xff) {
@@ -610,7 +701,7 @@ static int jhuff_decode(jpg_t *j, jhuff_t *h) {
     }
     unsigned temp = j->code_buffer >> 16;
     for (k = JFAST_BITS + 1; ; k++) if (temp < (unsigned)h->maxcode[k]) break;
-    if (k == 17) { j->code_bits -= 16; return -1; }
+    if (k == 17) { j->code_bits -= 16; if (j->code_bits < 0) j->code_bits = 0; return -1; }
     if (k > j->code_bits) return -1;
     c = ((j->code_buffer >> (32 - k)) & JBMASK[k]) + h->delta[k];
     j->code_bits -= k; j->code_buffer <<= k;
@@ -618,7 +709,10 @@ static int jhuff_decode(jpg_t *j, jhuff_t *h) {
 }
 
 static int jextend(jpg_t *j, int n) {
-    if (n == 0) return 0;
+    /* n indexes JBMASK and JBIAS, which have seventeen entries, and is used as
+     * a shift distance and as 32 minus one. Anything outside 1..16 is a broken
+     * file, and a broken file is what this is for. */
+    if (n <= 0 || n > 16) return 0;
     if (j->code_bits < n) jgrow(j);
     int sgn = (int32_t)j->code_buffer >> 31;
     unsigned k = (j->code_buffer << n) | (j->code_buffer >> (32 - n));
@@ -630,7 +724,9 @@ static int jextend(jpg_t *j, int n) {
 
 static int jdecode_block(jpg_t *j, short data[64], jhuff_t *hdc, jhuff_t *hac, uint16_t *dq) {
     int t = jhuff_decode(j, hdc);
-    if (t < 0) return 0;
+    /* The DC category is a byte out of a table the file wrote, so it is 0..255
+     * until something says otherwise; only 0..15 means anything. */
+    if (t < 0 || t > 15) return 0;
     int diff = t ? jextend(j, t) : 0;
     memset(data, 0, 64 * sizeof(short));
     int k = 1;
@@ -666,6 +762,15 @@ static int jdecode_block(jpg_t *j, short data[64], jhuff_t *hdc, jhuff_t *hac, u
     p3 = p3 * JF2F(-1.961570560f); p4 = p4 * JF2F(-0.390180644f); \
     t3 += p1 + p4; t2 += p2 + p3; t1 += p2 + p4; t0 += p1 + p3;
 
+/* The row pass below multiplies each of these by up to 3.07 << 12 and sums
+ * four, so anything past about 42000 overflows the int it is accumulated in.
+ * A real picture stays four orders of magnitude inside that -- a column result
+ * is eight times a pixel -- but the file picks both the coefficients and the
+ * quantisation table they are multiplied by, so the bound gets enforced rather
+ * than assumed. Clamping here rather than widening the arithmetic keeps the
+ * IDCT to 32-bit integers, which is the whole reason it is written this way. */
+static int jclamp16(int v) { return v < -32768 ? -32768 : v > 32767 ? 32767 : v; }
+
 static void jidct(uint8_t *out, int stride, short data[64]) {
     int i, val[64], *v = val; short *dd = data;
     for (i = 0; i < 8; i++, dd++, v++) {
@@ -675,8 +780,10 @@ static void jidct(uint8_t *out, int stride, short data[64]) {
         } else {
             JIDCT_1D(dd[0],dd[8],dd[16],dd[24],dd[32],dd[40],dd[48],dd[56])
             x0+=512; x1+=512; x2+=512; x3+=512;
-            v[0]=(x0+t3)>>10; v[56]=(x0-t3)>>10; v[8]=(x1+t2)>>10; v[48]=(x1-t2)>>10;
-            v[16]=(x2+t1)>>10; v[40]=(x2-t1)>>10; v[24]=(x3+t0)>>10; v[32]=(x3-t0)>>10;
+            v[0]=jclamp16((x0+t3)>>10); v[56]=jclamp16((x0-t3)>>10);
+            v[8]=jclamp16((x1+t2)>>10); v[48]=jclamp16((x1-t2)>>10);
+            v[16]=jclamp16((x2+t1)>>10); v[40]=jclamp16((x2-t1)>>10);
+            v[24]=jclamp16((x3+t0)>>10); v[32]=jclamp16((x3-t0)>>10);
         }
     }
     for (i = 0, v = val; i < 8; i++, v += 8, out += stride) {
@@ -705,6 +812,11 @@ static image_t *decode_jpeg(const uint8_t *d, uint32_t len) {
         if (m == 0xDA) break;                             /* SOS -> decode  */
         int L = jget16(j); if (L < 2) goto fail;
         uint32_t seg_end = j->pos + (L - 2);
+        /* jget8 stops advancing at the end of the file rather than
+         * running off it, so a segment claiming to end past the end left
+         * `while (j->pos < seg_end)` below spinning forever on a buffer
+         * that would never move again. A hung kernel, from a web page. */
+        if (seg_end > len) goto fail;
         if (m == 0xDB) {                                  /* DQT */
             while (j->pos < seg_end) {
                 int q = jget8(j), id = q & 15, prec = q >> 4;
@@ -731,6 +843,13 @@ static image_t *decode_jpeg(const uint8_t *d, uint32_t len) {
                 j->comp[c].id = jget8(j);
                 int hv = jget8(j); j->comp[c].h = hv >> 4; j->comp[c].v = hv & 15;
                 j->comp[c].qt = jget8(j);
+                /* h and v are sampling factors, 1..4 by the standard; qt
+                 * indexes dequant[4]. A component claiming h = 0 gets a
+                 * zero-sized plane that the colour conversion then reads out
+                 * of anyway, and qt = 200 reads 12 KB past the tables. */
+                if (j->comp[c].h < 1 || j->comp[c].h > 4 ||
+                    j->comp[c].v < 1 || j->comp[c].v > 4 ||
+                    j->comp[c].qt > 3) goto fail;
             }
             got_sof = 1;
         } else if (m == 0xC2) { goto fail; }              /* progressive: unsupported */
@@ -746,6 +865,7 @@ static image_t *decode_jpeg(const uint8_t *d, uint32_t len) {
         int ns = jget8(j);
         for (int i = 0; i < ns; i++) {
             int cid = jget8(j), td = jget8(j);
+            if ((td >> 4) > 3 || (td & 15) > 3) goto fail;      /* huff_*[4] */
             for (int c = 0; c < j->ncomp; c++) if (j->comp[c].id == cid) { j->comp[c].dc = td >> 4; j->comp[c].ac = td & 15; }
         }
         jget8(j); jget8(j); jget8(j);                     /* Ss, Se, Ah/Al */
@@ -777,7 +897,14 @@ static image_t *decode_jpeg(const uint8_t *d, uint32_t len) {
                         if (!jdecode_block(j, data, &j->huff_dc[j->comp[c].dc], &j->huff_ac[j->comp[c].ac], j->dequant[j->comp[c].qt]))
                             goto fail;
                         int diff = data[0];
-                        j->comp[c].dcpred += diff;
+                        /* A running total of differences, each up to +/-32767,
+                         * over as many blocks as the file has: it overflows an
+                         * int on a file built to do it, and it is then
+                         * multiplied by a quantiser the same file chose.
+                         * Clamped, the product is at most 32767 * 65535, which
+                         * is 98 thousand short of INT_MAX -- so the line below
+                         * needs nothing else to be safe. */
+                        j->comp[c].dcpred = jclamp16(j->comp[c].dcpred + diff);
                         data[0] = (short)(j->comp[c].dcpred * j->dequant[j->comp[c].qt][0]);
                         int bx = (mx * j->comp[c].h + hx) * 8;
                         int by = (my * j->comp[c].v + vy) * 8;
