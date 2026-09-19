@@ -571,12 +571,13 @@ staged in QEMU without rebooting.
 
 `test/t_fuzz.py` is the third shape: the shipping parsers, a substituted
 allocator, and inputs nobody would write on purpose. It covers the network
-stack and the browser's HTML/CSS/JS parsers — the two places where the bytes
-are chosen by someone else — and it boots no machine, because a fuzzer wants
+stack, the browser's HTML/CSS/JS parsers, the image decoders behind every
+`<img>`, and the MP3 and WAV decoders — everywhere the bytes are chosen by
+someone else — and it boots no machine, because a fuzzer wants
 millions of inputs and QEMU gives you one boot a minute.
 
 ```sh
-python test/t_fuzz.py                   # 23 targets, about a minute
+python test/t_fuzz.py                   # 37 targets, about two minutes
 python test/t_fuzz.py --iters 200000    # a soak
 python test/t_fuzz.py --seed 7 web      # one harness, a different sequence
 ```

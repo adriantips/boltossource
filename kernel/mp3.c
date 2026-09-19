@@ -1183,9 +1183,20 @@ static void synth(mp3_t *m, int ch, const float *sb, int16_t *out, int stride) {
             int v = 128 * (u >> 6) + (u & 63) + ((u & 32) ? 64 : 0);
             sum += dwin[u] * V[(off + v) & 1023];
         }
-        int s = (int)(sum * 32767.0f + (sum >= 0 ? 0.5f : -0.5f));
-        if (s > 32767) s = 32767;
-        if (s < -32768) s = -32768;
+        /* Clamp before the conversion, not after. A float that does not fit in
+         * an int converts to whatever the hardware feels like -- on SSE2 that
+         * is INT_MIN -- so the old clamp turned the loudest possible positive
+         * sample into the loudest possible negative one. That is a click, not
+         * a clip, and it is exactly what you hear on a file with a damaged
+         * frame. A corrupt frame can also drive the filterbank to infinity and
+         * then to NaN, which compares false against everything, so the NaN
+         * case is written out rather than left to fall through. */
+        float v = sum * 32767.0f;
+        int s;
+        if (v != v)                 s = 0;          /* silence beats a bang */
+        else if (v >= 32767.0f)     s = 32767;
+        else if (v <= -32768.0f)    s = -32768;
+        else                        s = (int)(v + (v >= 0 ? 0.5f : -0.5f));
         out[j * stride] = (int16_t)s;
     }
 }
@@ -1345,7 +1356,14 @@ static void read_vbr_header(mp3_t *m, const hdr_t *h) {
     uint32_t avail = m->end - m->first;
     if (avail < h->bytes) return;
 
-    uint32_t off = 4 + h->side;
+    /* After the CRC, not before it. A protected stream carries two bytes
+     * between the header and the side information, and looking for "Xing" two
+     * bytes early finds nothing at all -- so a CRC-protected VBR file silently
+     * fell back to the constant-bitrate estimate: wrong duration, and a seek
+     * that guesses by byte offset instead of using the table of contents that
+     * was sitting right there. Rare, because almost nothing sets the
+     * protection bit, which is exactly why it went unnoticed. */
+    uint32_t off = 4 + (h->crc ? 2u : 0u) + h->side;
     if (off + 8 <= h->bytes &&
         (memcmp(f + off, "Xing", 4) == 0 || memcmp(f + off, "Info", 4) == 0)) {
         uint32_t flags = ((uint32_t)f[off + 4] << 24) | ((uint32_t)f[off + 5] << 16) |

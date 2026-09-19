@@ -6,7 +6,7 @@ failure the same day rather than a rediscovery next year.
 
     test/corpus/<harness>/<target>/<what-it-broke>.bin
 
-`<harness>` is `web`, `net` or `tcp`; `<target>` is one of the names that
+`<harness>` is `web`, `net`, `tcp` or `audio`; `<target>` is one of the names that
 harness's `--list` prints. The file name says what the input does, not which
 seed produced it -- a seed stops meaning anything the moment the mutator or the
 seed corpus changes, and the bytes do not.

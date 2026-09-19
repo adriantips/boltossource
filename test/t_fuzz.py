@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Fuzzing the two places a stranger gets to choose the bytes.
+"""Fuzzing the places a stranger gets to choose the bytes.
 
 Everything else on the machine parses something a user typed or a disk we
-formatted ourselves. Two subsystems parse whatever arrives from outside:
+formatted ourselves. Three subsystems parse whatever arrives from outside:
 
   the network stack   net/tcp.c takes segments before any port is open,
                       net/tls.c and net/x509.c run the record layer and the
@@ -11,12 +11,17 @@ formatted ourselves. Two subsystems parse whatever arrives from outside:
                       response afterwards
   the browser         kernel/html.c, kernel/dom.c, kernel/layout.c and
                       kernel/js.c parse whatever a web server sends
+  the decoders        kernel/mp3.c and kernel/wav.c, because GUIDE.md's own
+                      workflow is `download` a track and then `play` it --
+                      same trust boundary as a web page; and kernel/image.c,
+                      which is what an <img> tag hands the bytes to and is five
+                      decoders and an inflate behind one call
 
 All of it runs in ring 0. That is the case for item 99 on the roadmap, and it
 is why this is the one test in the suite that does not boot a machine: a fuzzer
 wants millions of inputs a minute, and QEMU gives you one boot a minute.
 
-Three harnesses under test/host/, sharing test/host/fuzz.h:
+Five harnesses under test/host/, sharing test/host/fuzz.h:
 
   fuzzweb   html / text / dom / css / layout / select / color / js / jsvm
   fuzznet   http / keepalive / url / cookie / tls / https / cert / certmsg /
@@ -24,6 +29,12 @@ Three harnesses under test/host/, sharing test/host/fuzz.h:
             input as though a server had written it
   fuzztcp   listen / listen6 / connect, against the real net/tcp.c with a fake
             IP layer underneath
+  fuzzaudio mp3sniff / mp3open / mp3decode / mp3step / mp3seek / wav / snd,
+            seeded from test/seeds/mp3 -- the one corpus here that had to be
+            real files, because no mutator invents a valid Xing header
+  fuzzimage png / jpeg / gif / bmp / tga / dispatch / wall, seeded from
+            test/seeds/img, each decoder called directly so a flipped magic
+            byte does not quietly send the input somewhere else
 
 What stands in for the sanitizers this toolchain does not have:
 
@@ -65,9 +76,12 @@ CORPUS = ROOT / "test" / "corpus"
 # itself; no -ffreestanding, which on this toolchain quietly removes the CRT
 # hook that turns a hardware fault into SIGSEGV and leaves the harness unable
 # to report its own crashes.
+# -Wno-macro-redefined is the audio harness: kernel/mp3.c wants include/math.h
+# and the host's <math.h> is already in scope, and the two disagree about M_PI
+# to the last digit and about nothing else.
 CFLAGS = [
     "-std=c11", "-O1", "-gdwarf-4", "-Wall", "-Wextra",
-    "-Wno-inconsistent-dllimport", "-fno-builtin",
+    "-Wno-inconsistent-dllimport", "-Wno-macro-redefined", "-fno-builtin",
     "-fsanitize=undefined,bounds", "-fsanitize-trap=all",
     "-iquote", str(ROOT / "include"), "-iquote", str(HOST),
 ]
@@ -81,12 +95,20 @@ HARNESSES = {
             "net/crypto.c", "net/rsa.c", "net/p256.c", "net/p384.c",
             "net/inflate.c"] + LIBC,
     "tcp": ["test/host/fuzztcp.c", "net/tcp.c", "net/netaddr.c"] + LIBC,
+    # kernel/mp3.c is missing on purpose: fuzzaudio.c #includes it, the way
+    # test/host/mp3.c does, so the selftest can reach the tables it builds.
+    "audio": ["test/host/fuzzaudio.c", "kernel/wav.c", "kernel/sound.c"] + LIBC,
+    # kernel/image.c is #included by the harness, same as mp3.c above.
+    "image": ["test/host/fuzzimage.c"] + LIBC,
 }
 
 # The default budget is picked so the whole thing is about a minute: the JS
 # engine and the TLS handshake are two orders of magnitude slower per input
 # than a colour parser, so a flat count would spend all its time in two targets.
-BUDGET = {"web": 4000, "net": 4000, "tcp": 8000}
+# Audio is the slowest of the lot -- five of its seven targets decode real
+# frames, and an MPEG frame is 576 lines of arithmetic times two granules --
+# so it gets the smallest count and still takes the longest.
+BUDGET = {"web": 4000, "net": 4000, "tcp": 8000, "audio": 800, "image": 1500}
 
 
 def find_cc():
@@ -129,7 +151,15 @@ def run(exe, name, target, seed, iters):
         stem = case.name
         if ".oom" in stem:
             args += ["--oom", stem.split(".oom")[1].split(".")[0]]
-        r = subprocess.run(args, capture_output=True, text=True, cwd=str(ROOT))
+        # A leash, because not every bug here is a crash. One of the saved
+        # cases is eight bytes of JPEG that used to spin kernel/image.c
+        # forever; a fuzzer cannot report a hang -- the target never returns --
+        # so the only thing that can is the clock out here.
+        try:
+            r = subprocess.run(args, capture_output=True, text=True, cwd=str(ROOT), timeout=120)
+        except subprocess.TimeoutExpired:
+            raise AssertionError("regression: %s/%s never returned on %s (a hang, not a crash)"
+                                 % (name, target, case.name))
         if r.returncode != 0:
             sys.stderr.write(r.stdout + r.stderr)
             raise AssertionError("regression: %s/%s still crashes on %s" % (name, target, case.name))
@@ -163,7 +193,7 @@ def main(argv):
     OUT.mkdir(parents=True, exist_ok=True)
 
     t0 = time.time()
-    for name in ("web", "net", "tcp"):
+    for name in ("web", "net", "tcp", "audio", "image"):
         if only and name not in only:
             continue
         exe = build(cc, name)
@@ -180,7 +210,7 @@ def main(argv):
 
     print("PASS fuzz: %d targets, seed %d, %.0fs" %
           (sum(len(targets_of(OUT / ("fuzz%s.exe" % n if os.name == "nt" else "fuzz" + n)))
-               for n in ("web", "net", "tcp") if not only or n in only),
+               for n in ("web", "net", "tcp", "audio", "image") if not only or n in only),
            seed, time.time() - t0))
     return 0
 

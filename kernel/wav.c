@@ -34,8 +34,12 @@ static int32_t sample(const wav_t *w, uint32_t frame, int ch) {
     if (off + bps > w->bytes) return 0;
     const uint8_t *p = w->data + off;
     /* 8-bit WAV samples are *unsigned*, centred on 128 -- read one as signed
-     * and quiet passages come out as full-scale noise. */
-    if (w->bits == 8) return ((int32_t)p[0] - 128) << 8;
+     * and quiet passages come out as full-scale noise. Multiply rather than
+     * shift: everything below the centre is negative here, and shifting a
+     * negative left is undefined. It does what you want on every compiler
+     * anyone has ever pointed at this, right up until one of them decides the
+     * value cannot have been negative and deletes the branch that proves it. */
+    if (w->bits == 8) return ((int32_t)p[0] - 128) * 256;
     return (int16_t)le16(p);
 }
 
