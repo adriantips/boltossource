@@ -1,0 +1,103 @@
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300..800&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-serif: "Instrument Serif", ui-serif, Georgia, serif;
+
+  --color-ink: #000000;
+  --color-paper: #fafafa;
+  --color-ash: #0c0c0c;
+  --color-coal: #141414;
+  --color-smoke: #a3a3a3;
+  --color-fog: #737373;
+  --color-line: rgb(255 255 255 / 0.09);
+  --color-line-strong: rgb(255 255 255 / 0.18);
+
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@layer base {
+  html {
+    background: #000;
+    color-scheme: dark;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+  html.lenis, html.lenis body { height: auto; }
+  .lenis.lenis-smooth { scroll-behavior: auto !important; }
+  .lenis.lenis-stopped { overflow: hidden; }
+
+  body {
+    background: #000;
+    color: var(--color-paper);
+    font-family: var(--font-sans);
+    font-feature-settings: "ss01", "cv11";
+    overflow-x: hidden;
+  }
+  ::selection { background: #fff; color: #000; }
+  a { color: inherit; text-decoration: none; }
+  img { user-select: none; }
+  :focus-visible { outline: 1px solid #fff; outline-offset: 3px; }
+}
+
+@layer components {
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--color-fog);
+  }
+  .display {
+    font-weight: 500;
+    letter-spacing: -0.045em;
+    line-height: 0.92;
+  }
+  .serif-i {
+    font-family: var(--font-serif);
+    font-style: italic;
+    font-weight: 400;
+    letter-spacing: -0.01em;
+  }
+  .hairline { border-color: var(--color-line); }
+
+  /* monochrome by default, colour when you reach for it */
+  .mono-img {
+    filter: grayscale(1) contrast(1.06);
+    transition: filter 900ms var(--ease-out-expo), transform 900ms var(--ease-out-expo);
+  }
+  .group:hover .mono-img, .mono-img:hover, .colour .mono-img { filter: grayscale(0) contrast(1); }
+
+  .grid-bg {
+    background-image:
+      linear-gradient(to right, rgb(255 255 255 / 0.045) 1px, transparent 1px),
+      linear-gradient(to bottom, rgb(255 255 255 / 0.045) 1px, transparent 1px);
+    background-size: 72px 72px;
+  }
+  .fade-edges {
+    mask-image: radial-gradient(ellipse at center, #000 30%, transparent 75%);
+  }
+  .prose-bolt p { color: var(--color-smoke); line-height: 1.75; font-size: 1.0625rem; }
+  .prose-bolt p + p { margin-top: 1.1rem; }
+  .prose-bolt code, .inline-code {
+    font-family: var(--font-mono);
+    font-size: 0.86em;
+    padding: 0.1em 0.38em;
+    border: 1px solid var(--color-line);
+    border-radius: 5px;
+    background: rgb(255 255 255 / 0.04);
+    color: #e5e5e5;
+  }
+  .prose-bolt strong { color: #fff; font-weight: 500; }
+}
+
+@keyframes marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+@keyframes blink { 50% { opacity: 0; } }
+.caret { animation: blink 1.05s steps(1) infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

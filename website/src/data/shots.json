@@ -1,0 +1,570 @@
+{
+"2048": [
+1920,
+1080
+],
+"2048_max": [
+1920,
+1080
+],
+"2048_win": [
+873,
+546
+],
+"boltcraft": [
+1920,
+1080
+],
+"boltcraft_max": [
+1920,
+1080
+],
+"boltcraft_shot": [
+1024,
+768
+],
+"boltcraft_win": [
+825,
+516
+],
+"bootmenu": [
+1440,
+800
+],
+"browser": [
+1920,
+1080
+],
+"browser_max": [
+1920,
+1080
+],
+"browser_win": [
+1049,
+656
+],
+"calc": [
+1920,
+1080
+],
+"calc_max": [
+1920,
+1080
+],
+"calendar": [
+1920,
+1080
+],
+"calendar_max": [
+1920,
+1080
+],
+"calendar_win": [
+761,
+476
+],
+"charmap": [
+1920,
+1080
+],
+"charmap_max": [
+1920,
+1080
+],
+"charmap_win": [
+953,
+596
+],
+"clipboard": [
+1920,
+1080
+],
+"clipboard_max": [
+1920,
+1080
+],
+"clipboard_win": [
+857,
+536
+],
+"clock": [
+1920,
+1080
+],
+"clock_max": [
+1920,
+1080
+],
+"clock_win": [
+793,
+496
+],
+"colorpick": [
+1920,
+1080
+],
+"colorpick_max": [
+1920,
+1080
+],
+"colorpick_win": [
+825,
+516
+],
+"contacts": [
+1920,
+1080
+],
+"contacts_max": [
+1920,
+1080
+],
+"contacts_win": [
+921,
+576
+],
+"desktop": [
+1920,
+1080
+],
+"devmgr": [
+1920,
+1080
+],
+"devmgr_max": [
+1920,
+1080
+],
+"devmgr_win": [
+921,
+576
+],
+"doom": [
+1920,
+1080
+],
+"doom_max": [
+1920,
+1080
+],
+"doom_play": [
+1920,
+1080
+],
+"doom_win": [
+876,
+548
+],
+"files": [
+1920,
+1080
+],
+"files_max": [
+1920,
+1080
+],
+"files_win": [
+1017,
+636
+],
+"gameboy": [
+1920,
+1080
+],
+"gameboy_max": [
+1920,
+1080
+],
+"gameboy_win": [
+960,
+600
+],
+"ide": [
+1920,
+1080
+],
+"ide_max": [
+1920,
+1080
+],
+"ide_win": [
+1145,
+716
+],
+"installer": [
+1920,
+1080
+],
+"installer_max": [
+1920,
+1080
+],
+"installer_win": [
+921,
+576
+],
+"legacy_desktop": [
+1919,
+1079
+],
+"legacy_icons": [
+1024,
+768
+],
+"legacy_login": [
+1024,
+768
+],
+"legacy_nsrender": [
+1024,
+768
+],
+"legacy_nssite": [
+1024,
+768
+],
+"life": [
+1920,
+1080
+],
+"life_max": [
+1920,
+1080
+],
+"life_win": [
+825,
+516
+],
+"login": [
+1024,
+768
+],
+"logs": [
+1920,
+1080
+],
+"logs_max": [
+1920,
+1080
+],
+"logs_win": [
+921,
+576
+],
+"matrix": [
+1920,
+1080
+],
+"matrix_max": [
+1920,
+1080
+],
+"matrix_win": [
+697,
+436
+],
+"media": [
+1920,
+1080
+],
+"media_max": [
+1920,
+1080
+],
+"media_win": [
+1017,
+636
+],
+"memory": [
+1920,
+1080
+],
+"memory_max": [
+1920,
+1080
+],
+"memory_win": [
+857,
+536
+],
+"mines": [
+1920,
+1080
+],
+"mines_max": [
+1920,
+1080
+],
+"mines_win": [
+819,
+512
+],
+"mixer": [
+1920,
+1080
+],
+"mixer_max": [
+1920,
+1080
+],
+"music": [
+1920,
+1080
+],
+"music_max": [
+1920,
+1080
+],
+"music_win": [
+921,
+576
+],
+"network": [
+1920,
+1080
+],
+"network_max": [
+1920,
+1080
+],
+"network_win": [
+857,
+536
+],
+"notepad": [
+1920,
+1080
+],
+"notepad_max": [
+1920,
+1080
+],
+"notepad_win": [
+921,
+576
+],
+"paint": [
+1920,
+1080
+],
+"paint_max": [
+1920,
+1080
+],
+"paint_win": [
+844,
+528
+],
+"photos": [
+1920,
+1080
+],
+"photos_max": [
+1920,
+1080
+],
+"photos_win": [
+953,
+596
+],
+"piano": [
+1920,
+1080
+],
+"piano_max": [
+1920,
+1080
+],
+"piano_win": [
+665,
+416
+],
+"security": [
+1920,
+1080
+],
+"security_max": [
+1920,
+1080
+],
+"security_win": [
+1017,
+636
+],
+"settings": [
+1920,
+1080
+],
+"settings_max": [
+1920,
+1080
+],
+"settings_win": [
+1139,
+712
+],
+"sheets": [
+1920,
+1080
+],
+"sheets_max": [
+1920,
+1080
+],
+"sheets_win": [
+921,
+576
+],
+"snake": [
+1920,
+1080
+],
+"snake_max": [
+1920,
+1080
+],
+"snake_win": [
+800,
+500
+],
+"snip": [
+1920,
+1080
+],
+"snip_max": [
+1920,
+1080
+],
+"snip_win": [
+889,
+556
+],
+"software": [
+1920,
+1080
+],
+"software_max": [
+1920,
+1080
+],
+"software_win": [
+889,
+556
+],
+"solitaire": [
+1920,
+1080
+],
+"solitaire_max": [
+1920,
+1080
+],
+"solitaire_win": [
+1017,
+636
+],
+"startmenu": [
+1920,
+1080
+],
+"startmenu_win": [
+1798,
+1080
+],
+"startsearch": [
+1920,
+1080
+],
+"stopwatch": [
+1920,
+1080
+],
+"stopwatch_max": [
+1920,
+1080
+],
+"stopwatch_win": [
+633,
+396
+],
+"strike": [
+1920,
+1080
+],
+"strike_max": [
+1920,
+1080
+],
+"strike_play": [
+1920,
+1080
+],
+"strike_win": [
+883,
+552
+],
+"sysinfo": [
+1920,
+1080
+],
+"sysinfo_max": [
+1920,
+1080
+],
+"sysinfo_win": [
+841,
+526
+],
+"taskmgr": [
+1920,
+1080
+],
+"taskmgr_max": [
+1920,
+1080
+],
+"taskmgr_win": [
+1049,
+656
+],
+"tasks": [
+1920,
+1080
+],
+"tasks_max": [
+1920,
+1080
+],
+"tasks_win": [
+889,
+556
+],
+"terminal_net": [
+1920,
+1080
+],
+"terminal_ps": [
+1920,
+1080
+],
+"terminal_sysinfo": [
+1920,
+1080
+],
+"tiled": [
+1920,
+1080
+],
+"ttt": [
+1920,
+1080
+],
+"ttt_max": [
+1920,
+1080
+],
+"ttt_win": [
+793,
+496
+]
+}
