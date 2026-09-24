@@ -507,6 +507,11 @@ static void do_undo(void) {
 }
 static void do_auto(void) {
     if (!auto_finishable()) { strlcpy(S.status, "Turn everything face up first.", sizeof S.status); return; }
+    /* Put down whatever was held first. Every drop_on path already refuses a
+     * held_idx that is out of range, so this is belt and braces -- but "a card
+     * is highlighted and clicking anywhere does nothing" is a miserable thing
+     * to debug from a screenshot. */
+    S.held_src = SRC_NONE;
     for (int i = 0; i < 52 && !S.g.won; i++) auto_step();
 }
 

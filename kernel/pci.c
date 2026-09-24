@@ -116,6 +116,46 @@ const char *pci_class_name(uint8_t cls) {
     }
 }
 
+/* ---------------------------------------------------------------------------
+ *  Vendor names.
+ *
+ *  There is no pci.ids here and there is not going to be one -- it is a
+ *  megabyte of text to name twenty devices. This is the list that actually
+ *  turns up in a PC or a QEMU guest. Anything else is left as its hex id,
+ *  which is what you would paste into a search engine anyway.
+ * -------------------------------------------------------------------------*/
+const char *pci_vendor_name(uint16_t v) {
+    switch (v) {
+    case 0x8086: return "Intel";
+    case 0x1022: return "AMD";
+    case 0x1002: return "AMD/ATI";
+    case 0x10DE: return "NVIDIA";
+    case 0x1234: return "QEMU";              /* the stdvga's made-up id */
+    case 0x1AF4: return "Red Hat (virtio)";
+    case 0x1B36: return "Red Hat";
+    case 0x10EC: return "Realtek";
+    case 0x14E4: return "Broadcom";
+    case 0x1969: return "Qualcomm Atheros";
+    case 0x168C: return "Atheros";
+    case 0x15B3: return "Mellanox";
+    case 0x1106: return "VIA";
+    case 0x1039: return "SiS";
+    case 0x1033: return "NEC";
+    case 0x1912: return "Renesas";
+    case 0x144D: return "Samsung";
+    case 0x1E0F: return "KIOXIA";
+    case 0x1C5C: return "SK hynix";
+    case 0x1179: return "Toshiba";
+    case 0x1B4B: return "Marvell";
+    case 0x197B: return "JMicron";
+    case 0x1D6A: return "Aquantia";
+    case 0x5333: return "S3 Graphics";
+    case 0x80EE: return "VirtualBox";
+    case 0x15AD: return "VMware";
+    default:     return 0;
+    }
+}
+
 int pci_find_by_id(uint16_t vendor, uint16_t device, struct pci_dev *out) {
     struct pci_dev buf[128];
     int n = pci_scan(buf, 128);

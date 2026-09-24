@@ -74,46 +74,29 @@ static struct {
     int     sel;              /* index into dev[], or -1 */
     int     scroll;
     int     rows, cw, ch;
+    /* The selected device's BARs, probed once when the selection changes.
+     *
+     * pci_bar() sizes a BAR the only way a BAR can be sized: it clears the
+     * device's MEM/IO decode bits, writes all-ones, reads the mask back and
+     * puts everything as it was. That is a window -- short, but real -- in
+     * which the device does not answer its own registers, and the first
+     * version of this ran it from the draw callback, so selecting the xHCI
+     * controller meant flickering its decode off ten times a second
+     * underneath the USB driver polling it. Once per selection is the same
+     * information at none of the risk. */
+    int     bar_for;          /* which dev[] index bars[] belongs to, or -1 */
+    struct pci_bar bars[6];
+    uint8_t bar_ok[6];
 } D;
 
-/* ---------------------------------------------------------------------------
- *  Vendor names. There is no pci.ids on this machine and there is not going to
- *  be one -- it is a megabyte of text to name twenty devices. These are the
- *  vendors that actually turn up in a PC or a QEMU guest; everything else
- *  prints as a hex id, which is what you would paste into a search engine
- *  anyway.
- * -------------------------------------------------------------------------*/
-static const char *vendor_name(uint16_t v) {
-    switch (v) {
-    case 0x8086: return "Intel";
-    case 0x1022: return "AMD";
-    case 0x1002: return "AMD/ATI";
-    case 0x10DE: return "NVIDIA";
-    case 0x1234: return "QEMU";              /* the stdvga's made-up id */
-    case 0x1AF4: return "Red Hat (virtio)";
-    case 0x1B36: return "Red Hat";
-    case 0x10EC: return "Realtek";
-    case 0x14E4: return "Broadcom";
-    case 0x1969: return "Qualcomm Atheros";
-    case 0x168C: return "Atheros";
-    case 0x15B3: return "Mellanox";
-    case 0x1106: return "VIA";
-    case 0x1039: return "SiS";
-    case 0x1033: return "NEC";
-    case 0x1912: return "Renesas";
-    case 0x144D: return "Samsung";
-    case 0x1E0F: return "KIOXIA";
-    case 0x1C5C: return "SK hynix";
-    case 0x1179: return "Toshiba";
-    case 0x1B4B: return "Marvell";
-    case 0x197B: return "JMicron";
-    case 0x1D6A: return "Aquantia";
-    case 0x5333: return "S3 Graphics";
-    case 0x80EE: return "VirtualBox";
-    case 0x15AD: return "VMware";
-    default:     return 0;
-    }
+static void probe_bars(void) {
+    D.bar_for = D.sel;
+    for (int b = 0; b < 6; b++) D.bar_ok[b] = 0;
+    if (D.sel < 0 || D.sel >= D.ndev || D.dev[D.sel].src != SRC_PCI) return;
+    for (int b = 0; b < 6; b++)
+        D.bar_ok[b] = (pci_bar(&D.dev[D.sel].pci, b, &D.bars[b]) == 0);
 }
+
 
 /* PCI class/subclass -> one of our categories. The subclass matters more than
  * the class here: 0x0C03 is USB and 0x0C05 is the SMBus, and putting them in
@@ -185,6 +168,7 @@ static dev_t *push(int cat, int src) {
 static void scan(void) {
     D.ndev = 0;
     D.sel  = -1;
+    D.bar_for = -1;
 
     /* --- processors ---------------------------------------------------- */
     char brand[49];
@@ -221,7 +205,7 @@ static void scan(void) {
         if (!e) break;
         e->pci = bus[i];
         e->ok  = (uint8_t)pci_has_driver(&bus[i]);
-        const char *vn = vendor_name(bus[i].vendor);
+        const char *vn = pci_vendor_name(bus[i].vendor);
         if (vn) snprintf(e->name, sizeof e->name, "%s %s", vn, pci_kind(&bus[i]));
         else    snprintf(e->name, sizeof e->name, "%s [%04x:%04x]", pci_kind(&bus[i]),
                          bus[i].vendor, bus[i].device);
@@ -341,9 +325,10 @@ static void devmgr_draw(window_t *w, int cx, int cy, int cw, int ch) {
             char nm[64];
             int maxc = (tree_w - 68) / 8;
             if (maxc < 4) maxc = 4;
+            if (maxc > (int)sizeof(nm) - 4) maxc = (int)sizeof(nm) - 4;
             int len = (int)strlen(d->name);
             if (len > maxc) { memcpy(nm, d->name, (uint32_t)maxc - 1); nm[maxc - 1] = 0;
-                              kstrlcat(nm, "\x7F", sizeof nm); }
+                              kstrlcat(nm, "..", sizeof nm); }
             else strlcpy(nm, d->name, sizeof nm);
             g_text(cx + 60, y + 6, nm, rw->dev == D.sel ? 0xFFFFFF : COL_TEXT, 1);
         }
@@ -396,7 +381,7 @@ static void devmgr_draw(window_t *w, int cx, int cy, int cw, int ch) {
 
     char line[80];
     if (d->src == SRC_PCI) {
-        const char *vn = vendor_name(d->pci.vendor);
+        const char *vn = pci_vendor_name(d->pci.vendor);
         snprintf(line, sizeof line, "Vendor    %04x  %s", d->pci.vendor, vn ? vn : "");
         g_text(px + 14, y, line, COL_TEXT_DIM, 1); y += 18;
         snprintf(line, sizeof line, "Device    %04x  rev %02x", d->pci.device, d->pci.revision);
@@ -412,15 +397,16 @@ static void devmgr_draw(window_t *w, int cx, int cy, int cw, int ch) {
         else                    strlcpy(line, "IRQ       none assigned", sizeof line);
         g_text(px + 14, y, line, COL_TEXT_DIM, 1); y += 22;
 
+        if (D.bar_for != D.sel) probe_bars();
         for (int b = 0; b < 6 && y < py + phh - 34; b++) {
-            struct pci_bar bar;
-            if (pci_bar(&d->pci, b, &bar) != 0) continue;
-            char sz[16]; sh_human(bar.size, sz);
-            if (bar.is_mmio)
+            if (!D.bar_ok[b]) continue;
+            struct pci_bar *bar = &D.bars[b];
+            char sz[16]; sh_human(bar->size, sz);
+            if (bar->is_mmio)
                 snprintf(line, sizeof line, "BAR%d      mem %llx  %s%s", b,
-                         (unsigned long long)bar.phys, sz, bar.is_64bit ? "  64-bit" : "");
+                         (unsigned long long)bar->phys, sz, bar->is_64bit ? "  64-bit" : "");
             else
-                snprintf(line, sizeof line, "BAR%d      i/o %04x  %s", b, bar.port, sz);
+                snprintf(line, sizeof line, "BAR%d      i/o %04x  %s", b, bar->port, sz);
             g_text(px + 14, y, line, COL_TEXT_DIM, 1); y += 16;
         }
     } else if (d->src == SRC_BLK) {

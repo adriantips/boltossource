@@ -1,0 +1,15 @@
+# The manifest. BoltOS's own `pkg build` reads this file, and so does the SDK
+# on Windows -- `sources` is the one key the SDK added, and the kernel's parser
+# skips keys it does not recognise, so this stays a valid pkg.txt either way.
+
+package @NAME@
+version 1.0
+kind    program
+summary a BoltOS program
+
+# What to compile, relative to this directory. Add files as you add them.
+sources main.c
+
+# Where `pkg install` puts things, and what `pkg run @NAME@` starts.
+install build/@NAME@ /bin/@NAME@
+run     /bin/@NAME@
