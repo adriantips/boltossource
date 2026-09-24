@@ -607,10 +607,7 @@ read_bhdr:
     mov     word [dap_seg],   0
     mov     dword [dap_lba],     BOOT_HDR_LBA
     mov     dword [dap_lba + 4], 0
-    mov     si, dap
-    mov     ah, 0x42
-    mov     dl, [boot_drive]
-    int     0x13
+    call    bios_read
     jc      .done
 
     xor     ax, ax
@@ -935,6 +932,77 @@ load_kernel:
     hlt
     jmp     .err
 
+; ---- INT 13h read of whatever the DAP describes, CHS if AH=42h says no ------
+; SeaBIOS's El Torito hard-disk emulation -- the ISO booted as a CD -- fails
+; every AH=42h and only does CHS, which is why boltos.iso used to stop at
+; "S1 disk error". Geometry comes from AH=08h once. A CHS read cannot leave
+; its track, so this may move fewer sectors than asked; it says how many in
+; [dap_count], same as a short AH=42h read, and the callers already cope.
+bios_read:
+    mov     ax, [dap_count]
+    mov     [bios_want], ax          ; a failed 42h may have zeroed the count
+    mov     si, dap
+    mov     ah, 0x42
+    mov     dl, [boot_drive]
+    int     0x13
+    jnc     .ret
+    pushad
+    push    es
+    cmp     byte [chs_spt], 0
+    jne     .geom
+    mov     ah, 0x08
+    mov     dl, [boot_drive]
+    xor     di, di
+    mov     es, di
+    int     0x13
+    jc      .fail
+    and     cl, 0x3F
+    jz      .fail
+    mov     [chs_spt], cl
+    movzx   ax, dh
+    inc     ax
+    mov     [chs_heads], ax
+.geom:
+    mov     eax, [dap_lba]
+    xor     edx, edx
+    movzx   ecx, byte [chs_spt]
+    div     ecx                      ; eax = track, edx = sector in track
+    mov     bx, dx
+    mov     si, cx
+    sub     si, bx                   ; sectors left in this track
+    cmp     si, [bios_want]
+    jbe     .count
+    mov     si, [bios_want]
+.count:
+    mov     [dap_count], si
+    inc     bx                       ; CHS sectors count from 1
+    xor     edx, edx
+    movzx   ecx, word [chs_heads]
+    div     ecx                      ; eax = cylinder, edx = head
+    cmp     eax, 1023
+    ja      .fail
+    mov     ch, al
+    mov     cl, ah
+    shl     cl, 6
+    or      cl, bl
+    mov     dh, dl
+    mov     dl, [boot_drive]
+    mov     ax, si
+    mov     ah, 0x02
+    les     bx, [dap_off]            ; dap_off, then dap_seg
+    int     0x13
+    jc      .fail
+    pop     es
+    popad
+    clc
+    ret
+.fail:
+    pop     es
+    popad
+    stc
+.ret:
+    ret
+
 ; ---- one guarded INT 13h extended read into the bounce buffer -------------
 ; Returns CF=0 only for a read that demonstrably moved data. Three separate
 ; things can go wrong here and only one of them sets the carry flag:
@@ -967,10 +1035,7 @@ read_chunk:
     mov     eax, [cur_lba]
     mov     [dap_lba], eax
     mov     dword [dap_lba + 4], 0
-    mov     si, dap
-    mov     ah, 0x42
-    mov     dl, [boot_drive]
-    int     0x13
+    call    bios_read
     jc      .retry
     mov     cx, [dap_count]
     test    cx, cx
@@ -1216,6 +1281,9 @@ want:         dw 0
 tries:        db 0
 dots:         dd 0
 dotted:       db 0
+bios_want:    dw 0
+chs_heads:    dw 0
+chs_spt:      db 0
 
 ; framebuffer console state, filled in by do_vbe once a mode is really set
 font_lin:     dd 0

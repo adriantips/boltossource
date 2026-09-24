@@ -48,7 +48,10 @@ reading before you start rather than after.
 | `iso/boltos.iso` | a CD/DVD, or a VM's optical drive | legacy BIOS |
 | `iso/os.img` | nothing physical — it is for QEMU | legacy BIOS only |
 
-**Use `iso/boltusb.img` for a USB stick.** It is about 106 MiB.
+**Use `iso/boltusb.img` for a USB stick.** It is about 106 MiB. The repo only
+carries `iso/boltusb.img.gz` (10 MiB, since GitHub refuses files over 100 MB),
+so a download from GitHub gets that one: Rufus and balenaEtcher write the `.gz`
+as it is, and for `dd` either `gunzip` it first or pipe `gunzip -c` into it.
 
 `os.img` is the one to avoid here, and it is the easy mistake to make because it
 is the image `run.sh` uses and the one the rest of the docs used to name. It is
