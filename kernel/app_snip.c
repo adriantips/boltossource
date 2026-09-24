@@ -42,7 +42,12 @@ static struct {
     /* selection, in captured-image pixels; w/h of 0 means "the whole thing" */
     int       sx, sy, sw, sh;
     int       dragging, dx0, dy0;
-    /* the preview rectangle from the last draw, client-local, for hit-testing */
+    /* The preview rectangle from the last draw. CLIENT-LOCAL, which is the
+     * whole point of this comment: the draw works in absolute coordinates and
+     * the click and drag callbacks are handed client-local ones, and the first
+     * version stored the absolute rect and compared clicks against it. Every
+     * click then landed "outside the picture" and the crop could not be
+     * started at all -- on a window at x=250, by exactly 250 pixels. */
     int       vx, vy, vw, vh;
     int       cw, ch;
     char      status[72];
@@ -247,19 +252,21 @@ static void snip_draw(window_t *w, int cx, int cy, int cw, int ch) {
     else                       vw = vh * S.pw / S.ph;
     if (vw < 1) vw = 1;
     if (vh < 1) vh = 1;
-    S.vx = ax + (aw - vw) / 2; S.vy = ay + (ah - vh) / 2; S.vw = vw; S.vh = vh;
+    S.vx = (ax - cx) + (aw - vw) / 2; S.vy = (ay - cy) + (ah - vh) / 2;
+    S.vw = vw; S.vh = vh;
+    int vx = cx + S.vx, vy = cy + S.vy;          /* where it actually goes */
 
     g_set_clip(ax, ay, aw, ah);
-    g_blit(S.vx, S.vy, vw, vh, S.shot, S.pw, S.ph);
+    g_blit(vx, vy, vw, vh, S.shot, S.pw, S.ph);
 
     if (S.sw >= 4 && S.sh >= 4) {
-        int rx = S.vx + S.sx * vw / S.pw, ry = S.vy + S.sy * vh / S.ph;
-        int rw = S.sw * vw / S.pw,        rh = S.sh * vh / S.ph;
+        int rx = vx + S.sx * vw / S.pw, ry = vy + S.sy * vh / S.ph;
+        int rw = S.sw * vw / S.pw,      rh = S.sh * vh / S.ph;
         /* dim what is being thrown away, so the crop reads at a glance */
-        g_blend(S.vx, S.vy, vw, ry - S.vy, 0x000000, 150);
-        g_blend(S.vx, ry + rh, vw, S.vy + vh - ry - rh, 0x000000, 150);
-        g_blend(S.vx, ry, rx - S.vx, rh, 0x000000, 150);
-        g_blend(rx + rw, ry, S.vx + vw - rx - rw, rh, 0x000000, 150);
+        g_blend(vx, vy, vw, ry - vy, 0x000000, 150);
+        g_blend(vx, ry + rh, vw, vy + vh - ry - rh, 0x000000, 150);
+        g_blend(vx, ry, rx - vx, rh, 0x000000, 150);
+        g_blend(rx + rw, ry, vx + vw - rx - rw, rh, 0x000000, 150);
         g_rect(rx, ry, rw, rh, COL_ACCENT);
         /* corner pips, because a 1px outline over a screenshot of a desktop
          * disappears into whatever is underneath it */

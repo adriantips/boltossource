@@ -13,7 +13,8 @@ honest account of what it cannot do yet.
 > Status: **active development.** Custom boot chain (stage1 → stage2 → long mode,
 > or UEFI → long mode) into a 64-bit C kernel. UEFI boot, ACPI, APIC, **SMP
 > (symmetric multiprocessing)**, HPET, a framebuffer compositor and windowed
-> **GUI desktop with 35 apps** (including a playable port of **DOOM**), a
+> **GUI desktop with 43 apps** (including a playable port of **DOOM**, a
+> from-scratch defusal shooter and a **Game Boy emulator**), a
 > preemptive **round-robin scheduler** with processes and **ring-3 userland**
 > (ELF64 loader + syscalls), physical and virtual memory management (including
 > **ASLR, SMAP, SMEP** and **swap**), a **persistent filesystem** on real ATA /
@@ -341,9 +342,13 @@ Bundled apps (39):
 - Calculator, Clock, Stopwatch, Calendar, Notes (saved to FS)
 - Paint, Color Picker, Piano (PC-speaker, zoomable multi-octave)
 - System Info, Matrix rain
-- Games: DOOM (real doomgeneric port, playable E1M1), Solitaire (Klondike,
-  draw-1 or draw-3, undo), Minesweeper, Snake, 2048, Tic-Tac-Toe,
-  Memory match, Conway's Game of Life
+- Games: DOOM (real doomgeneric port, playable E1M1), **BoltStrike**
+  (round-based defusal shooter with bots -- see [strike/](strike/README.md)),
+  **Game Boy** (a DMG emulator -- see [gb/](gb/README.md)), **boltcraft**
+  (a voxel sandbox that runs in ring 3 and is built with the SDK like any
+  third-party program -- see [boltcraft/](boltcraft/README.md)), Solitaire
+  (Klondike, draw-1 or draw-3, undo), Minesweeper, Snake, 2048,
+  Tic-Tac-Toe, Memory match, Conway's Game of Life
 
 > The kernel logic is fixed-point / integer math, but **SSE is enabled and the
 > FPU/SSE register file is saved and restored across context switches**: the
@@ -422,7 +427,11 @@ argument.
 
 [SDK.md](SDK.md) documents the static ELF64 format, syscall ABI version 1,
 public headers and ring-3 C runtime. `sdk/build.sh -o myapp main.c util.c`
-builds an external program with the host toolchain. Download it, set its mode
+builds an external program with the host toolchain; on Windows, `sdk\bolt`
+([sdk/README.md](sdk/README.md)) covers the whole round trip instead — `bolt
+new` starts a project (console or full-screen), `bolt build` links it, and
+`bolt ship` packages it and serves it as a repository the guest installs from
+with `pkg install`. Download it, set its mode
 with `chmod 755`, then use `run /path/to/myapp [args...]` (or `run myapp` for
 `/bin/myapp`). The shell reports the exit status and exposes it as `$?`.
 Malformed ELF headers, out-of-bounds segments and kernel-address destinations
@@ -2701,7 +2710,7 @@ fs/             Filesystems: BoltFS (in-RAM tree, persisted), EXT2 (read-only), 
 include/        80+ kernel/system headers (blk, dom, layout, js, acpi, apic, smp, ahci, ext2, fat32,
                 ttf, clipboard, users, audio, dhcp, nvme, xhci, rsa, x509, ...)
 kernel/         Core kernel: scheduler, processes, syscalls, ELF + PE loaders, block layer, ACPI, APIC,
-                SMP, HPET, GUI + 35 apps, shell, browser engine (DOM/layout), BoltCC compilers, JS + Python
+                SMP, HPET, GUI + 43 apps, shell, browser engine (DOM/layout), BoltCC compilers, JS + Python
                 interpreters, package manager, multi-user, clipboard, TTF renderer, stack canaries
 libc/           Freestanding C library (string, malloc, printf, scanf, stdlib, math, stdio, time, setjmp)
 mm/             Memory management (PMM, heap, virtual memory, DMA, swap)
@@ -2767,7 +2776,7 @@ The interactive OS shell supports a wide range of commands:
 +-- BROWSER_UPGRADE.md     Browser engine upgrade plan + status log
 +-- STORAGE_UPGRADE.md     Mount safety, failure handling and storage tests
 +-- SDK.md  SHELL.md       Native program ABI and shell development guide
-+-- sdk/                  External ELF64 build helper and sample program
++-- sdk/                  bolt (the Windows SDK), build.sh, templates, sample
 +-- build.sh  run.sh  run-uefi.sh    Build and QEMU launchers (legacy + UEFI)
 +-- build-and-run-vbox.bat  rebuild-all.ps1  rebuild-vdi.ps1  read-serial.ps1
 +-- shot.py  testnet.py  shot_uefi.py    GUI screendump + network test harnesses

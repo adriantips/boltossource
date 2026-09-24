@@ -261,6 +261,16 @@ chmod 755 /bin/myapp
 run myapp arg1 arg2
 ```
 
+On Windows there is a tool for the whole round trip rather than just the
+compiler — `sdk\bolt` makes the project, builds it, packages it and serves it
+to the machine you want it on. [sdk/README.md](sdk/README.md):
+
+```
+sdk\bolt new myapp          # or -kind graphical, for one that takes the screen
+sdk\bolt build myapp
+sdk\bolt ship myapp         # then `pkg install myapp` over there
+```
+
 `run` reports the exit status and the shell exposes it as `$?`. Malformed ELF
 headers, out-of-bounds segments and kernel-address destinations are rejected
 before anything is mapped.
@@ -482,6 +492,18 @@ block in `gui_run()` (`kernel/gui.c`), and add the file to `SRCS` in `build.sh`.
 | `drag(w, lx, ly)` | Motion with the button held. |
 | `scroll(w, delta)` | Wheel, `+` up and `-` down. |
 | `tick(w)` | About twice a second, whether or not anything happened. |
+
+**`draw` works in absolute coordinates and every input callback works in
+client-local ones.** `cx, cy` is where the client area sits on the desktop;
+`lx, ly` is measured from that corner. So an app that stashes a rectangle
+during the draw and hit-tests a click against it is wrong by the window's
+position, and the only symptom is that clicking there does nothing — which
+looks like a dead button rather than a coordinate bug, and survives every
+screenshot you take of it. Either store the rectangle client-local and add
+`cx, cy` when you draw it, or recompute it from `cw, ch` in the handler the
+same way the draw did. The Snipping Tool's crop and Solitaire's card
+hit-testing both do the second; Character Map has a note where the temptation
+was strongest.
 
 ### Drawing
 

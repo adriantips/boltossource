@@ -8,14 +8,23 @@ a shell can reach, though, and those are the parts actually worth testing:
 
   * the clipboard ring, through `clip history` -- newest first, a repeated copy
     moved rather than duplicated, and a pinned entry that outlives Clear;
-  * the Snipping Tool, through the PNG it writes into ~/Pictures and the
-    notification it posts -- that is a real fb_capture and a real encode;
-  * Character Map, through the single byte it leaves on the clipboard.
+  * the Snipping Tool, through the PNGs it writes into ~/Pictures -- a real
+    fb_capture and a real encode, and a cropped one that has to come back
+    far smaller than the whole panel;
+  * Character Map, through the single byte it leaves on the clipboard;
+  * the Device Manager's vendor table, through `devices`, which shares it.
 
-Those run first, while the Terminal is the only other window. Everything else
-is a smoke test with a screenshot in test/out/, plus `desk` to confirm all five
-windows really opened -- a stack of five windows and a stack of four look the
-same in a frame.
+Those run first, while the Terminal is the only other window -- the Start menu
+gets slower to come up the more windows are on screen, and a name typed into a
+menu that is not up yet goes to whatever had focus instead.
+
+Solitaire gets the one test that touches rules rather than pixels: it is played
+with the mouse until an ace reaches a foundation, and the foundations are then
+read back out of the frame, including which suit landed where.
+
+What is left is a smoke test with a screenshot in test/out/, plus `desk` to
+confirm all five windows really opened -- a stack of five windows and a stack
+of four look the same in a frame.
 """
 import os, re, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -132,6 +141,21 @@ def history_tests(vm):
     time.sleep(0.3)
 
 
+def devices_tests(vm):
+    """The Device Manager's vendor table lives in kernel/pci.c, next to
+    pci_class_name(), so `devices` names them too -- "8086:100e" needs a search
+    engine and "Intel network" does not. QEMU's NIC is an Intel e1000, so the
+    name has to come back on any machine this runs on.
+    """
+    vm.clear()
+    vm.type("devices\n")
+    vm.expect("PCI devices:", timeout=30)
+    time.sleep(0.6)
+    out = vm.serial()
+    assert "Intel" in out, "no vendor was named:\n%s" % out[-800:]
+    print("  ok: `devices` names its vendors from the same table")
+
+
 def snip_tests(vm):
     """The Snipping Tool, end to end, driven by its keyboard shortcuts so the
     test needs no window coordinates: Enter captures the panel and Ctrl+S
@@ -172,6 +196,50 @@ def snip_tests(vm):
     vm.type("notify list -a\n")
     vm.expect("Snipping Tool", timeout=30)
     print("  ok: and said where it went")
+
+    # Now the crop, which is the actual feature. Maximise the window first so
+    # its geometry is known -- there is no way to ask the compositor where it
+    # put a window, and the preview has no colour of its own to find it by.
+    # Then drag a box well inside the picture and save again: a couple of
+    # hundred pixels square has to encode far smaller than the whole panel.
+    #
+    # This is here because the crop's hit test compares a click against the
+    # preview rectangle, the callbacks are handed client-local coordinates,
+    # and the draw works in absolute ones. Getting that wrong moves every
+    # click outside the picture by the window's own x, and the only symptom is
+    # that dragging does nothing -- which no screenshot assertion would catch.
+    for _ in range(3):
+        vm.open_app("Snipping Tool", probe=False)
+        time.sleep(1.2)
+        vm.key("up", meta=True)         # maximise
+        time.sleep(1.2)
+        vm.key("ret")                   # capture the maximised desktop
+        time.sleep(2.5)
+        vm.drag(400, 300, 560, 420)     # a box near the middle of the preview
+        time.sleep(1.0)
+        vm.key("s", ctrl=True)
+        time.sleep(2.5)
+        vm.key("down", meta=True)       # put it back
+        time.sleep(0.8)
+        vm.open_app("Terminal")
+        vm.clear()
+        vm.type("ls /home/user/Pictures\n")
+        time.sleep(1.5)
+        if "snip-2.png" in vm.serial():
+            break
+    vm.expect("snip-2.png", timeout=30)
+
+    vm.clear()
+    vm.type("meta /home/user/Pictures/snip-2.png\n")
+    vm.expect("size :", timeout=30)
+    time.sleep(0.4)
+    m = re.search(r"size\s*:\s*(\d+) bytes", vm.serial())
+    assert m, "meta printed no size for the crop:\n%s" % vm.serial()[-800:]
+    crop = int(m.group(1))
+    assert crop < size // 4, \
+        ("the crop is %d bytes against %d for the whole screen -- the drag "
+         "selected nothing and Save wrote the full panel again" % (crop, size))
+    print("  ok: dragging a box crops it -- %d bytes against %d" % (crop, size))
 
 
 def charmap_tests(vm):
@@ -268,9 +336,9 @@ def play_tests(vm):
 
     This is the only test here that exercises the rules rather than the
     painting, and it reaches a long way: turning the stock, hit-testing the
-    fanned waste, the double-click timer the window manager does not provide,
-    and can_stack_found(). Turning a 24-card stock forty times sees every card
-    in it, so at least one ace passes through the waste on any deal.
+    fanned waste, and can_stack_found(). Turning a 24-card stock forty times
+    sees every card in it, so at least one ace passes through the waste on any
+    deal -- in draw-1. See the note at the call site for why that matters.
 
     Each foundation belongs to a suit -- 0 clubs, 1 diamonds, 2 hearts, 3
     spades -- so a card that landed on the wrong one shows up as red ink in a
@@ -319,7 +387,7 @@ def play_tests(vm):
                 % ("club" if f == 0 else "spade", red, black)
 
     assert filled, ("forty turns of the stock put no ace on a foundation -- "
-                    "the deal, the waste hit-test or the double-click is wrong")
+                    "the deal, the waste hit-test or try_to_foundation is wrong")
     print("  ok: playing by mouse put %d ace%s on the right foundation%s"
           % (len(filled), "" if len(filled) == 1 else "s",
              "" if len(filled) == 1 else "s"))
@@ -331,6 +399,7 @@ def main():
         print("  ok: signed in")
 
         history_tests(vm)
+        devices_tests(vm)
 
         # The two apps that do something a shell can see run first, while the
         # only other window is the Terminal. That is not tidiness: open_app

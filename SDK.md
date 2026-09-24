@@ -160,6 +160,17 @@ the separate ring-3 runtime, including file I/O, arguments, and floating point.
 
 ## 5. Building one
 
+On Windows, `bolt` does the whole job — the project, the build, the package and
+the server that carries it over. [sdk/README.md](sdk/README.md) is its guide:
+
+```
+sdk\bolt new myapp
+sdk\bolt build myapp
+sdk\bolt ship myapp
+```
+
+From bash, or from a Makefile, the compiler and linker on their own:
+
 ```sh
 sdk/build.sh -o myapp myapp.c [more.c ...]
 ```
@@ -223,6 +234,11 @@ Install it with `pkg install myapp` after selecting that repository. Package
 files currently use the filesystem's default mode; use `chmod 755 /bin/myapp`
 before launching through `run` as an ordinary user.
 
+`sdk\bolt ship` does that packaging on the Windows side and then serves the
+result as a one-package repository, so the guest only has to be pointed at it:
+`pkg repo http://HOST:8420`, `pkg update`, `pkg install myapp`. The same server
+hands out the raw ELF for the `download` route above.
+
 The SDK build runs on the host using Clang, NASM and LLD. Paths are relative
 to the caller's working directory, so an external project can call
 `/path/to/boltOS/sdk/build.sh -o myapp main.c util.c`. Native BoltCC code
@@ -250,3 +266,6 @@ and never underneath you.
 check and an exit status; `test/t_sdk.py` builds it with the host toolchain,
 serves it over HTTP, downloads it into a running BoltOS and runs it there —
 which is the whole path this document describes, exercised end to end.
+`test/t_winsdk.py` does the same for the Windows tooling, from `bolt new` to
+`pkg install` on a booted machine, and checks the package it produced against
+the format `kernel/pkg.c` reads rather than against itself.

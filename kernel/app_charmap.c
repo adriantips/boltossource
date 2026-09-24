@@ -36,7 +36,12 @@ static struct {
     char pick[PICK_CAP];
     int  npick;
     int  cw, ch;               /* last client size, for hit-testing */
-    int  cell, gx, gy;         /* grid geometry from the last draw   */
+    int  cell;                 /* cell size from the last draw, for hit-testing.
+                                * The grid ORIGIN deliberately does not live here:
+                                * the draw works in absolute coordinates and clicks
+                                * arrive client-local, so a stored origin is a
+                                * hit-test bug waiting to be written. The centring
+                                * margin is the same in both frames. */
 } C;
 
 /* Names for the ones whose shape does not tell you what they are. Everything
@@ -127,14 +132,13 @@ static void cm_draw(window_t *w, int cx, int cy, int cw, int ch) {
         if (fit >= 12) cell = fit;
     }
     C.cell = cell;
-    C.gx = cx + (cw - cell * COLS) / 2;
-    C.gy = cy + HEAD_H;
+    int ox = cx + (cw - cell * COLS) / 2, oy = cy + HEAD_H;
 
-    g_set_clip(cx, C.gy, cw, avail > 0 ? avail : 1);
+    g_set_clip(cx, oy, cw, avail > 0 ? avail : 1);
     for (int i = 0; i < NCH; i++) {
         int c  = FIRST_CH + i;
-        int gx = C.gx + (i % COLS) * cell;
-        int gy = C.gy + (i / COLS) * cell;
+        int gx = ox + (i % COLS) * cell;
+        int gy = oy + (i / COLS) * cell;
         int here = glyph_present(c);
 
         if (i == C.sel) g_round(gx + 1, gy + 1, cell - 2, cell - 2, 4, COL_ACCENT, 255);

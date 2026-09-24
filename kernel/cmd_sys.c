@@ -146,10 +146,14 @@ int cmd_devices(int argc, char **argv) {
     kprintf("PCI devices: %d\n", n);
     for (int i = 0; i < n; i++) {
         struct pci_dev *p = &pds[i];
-        kprintf("  %x:%x.%x  %x:%x  ",
+        const char *vn = pci_vendor_name(p->vendor);
+        kprintf("  %x:%x.%x  %04x:%04x  ",
                 p->bus, p->slot, p->func, p->vendor, p->device);
         sh_pad(pci_class_name(p->class), 14);
-        kprintf("\n");
+        /* The name is the whole point of printing it: "8086:100e" needs a
+         * search engine, "Intel network" does not. The Device Manager shows
+         * the same pair from the same table. */
+        kprintf(" %s\n", vn ? vn : "");
     }
     return 0;
 }

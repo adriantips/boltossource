@@ -42,6 +42,8 @@ struct pci_bar {
 /* Enumerate PCI devices into buf (up to max); returns count found. */
 int         pci_scan(struct pci_dev *buf, int max);
 const char *pci_class_name(uint8_t cls);
+/* "Intel", "Realtek", ... or NULL for a vendor nobody bothered to name. */
+const char *pci_vendor_name(uint16_t vendor);
 
 /* Config-space access (mechanism #1). off is byte offset; 16/32 must be aligned. */
 /* --- configuration space across a suspend ---------------------------------
