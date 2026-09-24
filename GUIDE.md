@@ -52,8 +52,11 @@ resizing of an existing partition. Pick a disk you are willing to lose.
 
 ### 1. Boot the image
 
-Boot `boltos.iso`, or write `boltusb.img` to a USB stick -- not `os.img`, which
-has no partition table and no EFI partition and is meant for QEMU.
+Boot `boltos.iso` as a CD, attach `boltos.vdi` as a VM's hard disk, or write
+`boltusb.img` to a USB stick -- not `os.img`, which has no partition table and
+no EFI partition and is meant for QEMU. The repo carries the stick image as
+`iso/boltusb.img.gz` (the raw one is over GitHub's size limit); Rufus and
+balenaEtcher take the `.gz` directly.
 [TUTORIALBOOTUSB.MD](TUTORIALBOOTUSB.MD) covers the stick end to end. Within
 five seconds you will see the boot menu:
 

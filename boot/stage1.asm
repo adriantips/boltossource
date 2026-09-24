@@ -27,8 +27,20 @@ start:
     mov     ah, 0x42
     mov     dl, [boot_drive]
     int     0x13
+    jnc     .loaded
+
+    ; No AH=42h. SeaBIOS booting the ISO is the one that bit us: El Torito
+    ; hard-disk emulation only speaks CHS. LBA 1 is C0/H0/S2 whatever the
+    ; geometry, and 32 sectors fit in one 63-sector track.
+    mov     ax, 0x0200 | STAGE2_SECTORS
+    mov     bx, STAGE2_OFF
+    mov     cx, 0x0002
+    xor     dh, dh
+    mov     dl, [boot_drive]
+    int     0x13
     jc      disk_error
 
+.loaded:
     mov     dl, [boot_drive]    ; pass boot drive on to Stage 2
     jmp     STAGE2_SEG:STAGE2_OFF
 

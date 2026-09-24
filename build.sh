@@ -585,3 +585,7 @@ echo "[9/9] USB stick image (legacy BIOS + UEFI on one stick)"
 USBIMG=iso/boltusb.img
 "$PYTHON" mkusb.py "$USBIMG" build/stage1.bin build/stage2.bin \
     build/kernel.bin build/BOOTX64.EFI
+# 106 MiB is over GitHub's per-file limit, and it is nearly all zeros. The .gz
+# is what gets committed and downloaded; Rufus and Etcher write it as-is.
+gzip -9 -n -c "$USBIMG" > "$USBIMG.gz"
+echo "OK -> $USBIMG.gz ($(stat -c %s "$USBIMG.gz") bytes)"
