@@ -892,6 +892,53 @@ static uint32_t *get_scratch(int n) {
     return scratch;
 }
 
+/* Stretch the small image up over (x, y, w, h), separably: each column's
+ * sample position is worked out once, a row is stretched horizontally only
+ * when the source row changes, and each output pixel is then one mix of two
+ * stretched rows. */
+static void build_full(backdrop_t *b, int x, int y, int w, int h) {
+    static int      cxi[4096];
+    static uint8_t  cxf[4096];
+    static uint32_t H0[4096], H1[4096];
+    if (w <= 0 || h <= 0 || w > 4096) { b->fw = b->fh = 0; return; }
+    if (w * h > b->fcap) {
+        if (b->full) kfree(b->full);
+        b->full = (uint32_t *)kmalloc((uint64_t)w * h * 4);
+        b->fcap = b->full ? w * h : 0;
+        if (!b->full) { b->fw = b->fh = 0; return; }
+    }
+    b->fx = x; b->fy = y; b->fw = w; b->fh = h;
+    int fsh = b->f == 8 ? 3 : 2, sw = b->sw, sh = b->sh;
+    for (int c = 0; c < w; c++) {
+        int u = ((((x + c - b->x) << 8) + 128) >> fsh) - 128;
+        if (u < 0) u = 0;
+        int i = u >> 8, fr = u & 0xFF;
+        if (i >= sw - 1) { i = sw - 1; fr = 0; }
+        cxi[c] = i; cxf[c] = (uint8_t)fr;
+    }
+    int h0 = -1, h1 = -1;
+    #define HROW(dst, j) do { const uint32_t *sr_ = b->small + (j) * sw; \
+        for (int c_ = 0; c_ < w; c_++) { int i_ = cxi[c_]; \
+            (dst)[c_] = cxf[c_] ? gfx_mix(sr_[i_], sr_[i_ + 1], cxf[c_]) : sr_[i_]; } } while (0)
+    for (int r = 0; r < h; r++) {
+        int v = ((((y + r - b->y) << 8) + 128) >> fsh) - 128;
+        if (v < 0) v = 0;
+        int j = v >> 8, fy = v & 0xFF;
+        if (j >= sh - 1) { j = sh - 1; fy = 0; }
+        int j1 = j + 1 < sh ? j + 1 : j;
+        if (h0 != j) {
+            if (h1 == j) { for (int c = 0; c < w; c++) H0[c] = H1[c]; }
+            else HROW(H0, j);
+            h0 = j;
+        }
+        uint32_t *out = b->full + r * w;
+        if (!fy) { for (int c = 0; c < w; c++) out[c] = H0[c]; continue; }
+        if (h1 != j1) { HROW(H1, j1); h1 = j1; }
+        for (int c = 0; c < w; c++) out[c] = gfx_mix(H0[c], H1[c], (uint32_t)fy);
+    }
+    #undef HROW
+}
+
 void gfx_backdrop_capture(backdrop_t *b, int x, int y, int w, int h, const glass_t *g) {
     if (!T || w <= 0 || h <= 0) { b->valid = 0; return; }
     int f = g->blur > 40 ? 8 : 4;
@@ -905,26 +952,41 @@ void gfx_backdrop_capture(backdrop_t *b, int x, int y, int w, int h, const glass
         if (!b->small) { b->valid = 0; return; }
     }
     b->x = rx; b->y = ry; b->w = rw; b->h = rh; b->sw = sw; b->sh = sh; b->f = f;
-    /* what we may read: the target's extent */
+    /* What we may read is the target's extent; outside it, the edge pixel
+     * repeats. The clamping is done once, into a column map, and the sums
+     * run over row pointers -- R and B packed in one word, G in another, so
+     * a sample is a load, two ANDs and two adds. 64 samples of 255 is 14
+     * bits, which leaves R (bits 16..29) and B (0..13) clear of each other. */
     int ax0 = OX, ay0 = OY, ax1 = OX + T->w - 1, ay1 = OY + T->h - 1;
     uint32_t shift = f == 8 ? 6 : 4;
+    static int      xmap[4096 + 64];
+    static uint32_t arb[1024 + 16], ag[1024 + 16];
+    if (sw * f > (int)(sizeof xmap / sizeof xmap[0]) || sw > (int)(sizeof arb / sizeof arb[0])) { b->valid = 0; return; }
+    for (int k = 0; k < sw * f; k++) {
+        int xx = rx + k;
+        xx = xx < ax0 ? ax0 : (xx > ax1 ? ax1 : xx);
+        xmap[k] = xx - OX;
+    }
     for (int j = 0; j < sh; j++) {
-        int rows[8];
+        for (int i = 0; i < sw; i++) { arb[i] = 0; ag[i] = 0; }
         for (int v = 0; v < f; v++) {
             int yy = ry + j * f + v;
-            rows[v] = yy < ay0 ? ay0 : (yy > ay1 ? ay1 : yy);
-        }
-        for (int i = 0; i < sw; i++) {
-            uint32_t sr = 0, sg = 0, sb = 0;
-            for (int u = 0; u < f; u++) {
-                int xx = rx + i * f + u;
-                xx = xx < ax0 ? ax0 : (xx > ax1 ? ax1 : xx);
-                for (int v = 0; v < f; v++) {
-                    uint32_t c = *PX(xx, rows[v]);
-                    sr += c >> 16 & 0xFF; sg += c >> 8 & 0xFF; sb += c & 0xFF;
+            yy = yy < ay0 ? ay0 : (yy > ay1 ? ay1 : yy);
+            const uint32_t *row = T->px + (yy - OY) * T->stride;
+            const int *xm = xmap;
+            for (int i = 0; i < sw; i++) {
+                uint32_t rb = 0, gg = 0;
+                for (int u = 0; u < f; u++) {
+                    uint32_t c = row[*xm++];
+                    rb += c & 0xFF00FFu; gg += c & 0x00FF00u;
                 }
+                arb[i] += rb; ag[i] += gg;
             }
-            b->small[j * sw + i] = ((sr >> shift) << 16) | ((sg >> shift) << 8) | (sb >> shift);
+        }
+        uint32_t *out = b->small + j * sw;
+        for (int i = 0; i < sw; i++) {
+            uint32_t r = (arb[i] >> 16) >> shift, bb = (arb[i] & 0xFFFFu) >> shift, g = (ag[i] >> 8) >> shift;
+            out[i] = (r << 16) | (g << 8) | bb;
         }
     }
     int k = (g->blur + f / 2) / f;
@@ -938,11 +1000,14 @@ void gfx_backdrop_capture(backdrop_t *b, int x, int y, int w, int h, const glass
     }
     for (int i = 0; i < sw * sh; i++) b->small[i] = tone(b->small[i], g);
     b->valid = 1;
+    build_full(b, x, y, w, h);
 }
 
 void gfx_backdrop_free(backdrop_t *b) {
     if (b->small) kfree(b->small);
+    if (b->full) kfree(b->full);
     b->small = 0; b->cap = 0; b->valid = 0;
+    b->full = 0; b->fcap = 0; b->fw = b->fh = 0;
 }
 
 void gfx_backdrop_draw(const backdrop_t *b, int x, int y, int w, int h, int r, int a) {
@@ -953,6 +1018,31 @@ void gfx_backdrop_draw(const backdrop_t *b, int x, int y, int w, int h, int r, i
     const ctab_t *ct = r ? corner(r) : 0;
     if (r && !ct) r = 0;
     uint32_t a256 = gfx_a256(a > 255 ? 255 : a);
+    /* the fast path: the full-size copy covers what is asked for */
+    if (b->full && x0 >= b->fx && y0 >= b->fy && x1 <= b->fx + b->fw && y1 <= b->fy + b->fh) {
+        for (int py = y0; py < y1; py++) {
+            int j = py - y;
+            const uint32_t *sp = b->full + (py - b->fy) * b->fw - b->fx;   /* index by px */
+            uint32_t *dp = PX(0, py);
+            int crow = r ? (j < r ? j : (j >= h - r ? h - 1 - j : -1)) : -1;
+            int sl = x0, sr = x1;
+            if (crow >= 0) {
+                const uint8_t *cv = ct->cov + crow * r;
+                for (int k = 0; k < r; k++) {
+                    int lx = x + k, rx = x + w - 1 - k;
+                    uint32_t aa = cova(cv[k], a256);
+                    if (!aa) continue;
+                    if (lx >= x0 && lx < x1) dp[lx] = aa >= 256 ? sp[lx] : gfx_mix(dp[lx], sp[lx], aa);
+                    if (rx >= x0 && rx < x1) dp[rx] = aa >= 256 ? sp[rx] : gfx_mix(dp[rx], sp[rx], aa);
+                }
+                sl = imax(x0, x + r); sr = imin(x1, x + w - r);
+            }
+            if (sr <= sl) continue;
+            if (a256 >= 256) gfx_memcpy32(dp + sl, sp + sl, sr - sl);
+            else for (int px = sl; px < sr; px++) dp[px] = gfx_mix(dp[px], sp[px], a256);
+        }
+        return;
+    }
     int f = b->f, sw = b->sw, sh = b->sh;
     uint32_t *rowbuf = get_scratch(sw + 1);
     if (!rowbuf) return;
