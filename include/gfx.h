@@ -129,6 +129,13 @@ typedef struct {
     uint32_t *small;
     int       cap;          /* pixels allocated                              */
     int       valid;
+    /* The same backdrop stretched back to full size over the panel's own
+     * rectangle, built once per capture. Drawing a panel is then a copy of
+     * its rows -- which under TCG is twelve times cheaper than the bilinear
+     * stretch it replaces, and a panel is redrawn far more often than what
+     * is behind it changes. */
+    uint32_t *full;
+    int       fx, fy, fw, fh, fcap;
 } backdrop_t;
 
 void gfx_backdrop_capture(backdrop_t *b, int x, int y, int w, int h, const glass_t *g);
