@@ -2,12 +2,19 @@
 #include <stdint.h>
 
 /* ===========================================================================
- *  BoltOS GUI  -  a small compositing window manager over the framebuffer.
+ *  BoltOS GUI  -  a compositing window manager over the framebuffer.
  *
- *  Everything is drawn into an off-screen backbuffer and blitted once per
- *  frame (flicker-free dragging). Apps are windows: they register a draw and
- *  optional input callbacks and the manager handles framing, focus, dragging,
- *  minimise/maximise/close, the taskbar and the mouse cursor.
+ *  Apps are windows: they register a draw callback and optional input
+ *  callbacks, and the manager handles framing, focus, dragging, snapping,
+ *  minimise/maximise/close, the dock, the tray and the pointer. Each window
+ *  is drawn into a surface of its own and composited from there, which is
+ *  what lets windows fade, scale and fly to the dock without the app being
+ *  asked to draw at a size it never planned for. Only the parts of the
+ *  screen that changed are composited and copied out.
+ *
+ *  Drawing primitives live in gfx.h (anti-aliased shapes, shadows, glass),
+ *  text in font.h, icons in icons.h. The g_* calls below are the original
+ *  API, kept so the apps written against it draw unchanged.
  * ===========================================================================*/
 
 /* ---- theme -------------------------------------------------------------- *
@@ -21,6 +28,15 @@ typedef struct {
     uint32_t text, text_dim;
     uint32_t panel, panel2, panel3;
     uint32_t good, warn, bad;
+    /* The glass desktop's additions. Old code never reads these, new code
+     * should: a hard-coded grey is a grey that is wrong in light mode. */
+    int      dark;          /* 1 = dark appearance                          */
+    uint32_t titlebar;      /* window title bar                             */
+    uint32_t text_mute;     /* third tier of text: hints, disabled, captions */
+    uint32_t sep;           /* hairline separators                          */
+    uint32_t glass;         /* tint over the blur behind the shell          */
+    int      glass_a;       /* how much of it, 0..255                        */
+    uint32_t sel;           /* selection fill behind a highlighted row      */
 } theme_t;
 extern theme_t g_theme;
 
@@ -29,11 +45,16 @@ extern theme_t g_theme;
 #define COL_TEXT        (g_theme.text)
 #define COL_TEXT_DIM    (g_theme.text_dim)
 #define COL_PANEL       (g_theme.panel)       /* window client background  */
-#define COL_PANEL_2     (g_theme.panel2)
-#define COL_PANEL_3     (g_theme.panel3)
+#define COL_PANEL_2     (g_theme.panel2)      /* raised: cards, controls   */
+#define COL_PANEL_3     (g_theme.panel3)      /* hover, borders            */
 #define COL_GOOD        (g_theme.good)
 #define COL_WARN        (g_theme.warn)
 #define COL_BAD         (g_theme.bad)
+#define COL_TITLEBAR    (g_theme.titlebar)
+#define COL_TEXT_MUTE   (g_theme.text_mute)
+#define COL_SEP         (g_theme.sep)
+#define COL_SEL         (g_theme.sel)
+#define THEME_DARK      (g_theme.dark)
 
 /* ---- graphics primitives (operate on the compositor backbuffer) -------- */
 void g_fill (int x, int y, int w, int h, uint32_t color);
@@ -45,11 +66,14 @@ void g_round(int x, int y, int w, int h, int r, uint32_t color, uint8_t alpha); 
 void g_char (int x, int y, char c, uint32_t color, int scale);
 void g_text (int x, int y, const char *s, uint32_t color, int scale);
 int  g_text_width(const char *s, int scale);
-/* font face: 0 = Retro 8x8, 1 = Arial 8x16 (default). Both are 8px advance, so
- * horizontal layout is unchanged; Arial just draws taller glyphs. */
+/* Font face: 0 = Retro 8x8, 1 = the UI face (default). g_text is Inter now and
+ * proportional -- measure with g_text_width, not strlen*8. g_char stays on an
+ * 8 px monospace grid for the terminal and the editor. */
 enum { FONT_RETRO = 0, FONT_ARIAL = 1 };
 void g_set_font(int face);
 int  g_get_font(void);
+/* The 8x8 bitmap face whatever the setting says: Settings shows it as a sample. */
+void g_text_retro(int x, int y, const char *s, uint32_t color, int scale);
 int  g_font_height(int scale);   /* glyph box height for the active face */
 int  g_glyph_ink(char c);        /* 1 if the active face draws anything for c */
 /* proportional (variable-width) text: glyphs are trimmed to their ink box plus a
@@ -62,7 +86,7 @@ int  g_text_pn(int x, int y, const char *s, int len, uint32_t color, int scale, 
 void g_blit(int dx, int dy, int dw, int dh, const uint32_t *src, int sw, int sh); /* ARGB, scaled */
 void g_set_clip(int x, int y, int w, int h);
 void g_clear_clip(void);
-void gui_icon(int id, int x, int y, int scale, uint32_t color);   /* draw an ICON_* glyph */
+void gui_icon(int id, int x, int y, int scale, uint32_t color);   /* ICON_* at 16*scale px */
 
 /* ---- windows ----------------------------------------------------------- */
 typedef struct window window_t;
@@ -86,8 +110,17 @@ struct window {
     void (*rclick)(window_t *, int lx, int ly);  /* client-local right click  */
     void (*drag) (window_t *, int lx, int ly);   /* held-button motion over client (client-local) */
     void (*scroll)(window_t *, int delta);       /* mouse wheel over client: +up / -down */
-    void (*tick) (window_t *);                    /* periodic update (~2 Hz)   */
+    void (*tick) (window_t *);                    /* periodic update (~6 Hz)   */
     void  *st;                       /* app private state                      */
+    /* Redraw on every pointer move over the client, for apps that light up
+     * what is under the mouse. Off by default: each window is rendered into
+     * its own surface now and only redrawn when something asks, so an app
+     * that wants hover has to say so. */
+    int    track_hover;
+    /* Set by an app whose tick only sometimes changes what it shows: the
+     * window is then redrawn when the app says so (gui_redraw_window), not
+     * after every tick as a matter of course. */
+    int    lazy_tick;
 };
 
 /* Tiling zones. A window's `snapped` holds one of these (SNAP_NONE when it is
@@ -95,15 +128,31 @@ struct window {
  * because the maximise button and the double-click predate any of this. */
 enum { SNAP_NONE = 0, SNAP_L, SNAP_R, SNAP_TL, SNAP_TR, SNAP_BL, SNAP_BR, SNAP_MAX };
 
+/* The order is the order of the icon atlases: mkicons.py reads this enum and
+ * draws them in it, so a new icon goes at the end, with a drawing there. */
 enum { ICON_NONE = 0, ICON_TERMINAL, ICON_TASKMGR, ICON_START, ICON_FILES, ICON_SETTINGS,
-       ICON_BROWSER, ICON_FOLDER, ICON_FILE, ICON_TRASH, ICON_CALC, ICON_CLOCK, ICON_NOTES, ICON_CALENDAR, ICON_PIANO, ICON_PAINT, ICON_MINES, ICON_SNAKE, ICON_2048, ICON_STOPWATCH, ICON_SYSINFO, ICON_LIFE, ICON_TTT, ICON_COLOR, ICON_MEMORY, ICON_MATRIX, ICON_CODE, ICON_DOOM, ICON_OLDBROWSER, ICON_SHEETS, ICON_IMAGE, ICON_MUSIC, ICON_TASKS, ICON_CONTACTS, ICON_INSTALL, ICON_SECURITY, ICON_SOFTWARE, ICON_MEDIA, ICON_NETWORK, ICON_MIXER, ICON_DEVICE, ICON_CHARMAP, ICON_SNIP, ICON_CARDS, ICON_CLIPBOARD, ICON_STRIKE, ICON_GAMEBOY, ICON_CRAFT };
+       ICON_BROWSER, ICON_FOLDER, ICON_FILE, ICON_TRASH, ICON_CALC, ICON_CLOCK, ICON_NOTES, ICON_CALENDAR, ICON_PIANO, ICON_PAINT, ICON_MINES, ICON_SNAKE, ICON_2048, ICON_STOPWATCH, ICON_SYSINFO, ICON_LIFE, ICON_TTT, ICON_COLOR, ICON_MEMORY, ICON_MATRIX, ICON_CODE, ICON_DOOM, ICON_OLDBROWSER, ICON_SHEETS, ICON_IMAGE, ICON_MUSIC, ICON_TASKS, ICON_CONTACTS, ICON_INSTALL, ICON_SECURITY, ICON_SOFTWARE, ICON_MEDIA, ICON_NETWORK, ICON_MIXER, ICON_DEVICE, ICON_CHARMAP, ICON_SNIP, ICON_CARDS, ICON_CLIPBOARD, ICON_STRIKE, ICON_GAMEBOY, ICON_CRAFT,
+       ICON_LOGS, ICON_PC, ICON_DRIVE, ICON_USB, ICON_HOME, ICON_DESKTOPF, ICON_DOCS, ICON_DOWNLOADS,
+       ICON_PICTURES, ICON_MUSICF, ICON_VIDEOS, ICON_TRASH_FULL, ICON_FILE_TEXT, ICON_FILE_CODE,
+       ICON_FILE_IMAGE, ICON_FILE_AUDIO, ICON_FILE_VIDEO, ICON_FILE_ARCHIVE, ICON_FILE_EXE,
+       ICON_FILE_WEB, ICON_FILE_SHEET, ICON_USER, ICON_COUNT };
 
 window_t *gui_add_window(const char *title, int w, int h, uint32_t accent, int icon);
 void      gui_open(window_t *win);          /* show + focus + raise           */
 void      gui_focus(window_t *win);
 void      gui_show_unfocused(window_t *win);  /* show it; the keyboard stays put */
-void      gui_request_redraw(void);
+void      gui_request_redraw(void);        /* every visible window redraws  */
+void      gui_redraw_window(window_t *win);/* just this one: much cheaper   */
+int       gui_mouse_x(void);               /* pointer in desktop coordinates */
+int       gui_mouse_y(void);
 int       gui_cpu_load(void);               /* 0..100, real busy/idle fraction*/
+/* Frames composited since the last call and how long they took, in tenths of
+ * a millisecond. Reading resets the counters; `display` prints them. */
+void      gui_frame_stats(int *frames, int *last_ms10, int *avg_ms10, int *max_ms10);
+/* The slowest frame's time by stage (render windows, desktop + windows,
+ * shell, copy out) and how many damage rectangles it had. Resets. */
+void      gui_frame_stages(int ms10[4], int *ndmg_worst);
+void      gui_bench(void);                  /* `display bench`: time the primitives */
 int       gui_screen_w(void);               /* logical desktop width           */
 int       gui_screen_h(void);               /* logical desktop height          */
 int       gui_panel_w(void);                /* physical panel width (fixed)    */
@@ -217,6 +266,9 @@ void media_set_repeat(int on);
 int  media_index(void);                   /* playlist position, or -1 */
 int  media_list(int i, const char **name);/* count; the i'th name via *name */
 void gui_set_wallpaper_image(const char *path); /* use an image as the wallpaper  */
+const char *gui_wallpaper_path(void);           /* the image in use, "" for none   */
+uint32_t   *gui_wallpaper_px(void);             /* the wallpaper as drawn, W*H     */
+int         gui_wallpaper_version(void);        /* changes whenever it does        */
 void gui_clear_wallpaper_image(void);           /* revert to the procedural style */
 /* Post a notification: a toast bottom-right now, and a row in the notification
  * centre afterwards. gui_toast() is the plain-information case. The levels and

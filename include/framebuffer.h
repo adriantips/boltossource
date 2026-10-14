@@ -19,6 +19,10 @@ void     fb_pixel(uint32_t x, uint32_t y, uint32_t color);  /* color = 0x00RRGGB
 void     fb_fill(uint32_t color);
 void     fb_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
 void     fb_blit(const uint32_t *src);   /* copy a packed fw*fh xRGB image to VRAM */
+/* Copy the logical rect (x, y, w, h) of an lw*lh desktop to the panel, where
+ * the desktop occupies (ox, oy, ow, oh). src points at logical (x, y). */
+void     fb_present_rect(const uint32_t *src, int stride, int x, int y, int w, int h,
+                         int lw, int lh, int ox, int oy, int ow, int oh);
 /* Read the panel back into a packed fb_width()*fb_height() ARGB buffer (alpha
  * forced opaque). This is what a screenshot is: what is actually on screen,
  * including a ring-3 program that owns the panel and the text console, neither
