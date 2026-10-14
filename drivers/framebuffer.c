@@ -114,13 +114,73 @@ static inline uint32_t dim_px(uint32_t c) {
             (uint32_t)dim_lut[c & 0xFF];
 }
 
+/* A dword loop through a volatile pointer is the slowest possible way to
+ * move a frame under QEMU's TCG, which has a fast path for rep movs and none
+ * for that. VRAM is ordinary write-combined memory as far as this copy is
+ * concerned; the volatile was only ever there to stop the compiler being
+ * clever, and rep movs cannot be. */
+static inline void vram_copy(volatile uint32_t *d, const uint32_t *s, uint32_t n) {
+    uint64_t c = n;
+    uint32_t *dd = (uint32_t *)d;
+    __asm__ volatile("rep movsl" : "+D"(dd), "+S"(s), "+c"(c) : : "memory");
+}
+
 void fb_blit(const uint32_t *src) {
     if (!fb) return;
     for (uint32_t y = 0; y < fh; y++) {
         volatile uint32_t *d = fb  + (uint64_t)y * pitch_px;
         const uint32_t    *s = src + (uint64_t)y * fw;
-        if (dim_pct >= 100) { for (uint32_t x = 0; x < fw; x++) d[x] = s[x]; }
+        if (dim_pct >= 100) vram_copy(d, s, fw);
         else                { for (uint32_t x = 0; x < fw; x++) d[x] = dim_px(s[x]); }
+    }
+}
+
+/* Copy one rectangle of the logical desktop out to the panel -- the
+ * compositor's damage, or the few pixels under the pointer. `src` addresses
+ * logical (x, y); the desktop is lw*lh and lands on the panel at (ox, oy,
+ * ow, oh), which is a plain copy at 100% and a nearest-neighbour stretch
+ * when display scaling is on. The column mapping is fb_blit_scaled's, so a
+ * rectangle drawn here meets one drawn there without a seam. */
+void fb_present_rect(const uint32_t *src, int stride, int x, int y, int w, int h,
+                     int lw, int lh, int ox, int oy, int ow, int oh) {
+    if (!fb || !src || w <= 0 || h <= 0 || lw <= 0 || lh <= 0 || ow <= 0 || oh <= 0) return;
+    if (ow == lw && oh == lh) {
+        int px0 = ox + x, px1 = ox + x + w;
+        if (px0 < 0) px0 = 0;
+        if (px1 > (int)fw) px1 = (int)fw;
+        if (px1 <= px0) return;
+        for (int j = 0; j < h; j++) {
+            int py = oy + y + j;
+            if (py < 0 || py >= (int)fh) continue;
+            volatile uint32_t *d = fb + (uint64_t)py * pitch_px + px0;
+            const uint32_t *s = src + (int64_t)j * stride + (px0 - (ox + x));
+            uint32_t n = (uint32_t)(px1 - px0);
+            if (dim_pct >= 100) vram_copy(d, s, n);
+            else for (uint32_t i = 0; i < n; i++) d[i] = dim_px(s[i]);
+        }
+        return;
+    }
+    int px0 = ox + (int)((int64_t)x * ow / lw);
+    int px1 = ox + (int)(((int64_t)(x + w) * ow + lw - 1) / lw);
+    int py0 = oy + (int)((int64_t)y * oh / lh);
+    int py1 = oy + (int)(((int64_t)(y + h) * oh + lh - 1) / lh);
+    if (px0 < 0) px0 = 0;
+    if (py0 < 0) py0 = 0;
+    if (px1 > (int)fw) px1 = (int)fw;
+    if (py1 > (int)fh) py1 = (int)fh;
+    for (int py = py0; py < py1; py++) {
+        int sy = (int)((int64_t)(py - oy) * lh / oh);
+        if (sy < y) sy = y;
+        if (sy >= y + h) sy = y + h - 1;
+        const uint32_t *srow = src + (int64_t)(sy - y) * stride;
+        volatile uint32_t *d = fb + (uint64_t)py * pitch_px;
+        for (int px = px0; px < px1; px++) {
+            int sx = (int)((int64_t)(px - ox) * lw / ow);
+            if (sx < x) sx = x;
+            if (sx >= x + w) sx = x + w - 1;
+            uint32_t c = srow[sx - x];
+            d[px] = dim_pct >= 100 ? c : dim_px(c);
+        }
     }
 }
 

@@ -18,14 +18,17 @@
 #include "png_enc.h"
 #include "kheap.h"
 #include "commands.h"     /* sh_human, sh_utoa */
+#include "gfx.h"
+#include "font.h"
+#include "icons.h"
 
-#define TOOLBAR_H  44
-#define NAV_W     160
-#define STATUS_H   26
-#define SBW        12
-#define CELL_W     92
-#define CELL_H     86
-#define ROW_H      26          /* nav-pane row height */
+#define TOOLBAR_H  52
+#define NAV_W     196
+#define STATUS_H   28
+#define SBW        10
+#define CELL_W     98
+#define CELL_H     98
+#define ROW_H      32          /* nav-pane row height */
 #define DCLICK_MS 400          /* double-click window (PIT @ 1000 Hz) */
 
 #define MAXITEM   512
@@ -66,37 +69,57 @@ typedef struct {
 
 /* context-menu rows: label + action id, built per open */
 typedef struct { const char *label; int action; } mrow;
-#define MENU_W 150
-#define MENU_RH 22
+#define MENU_W 190
+#define MENU_RH 28
 
 static files_t  F;
 static window_t *FW;
 
 /* left navigation pane shortcuts (resolved against the live fs each frame) */
 static const struct { const char *path, *label; int icon, section; } NAV[] = {
-    { "/home",           "Home",           ICON_FOLDER, 0 },
-    { "/home/Desktop",   "Desktop",        ICON_FOLDER, 0 },
-    { "/home/Documents", "Documents",      ICON_FOLDER, 0 },
-    { "/home/Downloads", "Downloads",      ICON_FOLDER, 0 },
-    { "/home/Pictures",  "Pictures",       ICON_FOLDER, 0 },
-    { "/",               "Local Disk (C:)",ICON_FILES,  1 },
-    { "/.trash",         "Recycle Bin",    ICON_TRASH,  2 },
+    { "/home",           "Home",           ICON_HOME,      0 },
+    { "/home/Desktop",   "Desktop",        ICON_DESKTOPF,  0 },
+    { "/home/Documents", "Documents",      ICON_DOCS,      0 },
+    { "/home/Downloads", "Downloads",      ICON_DOWNLOADS, 0 },
+    { "/home/Pictures",  "Pictures",       ICON_PICTURES,  0 },
+    { "/home/Music",     "Music",          ICON_MUSICF,    0 },
+    { "/",               "Local Disk (C:)",ICON_DRIVE,     1 },
+    { "/.trash",         "Recycle Bin",    ICON_TRASH,     1 },
 };
 #define NAV_COUNT ((int)(sizeof(NAV) / sizeof(NAV[0])))
 
 /* ---- small helpers ------------------------------------------------------ */
 static int  is_printable(uint8_t c) { return (c >= 32 && c < 127) || c == '\n' || c == '\t'; }
 static int  name_ends(const char *name, const char *suf);
+/* The well-known folders wear their own icons, here and in the sidebar. */
 static int  icon_for(fs_node *n) {
-    if (n->is_dir) return strcmp(n->name, ".trash") == 0 ? ICON_TRASH : ICON_FOLDER;
+    if (n->is_dir) {
+        if (strcmp(n->name, ".trash") == 0) return n->child ? ICON_TRASH_FULL : ICON_TRASH;
+        if (n->parent && strcmp(n->parent->name, "home") == 0 && n->parent->parent == fs_root()) {
+            if (!strcmp(n->name, "Desktop"))   return ICON_DESKTOPF;
+            if (!strcmp(n->name, "Documents")) return ICON_DOCS;
+            if (!strcmp(n->name, "Downloads")) return ICON_DOWNLOADS;
+            if (!strcmp(n->name, "Pictures"))  return ICON_PICTURES;
+            if (!strcmp(n->name, "Music"))     return ICON_MUSICF;
+            if (!strcmp(n->name, "Videos"))    return ICON_VIDEOS;
+        }
+        if (n == fs_root()) return ICON_DRIVE;
+        if (!strcmp(n->name, "home") && n->parent == fs_root()) return ICON_HOME;
+        return ICON_FOLDER;
+    }
     if (name_ends(n->name, ".png") || name_ends(n->name, ".jpg") || name_ends(n->name, ".jpeg") ||
         name_ends(n->name, ".gif") || name_ends(n->name, ".bmp") || name_ends(n->name, ".tga"))
-        return ICON_IMAGE;
-    if (name_ends(n->name, ".csv")) return ICON_SHEETS;
-    if (name_ends(n->name, ".wav") || name_ends(n->name, ".mp3")) return ICON_MEDIA;
-    if (name_ends(n->name, ".txt") || name_ends(n->name, ".md") || name_ends(n->name, ".log"))
-        return ICON_NOTES;
-    return ICON_FILE;
+        return ICON_FILE_IMAGE;
+    if (name_ends(n->name, ".csv")) return ICON_FILE_SHEET;
+    if (name_ends(n->name, ".wav") || name_ends(n->name, ".mp3")) return ICON_FILE_AUDIO;
+    if (name_ends(n->name, ".html") || name_ends(n->name, ".htm") || name_ends(n->name, ".css")) return ICON_FILE_WEB;
+    if (name_ends(n->name, ".c") || name_ends(n->name, ".h") || name_ends(n->name, ".js") ||
+        name_ends(n->name, ".py") || name_ends(n->name, ".asm") || name_ends(n->name, ".sh"))
+        return ICON_FILE_CODE;
+    if (name_ends(n->name, ".exe") || name_ends(n->name, ".elf")) return ICON_FILE_EXE;
+    if (name_ends(n->name, ".zip") || name_ends(n->name, ".tar") || name_ends(n->name, ".gz") ||
+        name_ends(n->name, ".bpk")) return ICON_FILE_ARCHIVE;
+    return ICON_FILE_TEXT;
 }
 static fs_node *trash_dir(void) {
     fs_node *t = fs_lookup("/.trash");
@@ -386,167 +409,173 @@ static void paste_into(files_t *st) {
 }
 
 /* ---- drawing primitives ------------------------------------------------- */
-static int hover(int x, int y, int w, int h) {       /* x,y absolute (native panel) */
-    int mx = mouse_x(), my = mouse_y();
+static int hover(int x, int y, int w, int h) {       /* desktop coordinates */
+    int mx = gui_mouse_x(), my = gui_mouse_y();
     return mx >= x && mx < x + w && my >= y && my < y + h;
 }
+static uint32_t wash(void)   { return THEME_DARK ? 0xFFFFFF : 0x000000; }
+static int      wash_a(void) { return THEME_DARK ? 22 : 12; }
 
-/* draw a toolbar button and record its hit rect (client-local via cx,cy) */
-static void tbutton(files_t *st, int cx, int cy, int x, int y, int w, int h,
-                    const char *label, int action, int enabled, uint32_t accent) {
-    int hot = enabled && hover(x, y, w, h);
-    g_round(x, y, w, h, 6, hot ? 0x33334A : 0x24242E, 255);
-    g_rect(x, y, w, h, hot ? accent : 0x3A3A48);
-    int tw = g_text_width(label, 1);
-    g_text(x + (w - tw) / 2, y + (h - 8) / 2, label, enabled ? COL_TEXT : COL_TEXT_DIM, 1);
+static const char *TIP[] = { "", "Back", "Forward", "Up", "New folder", "Rename", "Delete", "Close",
+                             "Copy", "Cut", "Paste", "Open", "New text document", "New sheet" };
+static int tip_action, tip_x, tip_y;
+
+/* a glyph button in the command bar; records its hit rect client-local */
+static void tbutton(files_t *st, int cx, int cy, int x, int y, int sz, int glyph, int action, int enabled) {
+    int hot = enabled && hover(x, y, sz, sz);
+    if (hot) { gfx_rrect(x, y, sz, sz, 8, wash(), wash_a()); tip_action = action; tip_x = x; tip_y = y + sz + 6; }
+    glyph_draw_c(glyph, x + sz / 2, y + sz / 2, 20, enabled ? COL_TEXT : COL_TEXT_MUTE, enabled ? 255 : 160);
     if (enabled && st->nbtn < MAXBTN)
-        st->btns[st->nbtn++] = (brect){ x - cx, y - cy, w, h, action };
-}
-
-/* truncate to fit `maxpx` pixels, adding ".." */
-static void fit_label(const char *src, char *out, int cap, int maxpx) {
-    int maxc = maxpx / 8; if (maxc > cap - 1) maxc = cap - 1; if (maxc < 4) maxc = 4;
-    int len = (int)strlen(src);
-    if (len <= maxc) { strncpy(out, src, cap); return; }
-    int k = 0; for (; k < maxc - 2; k++) out[k] = src[k];
-    out[k++] = '.'; out[k++] = '.'; out[k] = 0;
+        st->btns[st->nbtn++] = (brect){ x - cx, y - cy, sz, sz, action };
 }
 
 /* ---- toolbar + breadcrumb ---------------------------------------------- */
 static void draw_toolbar(files_t *st, window_t *w, int cx, int cy, int cw) {
-    g_fill(cx, cy, cw, TOOLBAR_H, COL_PANEL_2);
-    g_hline(cx, cy + TOOLBAR_H, cw, 0x33333F);
-    uint32_t acc = w->accent;
+    (void)w;
+    gfx_fill(cx, cy, cw, TOOLBAR_H, COL_PANEL);
+    gfx_fill(cx, cy + TOOLBAR_H - 1, cw, 1, COL_SEP);
+    tip_action = 0;
+    int by = cy + 9, sz = 34;
+    int bx = cx + 10;
+    tbutton(st, cx, cy, bx, by, sz, GLYPH_ARROW_L, A_BACK, st->nback > 0);  bx += sz + 2;
+    tbutton(st, cx, cy, bx, by, sz, GLYPH_ARROW_R, A_FWD,  st->nfwd  > 0);  bx += sz + 2;
+    tbutton(st, cx, cy, bx, by, sz, GLYPH_ARROW_U, A_UP,   st->dir && st->dir->parent); bx += sz + 10;
 
-    int bx = cx + 8, by = cy + 9, bh = 26;
-    tbutton(st, cx, cy, bx,        by, 30, bh, "<", A_BACK, st->nback > 0, acc); bx += 34;
-    tbutton(st, cx, cy, bx,        by, 30, bh, ">", A_FWD,  st->nfwd  > 0, acc); bx += 34;
-    tbutton(st, cx, cy, bx,        by, 30, bh, "^", A_UP,   st->dir && st->dir->parent, acc); bx += 38;
+    /* the command group on the right */
+    int rx = cx + cw - 10;
+    rx -= sz; tbutton(st, cx, cy, rx, by, sz, GLYPH_TRASH,  A_DEL,   st->sel != 0);
+    rx -= sz; tbutton(st, cx, cy, rx, by, sz, GLYPH_RENAME, A_REN,   st->sel != 0);
+    rx -= sz + 6;
+    gfx_fill(rx + sz + 2, by + 8, 1, sz - 16, COL_SEP);
+    tbutton(st, cx, cy, rx, by, sz, GLYPH_PASTE, A_PASTE, fclip != 0 || clip_kind() == CLIP_FILES || clip_kind() == CLIP_IMAGE);
+    rx -= sz; tbutton(st, cx, cy, rx, by, sz, GLYPH_COPY,  A_COPY,  st->sel != 0);
+    rx -= sz; tbutton(st, cx, cy, rx, by, sz, GLYPH_CUT,   A_CUT,   st->sel != 0);
+    rx -= sz + 6;
+    gfx_fill(rx + sz + 2, by + 8, 1, sz - 16, COL_SEP);
+    tbutton(st, cx, cy, rx, by, sz, GLYPH_NEW_FOLDER, A_NEW, 1);
 
-    /* right-aligned action buttons */
-    int rx = cx + cw - 8;
-    rx -= 56; tbutton(st, cx, cy, rx, by, 56, bh, "Delete", A_DEL, st->sel != 0, acc);
-    rx -= 60; tbutton(st, cx, cy, rx, by, 56, bh, "Rename", A_REN, st->sel != 0, acc);
-    rx -= 80; tbutton(st, cx, cy, rx, by, 76, bh, "New folder", A_NEW, 1, acc);
-    rx -= 60; tbutton(st, cx, cy, rx, by, 56, bh, "Paste", A_PASTE, fclip != 0, acc);
-    rx -= 48; tbutton(st, cx, cy, rx, by, 44, bh, "Cut",  A_CUT,  st->sel != 0, acc);
-    rx -= 56; tbutton(st, cx, cy, rx, by, 52, bh, "Copy", A_COPY, st->sel != 0, acc);
-
-    /* breadcrumb address bar between the two groups */
-    int ax = bx, aw = rx - 8 - bx; if (aw < 60) aw = 60;
-    g_round(ax, by, aw, bh, 6, 0x16161E, 255);
-    g_rect(ax, by, aw, bh, 0x33333F);
-    g_set_clip(ax + 1, by + 1, aw - 2, bh - 2);
-
+    /* the address bar between them */
+    int ax = bx, aw = rx - 10 - bx; if (aw < 80) aw = 80;
+    gfx_rrect(ax, by, aw, sz, 9, THEME_DARK ? 0x000000 : 0xFFFFFF, THEME_DARK ? 70 : 255);
+    gfx_rrect_stroke(ax, by, aw, sz, 9, 1, THEME_DARK ? 0xFFFFFF : 0x000000, THEME_DARK ? 20 : 30);
+    gfx_clip_push(ax + 1, by + 1, aw - 2, sz - 2);
     fs_node *chain[MAXCRUMB]; int n = 0;
     for (fs_node *p = st->dir; p && n < MAXCRUMB; p = p->parent) { chain[n++] = p; if (p == fs_root()) break; }
     st->ncrumb = 0;
-    int px = ax + 8, py = by + (bh - 8) / 2;
+    int px = ax + 10, cyb = by + sz / 2;
+    icon_draw(st->dir ? icon_for(st->dir) : ICON_FOLDER, px, cyb - 8, 16, 255);
+    px += 24;
     for (int i = n - 1; i >= 0; i--) {
         const char *nm = (chain[i] == fs_root()) ? "This PC" : chain[i]->name;
-        int tw = g_text_width(nm, 1);
-        int hot = hover(px, by, tw, bh);
-        g_text(px, py, nm, hot ? acc : COL_TEXT, 1);
+        int tw = font_width(i == 0 ? FONT_MEDIUM : FONT_REGULAR, 13, nm, -1);
+        int hot = hover(px - 4, by + 4, tw + 8, sz - 8);
+        if (hot) gfx_rrect(px - 4, by + 5, tw + 8, sz - 10, 6, wash(), wash_a());
+        text_l(px, cyb, nm, i == 0 ? FONT_MEDIUM : FONT_REGULAR, 13, i == 0 ? COL_TEXT : COL_TEXT_DIM);
         if (st->ncrumb < MAXCRUMB)
-            st->crumbs[st->ncrumb++] = (irect){ px - cx, by - cy, tw, bh, chain[i] };
+            st->crumbs[st->ncrumb++] = (irect){ px - 4 - cx, by - cy, tw + 8, sz, chain[i] };
         px += tw;
-        if (i > 0) { g_text(px + 4, py, ">", COL_TEXT_DIM, 1); px += 4 + 8 + 4; }
+        if (i > 0) { glyph_draw_c(GLYPH_CHEV_R, px + 10, cyb, 16, COL_TEXT_MUTE, 255); px += 20; }
     }
-    g_clear_clip();
+    gfx_clip_pop();
 }
 
 /* ---- navigation pane ---------------------------------------------------- */
 static void draw_nav(files_t *st, int cx, int cy, int ch) {
     int x = cx, y = cy + TOOLBAR_H, h = ch - TOOLBAR_H - STATUS_H;
-    g_fill(x, y, NAV_W, h, COL_PANEL_3);
-    g_vline(x + NAV_W, y, h, 0x33333F);
+    uint32_t side = THEME_DARK ? gfx_shade(COL_PANEL, 82) : gfx_shade(COL_PANEL, 98);
+    gfx_fill(x, y, NAV_W, h, side);
+    gfx_fill(x + NAV_W, y, 1, h, COL_SEP);
 
     st->nnav = 0;
-    int ry = y + 10, sect = -1;
-    const char *titles[] = { "Quick access", "This PC", "" };
+    int ry = y + 12, sect = -1;
+    const char *titles[] = { "Favourites", "This PC" };
     for (int i = 0; i < NAV_COUNT; i++) {
         if (NAV[i].section != sect) {
             sect = NAV[i].section;
-            if (titles[sect][0]) { g_text(x + 12, ry + 2, titles[sect], COL_TEXT_DIM, 1); ry += 22; }
+            if (sect) ry += 8;
+            text_l(x + 16, ry + 8, titles[sect], FONT_SEMIBOLD, 11, COL_TEXT_MUTE);
+            ry += 22;
         }
         fs_node *d = fs_lookup(NAV[i].path);
-        int sel = d && d == st->dir;
-        int hot = hover(x + 6, ry, NAV_W - 12, ROW_H - 4);
-        if (sel)      g_round(x + 6, ry, NAV_W - 12, ROW_H - 4, 6, COL_ACCENT, 255);
-        else if (hot) g_round(x + 6, ry, NAV_W - 12, ROW_H - 4, 6, 0x2A2A3A, 255);
-        gui_icon(NAV[i].icon, x + 14, ry + 3, 1, sel ? 0xFFFFFF : COL_TEXT);
-        g_text(x + 36, ry + 6, NAV[i].label, sel ? 0xFFFFFF : COL_TEXT, 1);
-        if (d && st->nnav < MAXNAVR) st->navs[st->nnav++] = (nrect){ (x + 6) - cx, ry - cy, NAV_W - 12, ROW_H - 4, d };
+        if (!d) continue;
+        int sel = d == st->dir;
+        int hot = hover(x + 8, ry, NAV_W - 16, ROW_H - 2);
+        if (sel)      gfx_rrect(x + 8, ry, NAV_W - 16, ROW_H - 2, 8, COL_ACCENT, THEME_DARK ? 70 : 46);
+        else if (hot) gfx_rrect(x + 8, ry, NAV_W - 16, ROW_H - 2, 8, wash(), wash_a());
+        icon_draw(NAV[i].icon == ICON_TRASH ? icon_for(d) : NAV[i].icon, x + 18, ry + (ROW_H - 2) / 2 - 10, 20, 255);
+        text_fit_l(x + 46, ry + (ROW_H - 2) / 2, NAV[i].label, NAV_W - 62, sel ? FONT_MEDIUM : FONT_REGULAR, 13, COL_TEXT);
+        if (st->nnav < MAXNAVR) st->navs[st->nnav++] = (nrect){ (x + 8) - cx, ry - cy, NAV_W - 16, ROW_H - 2, d };
         ry += ROW_H;
     }
 }
 
 /* ---- scrollbar (shared by listing + viewer) ----------------------------- */
 static void scrollbar(int x, int y, int h, int content_h, int scroll) {
-    g_fill(x, y, SBW, h, 0x16161E);
-    if (content_h > h) {
-        int th = h * h / content_h; if (th < 24) th = 24;
-        int maxs = content_h - h;
-        int ty = y + (h - th) * scroll / (maxs ? maxs : 1);
-        g_round(x + 1, ty, SBW - 2, th, 3, COL_ACCENT_DIM, 255);
-    }
+    if (content_h <= h) return;
+    int th = h * h / content_h; if (th < 28) th = 28;
+    int maxs = content_h - h;
+    int ty = y + 4 + (h - 8 - th) * scroll / (maxs ? maxs : 1);
+    gfx_rrect(x + 2, ty, 5, th, 3, THEME_DARK ? 0xFFFFFF : 0x000000, THEME_DARK ? 60 : 50);
 }
 
 /* ---- file grid ---------------------------------------------------------- */
 static void draw_listing(files_t *st, window_t *w, int cx, int cy, int cw, int ch) {
-    int X = cx + NAV_W, Y = cy + TOOLBAR_H, CW = cw - NAV_W, CH = ch - TOOLBAR_H - STATUS_H;
-    g_fill(X, Y, CW, CH, COL_PANEL);
-    g_set_clip(X, Y, CW - SBW, CH);
+    (void)w;
+    int X = cx + NAV_W + 1, Y = cy + TOOLBAR_H, CW = cw - NAV_W - 1, CH = ch - TOOLBAR_H - STATUS_H;
+    gfx_fill(X, Y, CW, CH, COL_PANEL);
+    gfx_clip_push(X, Y, CW - SBW, CH);
 
-    int cols = (CW - 16 - SBW) / CELL_W; if (cols < 1) cols = 1;
+    int cols = (CW - 20 - SBW) / CELL_W; if (cols < 1) cols = 1;
     st->nitems = 0;
     int k = 0;
-
-    /* directories first, then files (two passes), matching Explorer's grouping */
+    /* directories first, then files, the way Explorer groups them */
     for (int pass = 0; pass < 2; pass++) {
         for (fs_node *c = st->dir ? st->dir->child : 0; c; c = c->next) {
             if ((pass == 0) != (c->is_dir != 0)) continue;
             int col = k % cols, row = k / cols;
-            int ix = X + 8 + col * CELL_W;
-            int iy = Y + 8 + row * CELL_H - st->scroll;
+            int ix = X + 12 + col * CELL_W;
+            int iy = Y + 10 + row * CELL_H - st->scroll;
             k++;
-
             if (iy + CELL_H < Y || iy > Y + CH) continue;     /* fully scrolled out */
 
             int selnode = (c == st->sel);
-            if (selnode)        g_round(ix + 4, iy + 2, CELL_W - 8, CELL_H - 8, 8, COL_ACCENT, 60);
-            else if (hover(ix + 4, iy + 2, CELL_W - 8, CELL_H - 8))
-                                g_round(ix + 4, iy + 2, CELL_W - 8, CELL_H - 8, 8, 0xFFFFFF, 16);
+            if (selnode) {
+                gfx_rrect(ix + 4, iy + 2, CELL_W - 8, CELL_H - 6, 10, COL_ACCENT, THEME_DARK ? 64 : 40);
+                gfx_rrect_stroke(ix + 4, iy + 2, CELL_W - 8, CELL_H - 6, 10, 1, COL_ACCENT, 150);
+            } else if (hover(ix + 4, iy + 2, CELL_W - 8, CELL_H - 6)) {
+                gfx_rrect(ix + 4, iy + 2, CELL_W - 8, CELL_H - 6, 10, wash(), wash_a());
+            }
+            icon_draw(icon_for(c), ix + (CELL_W - 48) / 2, iy + 10, 48, c->name[0] == '.' ? 150 : 255);
 
-            int s = 3, iw = 16 * s;
-            gui_icon(icon_for(c), ix + (CELL_W - iw) / 2, iy + 10, s, COL_TEXT);
-
-            int ly = iy + 10 + iw + 6, lcx = ix + CELL_W / 2;
+            int base = iy + 76, lcx = ix + CELL_W / 2;
             if (st->renaming && st->rnode == c) {
-                int bw = CELL_W - 10;
-                g_round(ix + 5, ly - 3, bw, 18, 4, 0x16161E, 255);
-                g_rect(ix + 5, ly - 3, bw, 18, w->accent);
-                char rl[16]; fit_label(st->rbuf, rl, sizeof(rl), bw - 8);
-                int tw = g_text_width(rl, 1);
-                g_text(lcx - tw / 2, ly, rl, COL_TEXT, 1);
-                if ((pit_ticks() / 500) % 2 == 0)
-                    g_fill(lcx + tw / 2 + 1, ly - 1, 2, 12, COL_ACCENT);
+                int bw = CELL_W - 8;
+                gfx_rrect(ix + 4, base - 15, bw, 22, 6, THEME_DARK ? 0x141416 : 0xFFFFFF, 255);
+                gfx_rrect_stroke(ix + 3, base - 16, bw + 2, 24, 7, 2, COL_ACCENT, 255);
+                gfx_clip_push(ix + 7, base - 15, bw - 6, 22);
+                int tw = font_width(FONT_REGULAR, 12, st->rbuf, -1);
+                int tx = tw > bw - 12 ? ix + bw - 2 - tw : lcx - tw / 2;
+                font_draw(FONT_REGULAR, 12, tx, base, st->rbuf, -1, COL_TEXT, 255);
+                if ((pit_ticks() / 530) % 2 == 0) gfx_fill(tx + tw + 1, base - 11, 2, 14, COL_ACCENT);
+                gfx_clip_pop();
             } else {
-                char lbl[16]; fit_label(c->name, lbl, sizeof(lbl), CELL_W - 8);
-                int tw = g_text_width(lbl, 1);
-                g_text(lcx - tw / 2, ly, lbl, selnode ? 0xFFFFFF : COL_TEXT, 1);
+                int tw = font_width(FONT_REGULAR, 12, c->name, -1);
+                if (tw > CELL_W - 12) tw = CELL_W - 12;
+                font_draw_fit(FONT_REGULAR, 12, lcx - tw / 2, base, c->name, CELL_W - 12,
+                              c->name[0] == '.' ? COL_TEXT_DIM : COL_TEXT, 255);
             }
             if (st->nitems < MAXITEM)
                 st->items[st->nitems++] = (irect){ ix - cx, iy - cy, CELL_W, CELL_H, c };
         }
     }
-    g_clear_clip();
+    gfx_clip_pop();
 
-    if (k == 0)
-        g_text(X + 16, Y + 16, "This folder is empty", COL_TEXT_DIM, 1);
-
+    if (k == 0) {
+        glyph_draw_c(GLYPH_FOLDER_OPEN, X + CW / 2, Y + CH / 2 - 18, 24, COL_TEXT_MUTE, 255);
+        text_c(X + CW / 2, Y + CH / 2 + 14, "This folder is empty", FONT_MEDIUM, 13, COL_TEXT_DIM);
+    }
     int rows = (k + cols - 1) / cols;
-    st->content_h = rows * CELL_H + 16;
+    st->content_h = rows * CELL_H + 20;
     scrollbar(X + CW - SBW, Y, CH, st->content_h, st->scroll);
 }
 
@@ -554,36 +583,33 @@ static void draw_listing(files_t *st, window_t *w, int cx, int cy, int cw, int c
 static void draw_viewer(files_t *st, window_t *w, int cx, int cy, int cw, int ch) {
     (void)w;
     fs_node *f = st->view;
-    int X = cx + NAV_W, Y = cy + TOOLBAR_H, CW = cw - NAV_W, CH = ch - TOOLBAR_H - STATUS_H;
-    g_fill(X, Y, CW, CH, COL_PANEL);
+    int X = cx + NAV_W + 1, Y = cy + TOOLBAR_H, CW = cw - NAV_W - 1, CH = ch - TOOLBAR_H - STATUS_H;
+    gfx_fill(X, Y, CW, CH, COL_PANEL);
 
     /* header */
-    g_fill(X, Y, CW, 28, COL_PANEL_2);
-    g_hline(X, Y + 28, CW, 0x33333F);
-    gui_icon(ICON_FILE, X + 8, Y + 6, 1, COL_TEXT);
-    g_text(X + 30, Y + 10, f->name, COL_TEXT, 1);
-    int clx = X + CW - 26, cly = Y + 5;                  /* close box */
-    int chot = hover(clx, cly, 20, 20);
-    g_round(clx, cly, 20, 20, 5, chot ? COL_BAD : 0x33334A, 255);
-    int ccx = clx + 10, ccy = cly + 10;
-    for (int i = -4; i <= 4; i++) { g_fill(ccx + i, ccy + i, 1, 1, 0xFFFFFF); g_fill(ccx + i, ccy - i, 1, 1, 0xFFFFFF); }
-    if (st->nbtn < MAXBTN) st->btns[st->nbtn++] = (brect){ clx - cx, cly - cy, 20, 20, A_VIEWCLOSE };
+    gfx_fill(X, Y + 35, CW, 1, COL_SEP);
+    icon_draw(icon_for(f), X + 12, Y + 8, 20, 255);
+    text_fit_l(X + 40, Y + 18, f->name, CW - 90, FONT_SEMIBOLD, 13, COL_TEXT);
+    int clx = X + CW - 34, cly = Y + 4;
+    if (hover(clx, cly, 28, 28)) gfx_rrect(clx, cly, 28, 28, 7, wash(), wash_a());
+    glyph_draw_c(GLYPH_CLOSE, clx + 14, cly + 14, 16, COL_TEXT, 255);
+    if (st->nbtn < MAXBTN) st->btns[st->nbtn++] = (brect){ clx - cx, cly - cy, 28, 28, A_VIEWCLOSE };
 
     /* detect binary in the first chunk */
     int binary = 0;
     uint32_t scan = f->size < 256 ? f->size : 256;
     for (uint32_t i = 0; i < scan; i++) if (!is_printable(f->data[i])) { binary = 1; break; }
 
-    int bX = X + 12, bY = Y + 36, bW = CW - 24 - SBW;
-    g_set_clip(X, Y + 29, CW - SBW, CH - 29);
+    int bX = X + 16, bY = Y + 46, bW = CW - 32 - SBW;
+    gfx_clip_push(X, Y + 36, CW - SBW, CH - 36);
     int cols = bW / 8; if (cols < 8) cols = 8;
-    int line_h = 16, py = bY - st->view_scroll, curcol = 0;
+    int line_h = 17, py = bY - st->view_scroll, curcol = 0;
 
     if (binary) {
         /* hex dump: "OOOOOO  XX XX ... " 16 bytes per line */
         for (uint32_t off = 0; off < f->size; off += 16) {
             int ry = py + (int)(off / 16) * line_h;
-            if (ry + line_h < Y + 29 || ry > Y + CH) continue;
+            if (ry + line_h < Y + 36 || ry > Y + CH) continue;
             char ln[80]; int p = 0; char hx[8];
             sh_utoa(off, hx); for (const char *q = hx; *q; q++) ln[p++] = *q; ln[p++] = ' '; ln[p++] = ' ';
             for (uint32_t j = 0; j < 16 && off + j < f->size && p < 70; j++) {
@@ -592,7 +618,7 @@ static void draw_viewer(files_t *st, window_t *w, int cx, int cy, int cw, int ch
                 ln[p++] = H[v >> 4]; ln[p++] = H[v & 0xF]; ln[p++] = ' ';
             }
             ln[p] = 0;
-            g_text(bX, ry, ln, 0x9FE0A0, 1);
+            font_draw(FONT_MONO, 13, bX, ry + 12, ln, -1, THEME_DARK ? 0x9FE0A0 : 0x1F7A3A, 255);
         }
         st->view_h = (int)((f->size + 15) / 16) * line_h + 16;
     } else {
@@ -602,44 +628,40 @@ static void draw_viewer(files_t *st, window_t *w, int cx, int cy, int cw, int ch
             if (c == '\t') { curcol = (curcol + 4) & ~3; if (curcol >= cols) { py += line_h; curcol = 0; } continue; }
             if (!is_printable(c)) c = '.';
             if (curcol >= cols) { py += line_h; curcol = 0; }
-            if (py + line_h >= Y + 29 && py <= Y + CH) g_char(bX + curcol * 8, py, (char)c, 0xC8C8D0, 1);
+            if (py + line_h >= Y + 36 && py <= Y + CH) g_char(bX + curcol * 8, py, (char)c, COL_TEXT, 1);
             curcol++;
         }
         st->view_h = (py + st->view_scroll - bY) + line_h + 16;
     }
-    g_clear_clip();
-    scrollbar(X + CW - SBW, Y + 29, CH - 29, st->view_h, st->view_scroll);
+    gfx_clip_pop();
+    scrollbar(X + CW - SBW, Y + 36, CH - 36, st->view_h, st->view_scroll);
 }
 
 /* ---- status bar --------------------------------------------------------- */
 static void draw_status(files_t *st, int cx, int cy, int cw, int ch) {
     int y = cy + ch - STATUS_H;
-    g_fill(cx, y, cw, STATUS_H, COL_PANEL_2);
-    g_hline(cx, y, cw, 0x33333F);
-
+    gfx_fill(cx, y, cw, STATUS_H, COL_PANEL);
+    gfx_fill(cx, y, cw, 1, COL_SEP);
+    int my = y + STATUS_H / 2;
     if (!fs_persist_active() || fs_persist_readonly()) {
-        g_text(cx + 12, y + 8, "Changes will not be saved to disk", 0xEEC85E, 1);
+        glyph_draw_c(GLYPH_WARN, cx + 20, my, 16, COL_WARN, 255);
+        text_l(cx + 34, my, "Changes will not be saved to disk", FONT_REGULAR, 12, COL_WARN);
         return;
     }
-
     int items = 0;
     for (fs_node *c = st->dir ? st->dir->child : 0; c; c = c->next) items++;
-
     char line[64], num[12];
     sh_utoa((uint64_t)items, num);
-    line[0] = 0; kstrlcat(line, num, sizeof(line)); kstrlcat(line, " items", sizeof(line));
-    g_text(cx + 12, y + 8, line, COL_TEXT_DIM, 1);
-
+    line[0] = 0; kstrlcat(line, num, sizeof(line)); kstrlcat(line, items == 1 ? " item" : " items", sizeof(line));
+    text_l(cx + 14, my, line, FONT_REGULAR, 12, COL_TEXT_DIM);
     if (st->sel) {
-        char r[64]; r[0] = 0;
-        kstrlcat(r, "Selected: ", sizeof(r));
+        char r[96]; r[0] = 0;
         kstrlcat(r, st->sel->name, sizeof(r));
         if (!st->sel->is_dir) {
             char sz[12]; sh_human(st->sel->size, sz);
-            kstrlcat(r, "  (", sizeof(r)); kstrlcat(r, sz, sizeof(r)); kstrlcat(r, ")", sizeof(r));
+            kstrlcat(r, "  " TXT_BULLET "  ", sizeof(r)); kstrlcat(r, sz, sizeof(r));
         }
-        int tw = g_text_width(r, 1);
-        g_text(cx + cw - tw - 12, y + 8, r, COL_TEXT_DIM, 1);
+        text_r(cx + cw - 14, my, r, FONT_REGULAR, 12, COL_TEXT_DIM);
     }
 }
 
@@ -648,15 +670,18 @@ static void draw_status(files_t *st, int cx, int cy, int cw, int ch) {
 static void draw_menu(files_t *st, int cx, int cy) {
     if (!st->menu_open) return;
     mrow rows[8]; int nr = build_menu(st, rows, 8);
-    int mx = cx + st->menu_x, my = cy + st->menu_y, mh = nr * MENU_RH;
-    g_fill(mx - 1, my - 1, MENU_W + 2, mh + 2, 0x000000);   /* drop shadow / border */
-    g_fill(mx, my, MENU_W, mh, COL_PANEL_2);
+    int mx = cx + st->menu_x, my = cy + st->menu_y, mh = nr * MENU_RH + 10;
+    gfx_shadow(mx, my, MENU_W, mh, 10, 22, 8, 0, THEME_DARK ? 120 : 70);
+    gfx_rrect(mx, my, MENU_W, mh, 10, THEME_DARK ? gfx_shade(COL_PANEL_2, 110) : 0xFFFFFF, 255);
+    gfx_rrect_stroke(mx, my, MENU_W, mh, 10, 1, 0x000000, THEME_DARK ? 90 : 30);
+    if (THEME_DARK) gfx_rrect_stroke2(mx + 1, my + 1, MENU_W - 2, mh - 2, 9, 0xFFFFFF, 24, 0);
     for (int i = 0; i < nr; i++) {
-        int ry = my + i * MENU_RH;
-        if (hover(mx, ry, MENU_W, MENU_RH)) g_fill(mx, ry, MENU_W, MENU_RH, COL_ACCENT);
-        g_text(mx + 12, ry + 6, rows[i].label, COL_TEXT, 1);
+        int ry = my + 5 + i * MENU_RH;
+        int hot = hover(mx, ry, MENU_W, MENU_RH);
+        if (hot) gfx_rrect(mx + 5, ry, MENU_W - 10, MENU_RH, 6, rows[i].action == A_DEL ? COL_BAD : COL_ACCENT, 255);
+        text_l(mx + 16, ry + MENU_RH / 2, rows[i].label, FONT_REGULAR, 13,
+               hot ? 0xFFFFFF : (rows[i].action == A_DEL ? COL_BAD : COL_TEXT));
     }
-    g_rect(mx, my, MENU_W, mh, 0x44444F);
 }
 
 static void files_draw(window_t *w, int cx, int cy, int cw, int ch) {
@@ -665,7 +690,7 @@ static void files_draw(window_t *w, int cx, int cy, int cw, int ch) {
     if (!st->dir) st->dir = fs_lookup("/home");
     if (!st->dir) st->dir = fs_root();
 
-    g_fill(cx, cy, cw, ch, COL_PANEL);
+    gfx_fill(cx, cy, cw, ch, COL_PANEL);
     st->nbtn = 0;
     draw_toolbar(st, w, cx, cy, cw);
     draw_nav(st, cx, cy, ch);
@@ -673,6 +698,14 @@ static void files_draw(window_t *w, int cx, int cy, int cw, int ch) {
     else          draw_listing(st, w, cx, cy, cw, ch);
     draw_status(st, cx, cy, cw, ch);
     draw_menu(st, cx, cy);
+    if (tip_action > 0 && tip_action < (int)(sizeof(TIP) / sizeof(TIP[0])) && !st->menu_open) {
+        int tw = font_width(FONT_REGULAR, 12, TIP[tip_action], -1) + 18;
+        int tx = tip_x; if (tx + tw > cx + cw - 6) tx = cx + cw - 6 - tw;
+        gfx_shadow(tx, tip_y, tw, 26, 7, 12, 4, 0, 90);
+        gfx_rrect(tx, tip_y, tw, 26, 7, THEME_DARK ? 0x3A3A40 : 0xFFFFFF, 255);
+        gfx_rrect_stroke(tx, tip_y, tw, 26, 7, 1, 0x000000, THEME_DARK ? 90 : 30);
+        text_l(tx + 9, tip_y + 13, TIP[tip_action], FONT_REGULAR, 12, COL_TEXT);
+    }
 }
 
 /* ---- input -------------------------------------------------------------- */
@@ -683,7 +716,7 @@ static void clamp_scroll(files_t *st) {
     if (st->scroll > maxs) st->scroll = maxs;
 }
 static void clamp_view(files_t *st) {
-    int CH = st->ch - TOOLBAR_H - STATUS_H - 29;
+    int CH = st->ch - TOOLBAR_H - STATUS_H - 36;
     int maxs = st->view_h - CH; if (maxs < 0) maxs = 0;
     if (st->view_scroll < 0) st->view_scroll = 0;
     if (st->view_scroll > maxs) st->view_scroll = maxs;
@@ -704,7 +737,7 @@ static void files_key(window_t *w, char c) {
     }
 
     if (st->view) {                                  /* viewer scrolling */
-        int page = (st->ch - TOOLBAR_H - STATUS_H - 29) - 24;
+        int page = (st->ch - TOOLBAR_H - STATUS_H - 36) - 24;
         if      (c == 27)  st->view = 0;
         else if (c == 'j') st->view_scroll += 32;
         else if (c == 'k') st->view_scroll -= 32;
@@ -745,7 +778,7 @@ static void files_rclick(window_t *w, int lx, int ly) {
     mrow rows[8]; int nr = build_menu(st, rows, 8);
     int mx = lx, my = ly;
     if (mx + MENU_W > st->cw) mx = st->cw - MENU_W;
-    if (my + nr * MENU_RH > st->ch) my = st->ch - nr * MENU_RH;
+    if (my + nr * MENU_RH + 10 > st->ch) my = st->ch - nr * MENU_RH - 10;
     if (mx < 0) mx = 0; if (my < 0) my = 0;
     st->menu_x = mx; st->menu_y = my; st->menu_open = 1;
 }
@@ -781,6 +814,7 @@ static void files_click(window_t *w, int lx, int ly) {
         int hit = -1;
         if (lx >= st->menu_x && lx < st->menu_x + MENU_W) {
             int rel = ly - st->menu_y;
+            rel -= 5;
             if (rel >= 0 && rel < nr * MENU_RH) hit = rel / MENU_RH;
         }
         st->menu_open = 0;
@@ -918,9 +952,10 @@ void files_app_init(void) {
     memset(&F, 0, sizeof(F));
     files_seed();
 
-    window_t *w = gui_add_window("File Explorer", 760, 520, 0x3A8DDE, ICON_FILES);
+    window_t *w = gui_add_window("File Explorer", 820, 540, 0x3A8DDE, ICON_FILES);
     if (!w) return;
     FW = w;
+    w->track_hover = 1;
     w->draw = files_draw;
     w->key  = files_key;
     w->click = files_click;
@@ -933,8 +968,8 @@ void files_app_init(void) {
     if (!F.dir) F.dir = fs_root();
 
     /* seed the desktop with a few shortcuts so drag-to-desktop has company */
-    gui_desktop_add(fs_lookup("/"),                 "This PC",     ICON_FILES);
-    gui_desktop_add(fs_lookup("/home"),             "Home",        ICON_FOLDER);
-    gui_desktop_add(fs_lookup("/home/Documents"),   "Documents",   ICON_FOLDER);
+    gui_desktop_add(fs_lookup("/"),                 "This PC",     ICON_PC);
+    gui_desktop_add(fs_lookup("/home"),             "Home",        ICON_HOME);
+    gui_desktop_add(fs_lookup("/home/Documents"),   "Documents",   ICON_DOCS);
     gui_desktop_add(trash_dir(),                    "Recycle Bin", ICON_TRASH);
 }

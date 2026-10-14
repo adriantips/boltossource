@@ -16,9 +16,10 @@
 
 #define TCOLS 220
 #define TROWS 80
-#define PAD   8
+#define PAD   12
 #define CELLW 8
-#define CELLH 14
+#define CELLH 16          /* a little air between lines; 14 was cramped */
+#define TERM_BG 0x141417
 
 typedef struct {
     char    ch [TROWS][TCOLS];
@@ -36,14 +37,15 @@ typedef struct {
 static term_t  term;
 static term_t *active;                 /* terminal currently capturing kputc */
 
-/* palette index -> colour */
+/* palette index -> colour. Fixed rather than themed: the terminal stays dark
+ * in the light theme too, like every terminal people actually use. */
 static uint32_t pal(uint8_t i) {
     switch (i) {
-    case 1:  return 0x4FC3F7;          /* prompt / accent */
-    case 2:  return 0x7C7C8A;          /* dim             */
-    case 3:  return COL_GOOD;
-    case 4:  return COL_BAD;
-    default: return 0xD8D8E0;          /* normal          */
+    case 1:  return 0x64D2FF;          /* prompt / accent */
+    case 2:  return 0x8A8A96;          /* dim             */
+    case 3:  return 0x5DE38A;
+    case 4:  return 0xFF6B60;
+    default: return 0xE6E6EB;          /* normal          */
     }
 }
 
@@ -203,7 +205,7 @@ static void term_key(window_t *w, char c) {
 static void term_draw(window_t *w, int cx, int cy, int cw, int ch) {
     (void)w;
     term_t *t = &term;
-    g_fill(cx, cy, cw, ch, 0x0C0C12);            /* terminal background */
+    g_fill(cx, cy, cw, ch, TERM_BG);             /* terminal background */
 
     t->cols = (cw - 2 * PAD) / CELLW; if (t->cols > TCOLS) t->cols = TCOLS; if (t->cols < 1) t->cols = 1;
     t->rows = (ch - 2 * PAD) / CELLH; if (t->rows > TROWS) t->rows = TROWS; if (t->rows < 1) t->rows = 1;
@@ -222,12 +224,12 @@ static void term_draw(window_t *w, int cx, int cy, int cw, int ch) {
      * (end of the line), so mid-line editing has to walk the caret back by
      * how far behind the end t->pos is. wrapped lines make this an
      * approximation near the wrap point, but nobody types a 220-char command. */
-    if (gui_window_focused(w) && (pit_ticks() / 500) % 2 == 0) {
+    if (gui_window_focused(w) && (pit_ticks() / 530) % 2 == 0) {
         int cell = t->cy * t->cols + t->cx - (t->len - t->pos);
         if (cell < 0) cell = 0;
         int px = cx + PAD + (cell % t->cols) * CELLW;
         int py = cy + PAD + (cell / t->cols) * CELLH;
-        g_fill(px, py, 2, CELLH - 2, 0x4FC3F7);
+        g_round(px, py + 1, 2, CELLH - 2, 1, 0x64D2FF, 255);
     }
 }
 

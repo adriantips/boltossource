@@ -226,7 +226,7 @@ SRCS=(
     drivers/e1000.c drivers/virtio_net.c drivers/wifi_sim.c drivers/backlight.c kernel/power.c kernel/sleep.c
     kernel/socket.c net/ssh.c kernel/cmd_ssh.c kernel/cmd_edit.c kernel/cmd_netcfg.c kernel/cmd_serve.c kernel/cmd_fs.c kernel/cmd_sys.c kernel/cmd_proc.c kernel/cmd_net.c kernel/cmd_extra.c kernel/cmd_hw.c kernel/cmd_user.c
     kernel/html.c kernel/dom.c kernel/layout.c kernel/image.c kernel/ttf.c
-    kernel/gui.c kernel/app_terminal.c kernel/app_taskmgr.c kernel/app_settings.c kernel/app_browser.c kernel/app_files.c
+    kernel/gfx.c kernel/font.c kernel/icons.c kernel/ui.c kernel/gui.c kernel/gui_shell.c kernel/gui_login.c kernel/app_terminal.c kernel/app_taskmgr.c kernel/app_settings.c kernel/app_browser.c kernel/app_files.c
     kernel/app_oldbrowser.c oldbrowser/ob_nsurl.c oldbrowser/ob_llcache.c oldbrowser/ob_content.c oldbrowser/ob_window.c oldbrowser/ob_hotlist.c oldbrowser/ob_fbtk.c oldbrowser/ob_gui.c
     kernel/app_ide.c kernel/app_calc.c kernel/app_clock.c kernel/app_notes.c kernel/app_tasks.c kernel/app_contacts.c kernel/app_sheets.c kernel/app_imgview.c kernel/app_music.c kernel/app_media.c kernel/cmd_media.c kernel/app_calendar.c kernel/app_piano.c kernel/app_paint.c kernel/app_mines.c kernel/app_snake.c kernel/app_2048.c kernel/app_stopwatch.c kernel/app_charmap.c kernel/app_clipboard.c kernel/app_snip.c kernel/app_devmgr.c kernel/app_solitaire.c kernel/app_sysinfo.c kernel/app_life.c kernel/app_ttt.c kernel/app_colorpick.c kernel/app_memory.c kernel/app_matrix.c kernel/app_doom.c kernel/app_strike.c kernel/app_gameboy.c kernel/app_boltcraft.c
     strike/st_map.c strike/st_tex.c strike/st_render.c strike/st_game.c strike/st_sfx.c
@@ -323,6 +323,38 @@ cp assets/fonts/font.ttf build/font.ttf
 ( cd build && "$OBJCOPY" -I binary -O elf64-x86-64 font.ttf font_ttf.o )
 KOBJS+=(build/font_ttf.o)
 
+echo "[3d1/6] the UI fonts (Inter + DejaVu Sans Mono -> .bfnt outlines -> blobs)"
+# The desktop draws text from outlines (kernel/font.c). mkuifont.py instances
+# Inter's variable font at the weights the UI uses -- Inter is one file with
+# every weight in it as deltas, which the kernel has no business applying at
+# boot -- flattens accented letters, and resolves the kerning between the 256
+# characters the kernel can type. ~60 KB a weight.
+UIFONTS=(
+    "font_r:assets/fonts/Inter.ttf:wght=400:opsz=14"
+    "font_m:assets/fonts/Inter.ttf:wght=500:opsz=14"
+    "font_sb:assets/fonts/Inter.ttf:wght=600:opsz=14"
+    "font_b:assets/fonts/Inter.ttf:wght=700:opsz=14"
+    "font_d:assets/fonts/Inter.ttf:wght=300:opsz=32"
+    "font_mono:assets/fonts/DejaVuSansMono.ttf"
+    "font_monob:assets/fonts/DejaVuSansMono-Bold.ttf"
+)
+for spec in "${UIFONTS[@]}"; do
+    IFS=: read -r fname fsrc fa fb <<< "$spec"
+    "$PYTHON" mkuifont.py "$fsrc" "build/$fname.bfnt" $fa $fb
+    ( cd build && "$OBJCOPY" -I binary -O elf64-x86-64 "$fname.bfnt" "${fname}_bfnt.o" )
+    KOBJS+=("build/${fname}_bfnt.o")
+done
+
+echo "[3d1b/6] icons, glyphs and cursors (assets/icons/*.png -> blobs)"
+# Drawn by mkicons.py and committed, so a build needs no browser. Re-run that
+# script after changing a drawing.
+for a in apps-16 apps-24 apps-32 apps-48 apps-64 apps-96 glyphs-16 glyphs-20 glyphs-24 cursors-32; do
+    [ -f "assets/icons/$a.png" ] || { echo "ERROR: assets/icons/$a.png missing -- run: python mkicons.py"; exit 1; }
+    cp "assets/icons/$a.png" "build/$a.png"
+    ( cd build && "$OBJCOPY" -I binary -O elf64-x86-64 "$a.png" "${a//-/_}_png.o" )
+    KOBJS+=("build/${a//-/_}_png.o")
+done
+
 echo "[3d2/6] generate the system sounds (chime.wav, blip.wav -> blobs)"
 # Two shapes on purpose: 22 kHz mono 8-bit and 44.1 kHz stereo 16-bit. Between
 # them they make the decoder resample, expand mono to stereo and sign-convert,
@@ -339,11 +371,13 @@ echo "[3d3/6] embed the desktop wallpapers (one render per resolution -> blobs)"
 # the 4K master down to one JPEG per entry in settings.c's res_tab[]; the whole
 # set is ~1.5 MB, where the same renders as PNG would be 13.5 MB and the 4K one
 # alone would want ~99 MiB of kheap to decode.
-WALLPAPERS=(assets/wallpapers/mountain-*.jpg)
-[ -e "${WALLPAPERS[0]}" ] || {
-    echo "ERROR: no assets/wallpapers/mountain-*.jpg -- run: python mkwall.py assets/wallpapers/mountain.png assets/wallpapers"
-    exit 1
-}
+WALLPAPERS=(assets/wallpapers/mountain-*.jpg assets/wallpapers/aurora-[0-9]*.jpg assets/wallpapers/aurora-light-*.jpg)
+for w in "${WALLPAPERS[@]}"; do
+    [ -e "$w" ] || {
+        echo "ERROR: $w missing -- see mkwall.py and mkaurora.py"
+        exit 1
+    }
+done
 for w in "${WALLPAPERS[@]}"; do
     b=$(basename "$w")
     cp "$w" "build/$b"

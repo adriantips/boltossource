@@ -1,9 +1,10 @@
 /* ===========================================================================
  *  BoltOS  -  kernel/app_calc.c
- *  Calculator window: a modern button-grid calculator. The kernel is built
- *  with -mno-sse/-mno-387 (no hardware FP and no soft-float runtime linked),
- *  so all arithmetic is fixed-point: every value is an int64 scaled by 1000,
- *  giving 3 decimal places without ever touching a float.
+ *  Calculator window, laid out like the one on every phone: the running
+ *  expression small above the number, round keys, orange operators. The
+ *  arithmetic is fixed-point -- every value an int64 scaled by 1000, giving
+ *  3 decimal places -- which dates from when the kernel had no FPU state
+ *  saving and is still exactly right for a four-function calculator.
  *
  *  Input comes from both the mouse (each button registers a client-local hot
  *  rect while drawing; the click handler hit-tests them) and the keyboard
@@ -11,6 +12,8 @@
  * ===========================================================================*/
 #include <stdint.h>
 #include "gui.h"
+#include "gfx.h"
+#include "font.h"
 #include "string.h"
 
 #define SCALE 1000               /* fixed-point: 3 decimal places */
@@ -187,13 +190,13 @@ static void calc_input(char k) {
 }
 
 /* ---- button grid --------------------------------------------------------- */
-/* kind: 0 normal digit, 1 operator, 2 function, 3 equals */
+/* kind: 0 digit, 1 operator, 2 function, 3 equals */
 typedef struct { const char *label; char key; uint8_t kind; uint8_t span; } btn_t;
 
 static const btn_t BTNS[] = {
-    {"C", 'c', 2, 1}, {"+/-", 'n', 2, 1}, {"%", '%', 2, 1}, {"/", '/', 1, 1},
-    {"7", '7', 0, 1}, {"8",   '8', 0, 1}, {"9", '9', 0, 1}, {"x", '*', 1, 1},
-    {"4", '4', 0, 1}, {"5",   '5', 0, 1}, {"6", '6', 0, 1}, {"-", '-', 1, 1},
+    {"AC", 'c', 2, 1}, {"+/" "\x96", 'n', 2, 1}, {"%", '%', 2, 1}, {"\xF7", '/', 1, 1},
+    {"7", '7', 0, 1}, {"8",   '8', 0, 1}, {"9", '9', 0, 1}, {"\xD7", '*', 1, 1},
+    {"4", '4', 0, 1}, {"5",   '5', 0, 1}, {"6", '6', 0, 1}, {"\x96", '-', 1, 1},
     {"1", '1', 0, 1}, {"2",   '2', 0, 1}, {"3", '3', 0, 1}, {"+", '+', 1, 1},
     {"0", '0', 0, 2},                     {".", '.', 0, 1}, {"=", '=', 3, 1},
 };
@@ -204,68 +207,82 @@ typedef struct { int x, y, w, h; char key; } chot_t;
 static chot_t chots[NBTN];
 static int    nchot;
 
-static uint32_t btn_color(uint8_t kind) {
-    switch (kind) {
-    case 1: return COL_ACCENT;          /* operators */
-    case 2: return COL_PANEL_3;         /* functions */
-    case 3: return COL_ACCENT;          /* equals    */
-    default: return COL_PANEL_2;        /* digits    */
-    }
-}
-static uint32_t btn_text(uint8_t kind) {
-    return (kind == 1 || kind == 3) ? 0xFFFFFF : COL_TEXT;
+/* The calculator keeps its own palette in both themes, the way the one on
+ * every phone does: dark keys, grey functions, orange operators. */
+#define CALC_BG    0x1C1C1E
+#define KEY_DIGIT  0x333336
+#define KEY_FUNC   0xA5A5AA
+#define KEY_OP     0xFF9F0A
+
+static const char *op_glyph(char op) {
+    switch (op) { case '*': return "\xD7"; case '/': return "\xF7"; case '-': return "\x96"; default: return "+"; }
 }
 
 static void calc_draw(window_t *w, int cx, int cy, int cw, int ch) {
     (void)w;
-    g_fill(cx, cy, cw, ch, COL_PANEL);
+    gfx_fill(cx, cy, cw, ch, CALC_BG);
     nchot = 0;
 
-    int pad = 14;
-    int x0 = cx + pad, y0 = cy + pad, gw = cw - 2 * pad;
-
-    /* ---- display ---- */
-    int disp_h = 92;
-    g_round(x0, y0, gw, disp_h, 12, 0x0E0E16, 255);
-    const char *s = display_text();
-
-    /* pending-operator hint, top-left of the display */
-    if (calc.op && !calc.error) {
-        char ohint[2] = { calc.op == '*' ? 'x' : calc.op, 0 };
-        g_text(x0 + 16, y0 + 12, ohint, COL_ACCENT, 2);
+    int pad = 16;
+    int x0 = cx + pad, gw = cw - 2 * pad;
+    int cols = 4, gap = 12;
+    int bw = (gw - (cols - 1) * gap) / cols;
+    int bh = bw;
+    int rows = 5;
+    int grid_h = rows * bh + (rows - 1) * gap;
+    int grid_y = cy + ch - pad - grid_h;
+    if (grid_y < cy + 110) {                    /* a short window: squash the keys */
+        grid_y = cy + 110;
+        bh = (cy + ch - pad - grid_y - (rows - 1) * gap) / rows;
     }
 
-    /* right-align the number; shrink the scale if it would overflow */
-    int scale = 4;
-    while (scale > 1 && g_text_width(s, scale) > gw - 32) scale--;
-    int tw = g_text_width(s, scale);
-    int ty = y0 + disp_h - 16 - 8 * scale;
-    g_text(x0 + gw - tw - 16, ty, s, calc.error ? COL_BAD : COL_TEXT, scale);
+    /* ---- display: the expression so far, small, over the number, big ---- */
+    const char *s = display_text();
+    if (calc.op && !calc.error) {
+        char acc[32], expr[48];
+        fmt_scaled(calc.acc, acc, sizeof acc);
+        expr[0] = 0;
+        kstrlcat(expr, acc, sizeof expr);
+        kstrlcat(expr, " ", sizeof expr);
+        kstrlcat(expr, op_glyph(calc.op), sizeof expr);
+        text_r(x0 + gw - 6, grid_y - 86, expr, FONT_REGULAR, 16, 0x8E8E93);
+    }
+    int px = 56;
+    while (px > 22 && font_width(FONT_DISPLAY, px, s, -1) > gw - 12) px -= 4;
+    int tw = font_width(FONT_DISPLAY, px, s, -1);
+    font_draw(FONT_DISPLAY, px, x0 + gw - 6 - tw, grid_y - 22, s, -1, calc.error ? 0xFF453A : 0xFFFFFF, 255);
 
-    /* ---- button grid ---- */
-    int grid_y = y0 + disp_h + 12;
-    int cols = 4, gap = 8;
-    int avail_h = (cy + ch - pad) - grid_y;
-    int rows = 5;
-    int bw = (gw - (cols - 1) * gap) / cols;
-    int bh = (avail_h - (rows - 1) * gap) / rows;
-
+    /* ---- keys ---- */
     int bx = x0, by = grid_y, col = 0;
+    int mx = gui_mouse_x(), my = gui_mouse_y();
     for (int i = 0; i < NBTN; i++) {
         const btn_t *b = &BTNS[i];
         int span = b->span;
         int w2 = bw * span + (span - 1) * gap;
-
-        g_round(bx, by, w2, bh, 10, btn_color(b->kind), 255);
-        int lw = g_text_width(b->label, 2);
-        g_text(bx + (w2 - lw) / 2, by + (bh - 16) / 2, b->label, btn_text(b->kind), 2);
-
+        uint32_t fill, txt = 0xFFFFFF;
+        int active_op = (b->kind == 1 && calc.op == b->key && calc.fresh && !calc.error);
+        switch (b->kind) {
+        case 1: fill = active_op ? 0xFFFFFF : KEY_OP; txt = active_op ? KEY_OP : 0xFFFFFF; break;
+        case 2: fill = KEY_FUNC; txt = 0x000000; break;
+        case 3: fill = KEY_OP; break;
+        default: fill = KEY_DIGIT; break;
+        }
+        int hot = mx >= bx && mx < bx + w2 && my >= by && my < by + bh;
+        if (hot) fill = gfx_shade(fill, b->kind == 2 ? 112 : 125);
+        gfx_rrect(bx, by, w2, bh, bh / 2, fill, 255);
+        int face = b->kind == 0 ? FONT_REGULAR : FONT_MEDIUM;
+        int fs = (b->kind == 1 || b->kind == 3) ? 30 : (b->kind == 2 ? 20 : 26);
+        if (span == 2) {
+            int lw = font_width(face, fs, b->label, -1);
+            font_draw(face, fs, bx + bw / 2 - lw / 2, by + bh / 2 + font_capheight(face, fs) / 2, b->label, -1, txt, 255);
+        } else {
+            text_c(bx + w2 / 2, by + bh / 2, b->label, face, fs, txt);
+        }
         if (nchot < NBTN) {
             chots[nchot].x = bx - cx; chots[nchot].y = by - cy;
             chots[nchot].w = w2; chots[nchot].h = bh; chots[nchot].key = b->key;
             nchot++;
         }
-
         col += span;
         bx += w2 + gap;
         if (col >= cols) { col = 0; bx = x0; by += bh + gap; }
@@ -293,11 +310,12 @@ static void calc_key(window_t *w, char c) {
 
 void calc_app_init(void) {
     clear_all();
-    window_t *win = gui_add_window("Calculator", 300, 440, 0x34C759, ICON_CALC);
+    window_t *win = gui_add_window("Calculator", 304, 500, 0xFF9F0A, ICON_CALC);
     if (!win) return;
     win->draw  = calc_draw;
     win->click = calc_click;
     win->key   = calc_key;
-    win->min_w = 240; win->min_h = 360;
+    win->track_hover = 1;
+    win->min_w = 240; win->min_h = 400;
     win->x = 360; win->y = 120;
 }

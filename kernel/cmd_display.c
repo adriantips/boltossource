@@ -31,6 +31,15 @@ static void show(void) {
     kprintf("\n");
 
     kprintf("bright   %d%% (%s)\n", backlight_get(), backlight_name());
+    int fr, last, avg, worst;
+    gui_frame_stats(&fr, &last, &avg, &worst);
+    kprintf("frames   %d since last asked; last %d.%d ms, mean %d.%d ms, worst %d.%d ms\n",
+            fr, last / 10, last % 10, avg / 10, avg % 10, worst / 10, worst % 10);
+    int st[4], nd;
+    gui_frame_stages(st, &nd);
+    kprintf("worst    windows %d.%d, composite %d.%d, shell %d.%d, present %d.%d ms; %d rects\n",
+            st[0] / 10, st[0] % 10, st[1] / 10, st[1] % 10, st[2] / 10, st[2] % 10,
+            st[3] / 10, st[3] % 10, nd);
     kprintf("scales  ");
     for (int i = 0; i < settings_scale_count(); i++)
         kprintf(" %s%s", settings_scale_name(i), i == g_settings.scale_index ? "*" : "");
@@ -47,6 +56,8 @@ int cmd_display(int argc, char **argv) {
     }
 
     if (argc < 2) { show(); return 0; }
+
+    if (strcmp(argv[1], "bench") == 0) { gui_bench(); return 0; }
 
     if (strcmp(argv[1], "scale") == 0) {
         if (argc < 3) { kprintf("usage: display scale NAME   (e.g. 150%%, auto)\n"); return 1; }

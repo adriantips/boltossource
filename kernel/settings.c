@@ -9,49 +9,70 @@
 #include "gui.h"
 #include "pcspk.h"
 
-/* Live palette. Starts as the Midnight preset so any early COL_* read (before
- * settings_init) still produces a sane dark desktop. */
+/* Live palette. Starts as the Dark preset so any early COL_* read (before
+ * settings_init) still produces a sane desktop. */
 theme_t g_theme = {
-    .accent = 0x2D7FF9, .accent_dim = 0x1E5BB8,
-    .text   = 0xECECF0, .text_dim   = 0x9CA3AF,
-    .panel  = 0x1E1E27, .panel2     = 0x282833, .panel3 = 0x32323F,
-    .good   = 0x46D17B, .warn       = 0xF2C14E, .bad    = 0xE8506B,
+    .accent = 0x0A84FF, .accent_dim = 0x0A5BB8,
+    .text   = 0xF5F5F7, .text_dim   = 0xA1A1AA,
+    .panel  = 0x1E1E21, .panel2     = 0x2C2C30, .panel3 = 0x3C3C42,
+    .good   = 0x30D158, .warn       = 0xFFD60A, .bad    = 0xFF453A,
+    .dark = 1, .titlebar = 0x2A2A2E, .text_mute = 0x6E6E76, .sep = 0x0E0E10,
+    .glass = 0x1C1C22, .glass_a = 135, .sel = 0x0A84FF,
 };
 
 settings_t g_settings;
 
-/* ---- theme presets ------------------------------------------------------ */
+/* ---- theme presets ------------------------------------------------------ *
+ * Neutral greys first: a tinted window frame fights every app's own colours,
+ * and the glass picks the wallpaper's tint up on its own anyway. The window
+ * body is darkest, the title bar a step lighter, controls a step above that
+ * -- the same ladder macOS climbs, which is why it reads as depth. */
 static const theme_t presets[] = {
-    /* Midnight (default dark) */
-    { 0x2D7FF9, 0x1E5BB8, 0xECECF0, 0x9CA3AF, 0x1E1E27, 0x282833, 0x32323F,
-      0x46D17B, 0xF2C14E, 0xE8506B },
+    /* Dark */
+    { .accent = 0x0A84FF, .accent_dim = 0x0A5BB8, .text = 0xF5F5F7, .text_dim = 0xA1A1AA,
+      .panel = 0x1E1E21, .panel2 = 0x2C2C30, .panel3 = 0x3C3C42,
+      .good = 0x30D158, .warn = 0xFFD60A, .bad = 0xFF453A,
+      .dark = 1, .titlebar = 0x2A2A2E, .text_mute = 0x6E6E76, .sep = 0x0E0E10,
+      .glass = 0x1C1C22, .glass_a = 135, .sel = 0x0A84FF },
     /* Light */
-    { 0x2D7FF9, 0x9CC3FB, 0x1B1D24, 0x5C6270, 0xF3F4F8, 0xE5E7EF, 0xD3D6E1,
-      0x1E9E5A, 0xC98A12, 0xD23A57 },
-    /* Slate (cool grey-blue dark) */
-    { 0x4C8DFF, 0x2E5699, 0xE6E8EE, 0x8A93A6, 0x191B22, 0x232733, 0x2F3543,
-      0x4FD18A, 0xE9B84B, 0xE85D74 },
-    /* Forest (green dark) */
-    { 0x3DBB6E, 0x247046, 0xE8F0EA, 0x90A89A, 0x14201A, 0x1C2C24, 0x26392F,
-      0x6FE0A0, 0xE6C24A, 0xE06A6A },
-    /* Rose (magenta dark) */
-    { 0xE05A8A, 0x8C2F52, 0xF1E8EE, 0xB793A6, 0x1F1822, 0x2C2230, 0x392B3E,
-      0x5FD0C0, 0xF0B24A, 0xF06A8A },
+    { .accent = 0x007AFF, .accent_dim = 0x7DB7FF, .text = 0x1D1D1F, .text_dim = 0x6E6E73,
+      .panel = 0xF6F6F8, .panel2 = 0xFFFFFF, .panel3 = 0xE2E2E7,
+      .good = 0x248A3D, .warn = 0xC77C02, .bad = 0xE0352B,
+      .dark = 0, .titlebar = 0xECECEF, .text_mute = 0xA1A1A6, .sep = 0xD4D4D9,
+      .glass = 0xF2F2F6, .glass_a = 150, .sel = 0x007AFF },
+    /* Midnight: the dark ladder, pushed toward blue */
+    { .accent = 0x5E8BFF, .accent_dim = 0x3A5BB0, .text = 0xEEF1FA, .text_dim = 0x98A2BD,
+      .panel = 0x161A28, .panel2 = 0x1F2436, .panel3 = 0x2B3248,
+      .good = 0x4FD18A, .warn = 0xF2C14E, .bad = 0xFF5C6C,
+      .dark = 1, .titlebar = 0x1D2233, .text_mute = 0x5E6782, .sep = 0x0A0D16,
+      .glass = 0x141A2C, .glass_a = 140, .sel = 0x5E8BFF },
+    /* Graphite: no colour at all, accent included */
+    { .accent = 0x98989D, .accent_dim = 0x6E6E73, .text = 0xF2F2F2, .text_dim = 0xA0A0A3,
+      .panel = 0x232325, .panel2 = 0x2F2F32, .panel3 = 0x3F3F43,
+      .good = 0x30D158, .warn = 0xFFD60A, .bad = 0xFF453A,
+      .dark = 1, .titlebar = 0x303033, .text_mute = 0x6A6A6F, .sep = 0x111112,
+      .glass = 0x202022, .glass_a = 140, .sel = 0x98989D },
+    /* Sand: a warm light one */
+    { .accent = 0xD9822B, .accent_dim = 0xEBB27A, .text = 0x2B2620, .text_dim = 0x7A7064,
+      .panel = 0xF7F3EE, .panel2 = 0xFFFDFB, .panel3 = 0xE8E1D8,
+      .good = 0x3E8E41, .warn = 0xB7791F, .bad = 0xC8463B,
+      .dark = 0, .titlebar = 0xEFE8E0, .text_mute = 0xA89E92, .sep = 0xDDD3C7,
+      .glass = 0xF6F0E8, .glass_a = 150, .sel = 0xD9822B },
 };
-static const char *preset_names[] = { "Midnight", "Light", "Slate", "Forest", "Rose" };
+static const char *preset_names[] = { "Dark", "Light", "Midnight", "Graphite", "Sand" };
 #define NPRESET ((int)(sizeof(presets) / sizeof(presets[0])))
 
 /* ---- accent palette ----------------------------------------------------- */
 static const uint32_t accents[] = {
-    0x2D7FF9, 0x4C8DFF, 0x9B6CF2, 0xE05A8A, 0xE8506B,
-    0xF2884E, 0xF2C14E, 0x46D17B, 0x2BC4C4, 0xB0B6C2,
+    0x0A84FF, 0x5E5CE6, 0xBF5AF2, 0xFF375F, 0xFF453A,
+    0xFF9F0A, 0xFFCC00, 0x30D158, 0x40C8E0, 0x98989D,
 };
 #define NACCENT ((int)(sizeof(accents) / sizeof(accents[0])))
 
 /* ---- wallpaper base colours --------------------------------------------- */
 static const uint32_t wallcolors[] = {
-    0x0A1733, 0x101626, 0x1A2238, 0x12231C, 0x231423,
-    0x2A1A12, 0x14181C, 0x202024, 0x0C1414, 0x000000,
+    0x0B1A3A, 0x1A1440, 0x2A1236, 0x10283A, 0x0E2A22,
+    0x3A1E12, 0x16181D, 0x26262B, 0x0C1414, 0x000000,
 };
 #define NWALLC ((int)(sizeof(wallcolors) / sizeof(wallcolors[0])))
 
@@ -107,14 +128,15 @@ static const struct { const char *name; int num, den; } asp_tab[] = {
 /* ---- table accessors ---------------------------------------------------- */
 int         settings_theme_count(void)       { return NPRESET; }
 const char *settings_theme_name(int i)       { return (i >= 0 && i < NPRESET) ? preset_names[i] : ""; }
-uint32_t    settings_theme_accent(int i)     { return (i >= 0 && i < NPRESET) ? presets[i].accent : 0x2D7FF9; }
-uint32_t    settings_theme_swatch(int i)     { return (i >= 0 && i < NPRESET) ? presets[i].panel2 : 0x282833; }
+uint32_t    settings_theme_accent(int i)     { return (i >= 0 && i < NPRESET) ? presets[i].accent : 0x0A84FF; }
+uint32_t    settings_theme_swatch(int i)     { return (i >= 0 && i < NPRESET) ? presets[i].panel : 0x1E1E21; }
+const theme_t *settings_theme_preset(int i)  { return &presets[(i >= 0 && i < NPRESET) ? i : 0]; }
 
 int         settings_accent_count(void)      { return NACCENT; }
-uint32_t    settings_accent_color(int i)     { return (i >= 0 && i < NACCENT) ? accents[i] : 0x2D7FF9; }
+uint32_t    settings_accent_color(int i)     { return (i >= 0 && i < NACCENT) ? accents[i] : 0x0A84FF; }
 
 int         settings_wallcolor_count(void)   { return NWALLC; }
-uint32_t    settings_wallcolor(int i)        { return (i >= 0 && i < NWALLC) ? wallcolors[i] : 0x0A1733; }
+uint32_t    settings_wallcolor(int i)        { return (i >= 0 && i < NWALLC) ? wallcolors[i] : 0x0B1A3A; }
 
 const char *settings_wallstyle_name(int i)   { return (i >= 0 && i < WALL_COUNT) ? wallstyle_names[i] : ""; }
 
@@ -166,7 +188,7 @@ void settings_init(void) {
     g_settings.theme        = 0;
     g_settings.accent       = settings_theme_accent(0);
     g_settings.wall_style   = WALL_GRADIENT;
-    g_settings.wall_color   = 0x0A1733;
+    g_settings.wall_color   = 0x0B1A3A;
     g_settings.res_index    = 0;     /* 1024x768 boot default */
     g_settings.aspect_index = 0;     /* unused (kept for ABI) */
     g_settings.audio_device = 0;     /* PC Speaker */
@@ -182,6 +204,7 @@ void settings_apply(void) {
     /* user accent overrides the preset's; derive a dim variant for it */
     g_theme.accent     = g_settings.accent;
     g_theme.accent_dim = shade(g_settings.accent, 158);
+    g_theme.sel        = g_settings.accent;
     pcspk_set_enabled(g_settings.audio_device == 0);   /* PC Speaker vs Muted */
     g_set_font(g_settings.font);                        /* swap the GUI font face */
     gui_apply_display();             /* re-mode the panel + repaint if changed */

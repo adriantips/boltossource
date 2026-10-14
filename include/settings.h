@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include "gui.h"
 
 /* ===========================================================================
  *  BoltOS  -  include/settings.h
@@ -34,6 +35,7 @@ int         settings_theme_count(void);
 const char *settings_theme_name(int i);
 uint32_t    settings_theme_accent(int i);          /* preset's default accent  */
 uint32_t    settings_theme_swatch(int i);          /* representative chip color */
+const theme_t *settings_theme_preset(int i);       /* the whole palette, for previews */
 
 int         settings_accent_count(void);
 uint32_t    settings_accent_color(int i);
