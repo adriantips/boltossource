@@ -319,30 +319,46 @@ export const systems: System[] = [
     n: '07',
     title: 'The desktop',
     short: 'Desktop',
-    kicker: 'A compositing window manager, drawn one pixel at a time.',
+    kicker: 'A compositing window manager in liquid glass, drawn one pixel at a time.',
     intro:
-      'Windows that move, resize, snap and tile; four virtual desktops; a Start menu that searches your files as you type; notifications, quick settings, display scaling to 4K, screenshots, screen recording and a clipboard that carries pictures.',
+      'Windows that open, minimise and tile with an animation; a floating dock, a tray and a desktop switcher in frosted glass; Start with search; Quick Settings and a notification centre with a calendar; four virtual desktops, display scaling to 4K, screenshots, screen recording and a clipboard that carries pictures. All of it redrawn from scratch in October 2026.',
     shot: 'desktop',
     facts: [
       { k: 'Apps', v: '43' },
       { k: 'Desktops', v: '4 virtual' },
       { k: 'Scaling', v: '100 – 200 %' },
-      { k: 'Fonts', v: 'TrueType + bitmap' },
+      { k: 'Type', v: 'Inter + DejaVu Sans Mono' },
     ],
     sections: [
       {
         title: 'A compositor with no GPU to lean on',
         body: [
-          'Every window draws into a backbuffer through small vector helpers -- `g_fill`, `g_round`, `g_text`, `gui_icon` -- and the compositor flips the frame to the framebuffer. Text uses TrueType outlines from `kernel/ttf.c` alongside the built-in bitmap fonts. Each app is one `kernel/app_*.c` file exposing draw, key, click, drag and tick callbacks.',
+          'Every window renders into a surface of its own, and the compositor builds each frame from damage: only the rectangles that changed are recomposited and presented. That is what lets a window open, close, minimise and tile with an animation without its app drawing a single extra frame, and why moving the mouse costs two 32×32 copies instead of a recomposite. Each app is still one `kernel/app_*.c` file exposing draw, key, click, drag and tick callbacks.',
         ],
         shot: 'startmenu',
-        caption: 'Press Win and type. Apps filter as you type; from the second character, your files join in.',
+        caption: 'Press Win and type. A best match first, then apps, then your files.',
+      },
+      {
+        title: 'Glass that is cheap enough to use',
+        body: [
+          'The dock, the tray, Start, Quick Settings and the notification centre are frosted glass over whatever is behind them. The blurred backdrop is captured once -- a box filter that sums red and blue packed into one word -- stretched back to full size once, and every frame after that copies rows out of it. Under QEMU without acceleration a 640×620 panel now draws in 20 ms; it used to take 157.',
+          '`display bench` times every primitive inside the running machine, and `display` reports frame times and the worst frame since you last asked. That is how the glass got fast enough to keep.',
+        ],
+        shot: 'quicksettings',
+        caption: 'Quick Settings hangs off the tray: tiles, brightness, volume, and the Mixer.',
+      },
+      {
+        title: 'Real type, real icons',
+        body: [
+          'Interface text is Inter and the terminal is DejaVu Sans Mono. `kernel/font.c` rasterises each glyph from its outline by accumulating the exact area every edge covers in every pixel -- the font-rs method -- and kerns it, where the older `kernel/ttf.c` supersampled 4×4 and smeared. Inter is a variable font; `mkuifont.py` instances it at build time, because applying gvar deltas is not a kernel\'s job.',
+          'App icons are drawn as SVG in `mkicons.py` and rendered into atlases at 20, 40 and 48 pixels: the sizes the switcher, the dock and Start draw them, so none is scaled on the way to the screen. Under emulation eighteen scaled dock icons cost 23 ms against 8 for native ones.',
+        ],
       },
       {
         title: 'Snapping, tiling and four desktops',
         body: [
           'Drag a title bar to an edge for a half, to a corner for a quarter, to the top to maximise. The landing zone is drawn under the window while you hold the button. Win+arrow walks between zones from the keyboard. One function computes every zone\'s rectangle, which is why the preview and the placement agree -- they used to disagree by a pixel on odd widths.',
-          'A window on another desktop is not just unpainted: it is out of the taskbar, out of Alt+Tab and out of every hit test, so nothing you click or type can reach a window you cannot see.',
+          'A window on another desktop is not just unpainted: it is out of the dock, out of Alt+Tab and out of every hit test, so nothing you click or type can reach a window you cannot see.',
         ],
       },
       {
@@ -358,13 +374,19 @@ export const systems: System[] = [
         ],
       },
       {
+        title: 'Animations, and an honest Auto',
+        body: [
+          'Windows grow open, fly to the dock when you minimise them and slide between desktops; panels fade in. On a machine that draws slowly that is a slideshow, so Auto times a frame copy and an alpha fill at boot and turns motion off below a line. Under QEMU TCG the copy takes 7.1 ms; under WHPX, 0.3. Settings and `display motion auto|full|reduced` override it, and `display` says which it chose and why.',
+        ],
+      },
+      {
         title: 'Shortcuts are data, not code',
         body: [
           'Every global shortcut is a row in `kernel/keymap.c`. `keys lock Ctrl+Alt+K` rebinds one; changes live in `/etc/keys.conf`. A bare letter is refused, because binding `k` alone would take that letter away from every program.',
         ],
       },
     ],
-    source: ['kernel/gui.c', 'kernel/ttf.c', 'kernel/keymap.c', 'kernel/png_enc.c', 'kernel/clipboard.c', 'kernel/app_*.c'],
+    source: ['kernel/gui.c', 'kernel/gui_shell.c', 'kernel/gfx.c', 'kernel/font.c', 'kernel/ui.c', 'mkicons.py', 'kernel/keymap.c', 'kernel/png_enc.c', 'kernel/app_*.c'],
   },
   {
     slug: 'web',

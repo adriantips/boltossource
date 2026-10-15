@@ -95,7 +95,7 @@ export default function Apps() {
               An app is one <code className="inline-code">kernel/app_*.c</code> file that registers a window and five callbacks —
               <code className="inline-code">draw</code>, <code className="inline-code">key</code>, <code className="inline-code">click</code>,
               <code className="inline-code">drag</code> and <code className="inline-code">tick</code>. It draws with the compositor's vector helpers into a backbuffer;
-              the compositor handles focus, z-order, snapping, the taskbar and virtual desktops. Programs that should not live in the kernel
+              the compositor handles focus, z-order, snapping, the dock and virtual desktops. Programs that should not live in the kernel
               are built with the SDK instead and run in ring 3.
             </p>
             <pre className="overflow-x-auto rounded-xl border border-line bg-ash p-5 font-mono text-[12.5px] leading-[1.75] text-[#d4d4d4]">{`window_t *win = gui_add_window("Piano", 460, 300,

@@ -17,7 +17,7 @@ export default function Timeline() {
   return (
     <>
       <PageHero
-        eyebrow="June – September 2026"
+        eyebrow="June – October 2026"
         title={['From a boot', <>sector to <span className="serif-i text-smoke">this.</span></>]}
         intro="How BoltOS got here, from the oldest file in the tree to the current build. Commit messages are quoted exactly as they were written."
       />

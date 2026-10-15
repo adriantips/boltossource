@@ -18,14 +18,20 @@ export function pick(k: string, ...suffixes: string[]) {
 }
 
 const captions: Record<string, string> = {
-  desktop: 'The desktop at 1920×1080, with one wallpaper render per resolution.',
-  startmenu: 'The Start menu searches apps first, then your files.',
+  desktop: 'The glass desktop at 1920×1080: the dock in the middle, the desktop switcher on the left, the tray on the right.',
+  startmenu: 'Start: a pinned grid, All apps, and one box that searches apps, settings and files.',
+  quicksettings: 'Quick Settings: network, Focus, dark mode, mute, recording and a screenshot, with brightness and volume underneath.',
+  notifications: 'The notification centre, with a month calendar under it.',
+  panel_qs: 'Quick Settings, hung off the right edge of the tray.',
+  panel_nc: 'The notification centre: everything the machine has posted, and a calendar.',
+  panel_start: 'Start, in glass, with icons drawn at the size it shows them.',
+  lock: 'The lock screen. Ctrl+Alt+L, or ten idle minutes.',
   bootmenu: 'The boot menu: normal, safe mode, recovery shell, or a boot with fsck.',
   login: 'Signing in. Passwords are salted and stretched with PBKDF2.',
   terminal_sysinfo: 'Terminal: switching the panel to 1080p, then sysinfo.',
   terminal_ps: 'Terminal: the filesystem root and the process list.',
   files: 'File Explorer, in the signed-in user\'s home folder.',
-  settings: 'Settings.',
+  settings: 'Settings, rebuilt: themes, accent colours and wallpapers.',
   taskmgr: 'Task Manager, showing every process and thread.',
   sysinfo: 'System Info.',
   browser: 'The Browser rendering its welcome page with its own layout engine.',
@@ -36,10 +42,10 @@ const captions: Record<string, string> = {
   network: 'Network: the Wi-Fi picker, which says plainly when there is no radio to drive.',
   terminal_net: 'Terminal: netinfo and sysinfo, on a network DHCP configured at boot.',
   tiled: 'Four windows in four quarters, snapped with Win+arrow.',
-  startsearch: 'Start menu search, filtering as you type.',
+  startsearch: 'Start search: a best match, then apps, then files.',
   doom_play: 'DOOM E1M1, running in a maximised window.',
   strike_play: 'BoltStrike, in a round.',
-  media: 'Media, the WAV and MP3 player.',
+  media: 'Media, the WAV and MP3 player, rebuilt around an artwork tile and a level meter.',
   music: 'Music.',
   mixer: 'The mixer, with per-channel levels and real mutes.',
   photos: 'Photos.',
@@ -47,8 +53,8 @@ const captions: Record<string, string> = {
   notepad: 'Notepad.',
   sheets: 'Sheets, a spreadsheet.',
   calendar: 'Calendar.',
-  calc: 'Calculator.',
-  clock: 'Clock.',
+  calc: 'Calculator, rebuilt on the new control kit.',
+  clock: 'Clock: an analogue face with real numerals and an orange seconds hand.',
   logs: 'Logs: the kernel log, kept across reboots.',
   memory: 'Memory: physical frames, heap and swap.',
   contacts: 'Contacts.',
@@ -68,7 +74,7 @@ const captions: Record<string, string> = {
   installer: 'Install BoltOS: pick a disk, see the exact layout, then write it.',
   clipboard: 'Clipboard history.',
   colorpick: 'Color Picker.',
-  stopwatch: 'Stopwatch.',
+  stopwatch: 'Stopwatch, rebuilt so its digits stay off its buttons.',
   doom: 'DOOM, compiled from source into the kernel.',
   gameboy: 'The Game Boy emulator.',
   strike: 'BoltStrike: every texture and sound generated at startup.',
@@ -79,7 +85,27 @@ const captions: Record<string, string> = {
   legacy_nsrender: 'June 24, 2026: the NetSurf renderer at work.',
 }
 
-export function captionFor(k: string) {
+// What the September captures were captioned when they were current, for the
+// ones whose caption has since moved on to describe the glass desktop.
+const v1Captions: Record<string, string> = {
+  desktop: 'The desktop at 1920×1080, with one wallpaper render per resolution.',
+  startmenu: 'The Start menu searches apps first, then your files.',
+  startsearch: 'Start menu search, filtering as you type.',
+  settings: 'Settings.',
+  media: 'Media, the WAV and MP3 player.',
+  clock: 'Clock.',
+  calc: 'Calculator.',
+  stopwatch: 'Stopwatch.',
+}
+
+export function captionFor(k: string): string {
+  // v1_*: the same capture from the September desktop, before the revamp
+  if (k.startsWith('v1_')) {
+    const key = k.slice(3)
+    const old = v1Captions[key.replace(/_(max|win)$/, '')]
+    const c = old ? (key.endsWith('_max') ? old.replace(/\.$/, '') + ', maximised.' : old) : captionFor(key)
+    return `September 2026, before the revamp. ${c}`
+  }
   const base = k.replace(/_(max|win)$/, '')
   const c = captions[k] ?? captions[base] ?? k
   return k.endsWith('_max') && !captions[k] ? c.replace(/\.$/, '') + ', maximised.' : c

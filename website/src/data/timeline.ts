@@ -160,15 +160,43 @@ export const eras: Era[] = [
     ],
   },
   {
-    name: 'Now',
+    name: 'In public',
     range: 'September 2026',
-    blurb: 'Where it is today.',
+    blurb: 'A website, and a desktop that was about to be replaced.',
     items: [
       {
         date: 'Sep 23',
         title: 'boltos.dev',
-        body: 'This site. Every screenshot on it was taken from the current build, booted in QEMU at 1920×1080.',
+        body: 'This site goes up, with every screenshot taken from the build of the day. That desktop is now the Before the revamp set in the gallery.',
+        shot: 'v1_desktop',
+      },
+    ],
+  },
+  {
+    name: 'The huge UI revamp',
+    range: 'October 13 – 14, 2026',
+    blurb: 'The whole desktop, redrawn in liquid glass: thirteen commits, one evening and a day.',
+    items: [
+      {
+        date: 'Oct 13',
+        title: 'A desktop made of glass',
+        body: 'A new compositor that builds each frame from damage, and a new shell around it: a floating dock, a tray and a desktop switcher in blurred glass, Start with search, Quick Settings, a notification centre with a calendar, and traffic lights on every window. Text is Inter, rasterised from its outlines.',
+        commits: ['gui: a desktop made of glass, with real type and real icons'],
         shot: 'desktop',
+        tag: 'redesign',
+      },
+      {
+        date: 'Oct 14',
+        title: 'Fast enough to keep, and every app on it',
+        body: 'Glass becomes a copy instead of a stretch every frame, 157 ms to 20 under emulation. Icon atlases at the sizes the dock draws. Clock, Media, Mixer, Task Manager, Stopwatch and Software rebuilt; a dozen more fixed. Animations get an Auto that turns them off on a machine too slow to show them.',
+        commits: [
+          'gfx: glass is a copy now, not a stretch every frame',
+          'mem: the heap starts where the kernel ends, not at 16 MiB',
+          'apps: the older ones, on the new type and without the overlaps',
+          'gui: reduce motion, and Auto turns it on for a slow machine',
+          'iso: rebuilt for the finished glass desktop',
+        ],
+        shot: 'tiled',
       },
     ],
   },
