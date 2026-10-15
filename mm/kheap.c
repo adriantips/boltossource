@@ -3,11 +3,27 @@
 #include "pmm.h"
 #include "mm.h"
 #include "io.h"
+#include "kprintf.h"
 
-/* A first-fit heap over a fixed window starting at physical 16 MiB
- * (identity-mapped, reserved from the PMM). Sized at 96 MiB so the DOOM port
- * has room for its ~6 MiB zone, the 640x400 framebuffer and WAD lump cache on
- * top of the desktop's compositor buffers.
+/* A first-fit heap over one contiguous run of physical memory, taken from the
+ * PMM at boot. Sized at 96 MiB so the DOOM port has room for its ~6 MiB zone,
+ * the 640x400 framebuffer and WAD lump cache on top of the desktop's
+ * compositor buffers.
+ *
+ * It used to be a fixed window at 16 MiB, which was fine while the kernel was
+ * a few megabytes. Then the desktop embedded its fonts, icons and wallpapers,
+ * .bss crept up to meet it, and two things went wrong in order. First the PMM
+ * bitmap, which sits just past .bss and is 128 KiB on any machine with 4 GiB,
+ * began to overlap the heap's first pages -- nothing noticed, because the test
+ * VMs have 2 GiB and a 64 KiB bitmap. Then .bss itself crossed 16 MiB, the
+ * heap's first header landed on top of live kernel data, and the machine
+ * reset itself while seeding /bin with no message at all. vmm_init's page
+ * tables were one frame away from the same fate the whole time, since the PMM
+ * hands out the lowest free frame and they are taken before this runs.
+ *
+ * Asking the PMM for the run instead means the heap starts wherever the
+ * kernel, the bitmap and those page tables end, and can never overlap any of
+ * them however big the image gets.
  *
  * Two lists, not one. Every block, free or in use, is on a doubly-linked list
  * in address order, which is what makes a neighbour cheap to find and merge.
@@ -33,8 +49,8 @@
  * no spinlock is needed. Giving the APs work is the change that would need
  * one. The sections are short because coalescing keeps the free list short:
  * that is the other reason it matters. */
-#define KHEAP_START 0x1000000ull   /* 16 MiB */
-#define KHEAP_SIZE  0x6000000ull   /* 96 MiB */
+#define KHEAP_SIZE  0x6000000ull   /* 96 MiB, if there is a run that long  */
+#define KHEAP_MIN   0x2000000ull   /* below this, give up and say so       */
 
 /* The smallest payload worth leaving behind when a block is split. It is also
  * the smallest a free block may be, because a free block stores its free-list
@@ -55,6 +71,7 @@ typedef struct { struct block *prev, *next; } freelink;
 
 static block_t *head;              /* lowest-addressed block */
 static block_t *freehead;
+static uint64_t heap_base, heap_size;   /* physical, as the PMM gave it */
 static uint8_t *heap_lo;           /* the window itself, so kfree can tell a
                                     * pointer that came from here from one that
                                     * did not without depending on `head` still
@@ -63,6 +80,11 @@ static uint64_t g_failures, g_bad_frees;
 
 static freelink *fl(block_t *b)      { return (freelink *)((uint8_t *)b + sizeof(block_t)); }
 static void     *payload(block_t *b) { return (uint8_t *)b + sizeof(block_t); }
+
+void kheap_window(uint64_t *phys, uint64_t *bytes) {
+    if (phys) *phys = heap_base;
+    if (bytes) *bytes = heap_size;
+}
 
 static void fl_insert(block_t *b) {
     fl(b)->prev = 0;
@@ -77,10 +99,17 @@ static void fl_remove(block_t *b) {
 }
 
 void kheap_init(void) {
-    pmm_reserve_range(KHEAP_START, KHEAP_SIZE);
-    head = (block_t *)P2V(KHEAP_START);    /* direct map: valid under any CR3 */
+    /* Shrink in 16 MiB steps on a machine whose usable RAM is in pieces. */
+    heap_base = 0;
+    for (heap_size = KHEAP_SIZE; heap_size >= KHEAP_MIN; heap_size -= 0x1000000ull)
+        if ((heap_base = pmm_alloc_contig(heap_size / PAGE_SIZE)) != 0) break;
+    /* No 32 MiB run of free RAM anywhere below 4 GiB is not a machine this
+     * can run on, and saying so beats the old fixed window, which would
+     * now sit on top of the kernel. */
+    if (!heap_base) panic("kheap: no contiguous run of 32 MiB of free RAM");
+    head = (block_t *)P2V(heap_base);      /* direct map: valid under any CR3 */
     heap_lo = (uint8_t *)head;
-    head->size  = KHEAP_SIZE - sizeof(block_t);
+    head->size  = heap_size - sizeof(block_t);
     head->prev  = head->next = 0;
     head->free  = 1;
     head->magic = BLK_MAGIC;
@@ -108,7 +137,7 @@ void *kmalloc(uint64_t size) {
     /* The bound is tested before the round-up, which would otherwise wrap a
      * huge request into a small one and hand back a buffer that is nothing
      * like the size that was asked for. */
-    if (size <= KHEAP_SIZE) {
+    if (size <= heap_size) {
         size = (size + 15) & ~15ull;
         for (block_t *b = freehead; b; b = fl(b)->next) {
             if (b->size < size) continue;
@@ -138,7 +167,7 @@ static void merge_next(block_t *b) {
 void kfree(void *p) {
     if (!p) return;
     uint8_t *q = (uint8_t *)p;
-    if (q < heap_lo + sizeof(block_t) || q >= heap_lo + KHEAP_SIZE) {
+    if (q < heap_lo + sizeof(block_t) || q >= heap_lo + heap_size) {
         g_bad_frees++;
         return;
     }
@@ -209,7 +238,7 @@ int kheap_check(void) {
         span += b->size + sizeof(block_t);
         if (b->free) frees++;
     }
-    if (span != KHEAP_SIZE)                   KHEAP_BAD(-5);
+    if (span != heap_size)                    KHEAP_BAD(-5);
     uint32_t seen = 0;
     block_t *fprev = 0;
     for (block_t *b = freehead; b; fprev = b, b = fl(b)->next) {

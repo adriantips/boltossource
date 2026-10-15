@@ -371,7 +371,9 @@ void kmain(struct bootinfo *bi) {
 
     pmm_init(bi);
     vmm_init();   kprintf("[ok] VMM online (kernel PML4 @0x%lx)\n", vmm_kernel_pml4());
-    kheap_init(); kprintf("[ok] kernel heap online (96 MiB @ 16 MiB)\n");
+    kheap_init();
+    { uint64_t hb, hs; kheap_window(&hb, &hs);
+      kprintf("[ok] kernel heap online (%lu MiB @ 0x%lx)\n", hs >> 20, hb); }
     cpu_harden(); /* SMEP/UMIP supervisor protections where supported */
 
     /* VMM self-test: map a fresh user page in a scratch address space and read

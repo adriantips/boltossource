@@ -12,10 +12,12 @@
 #include <assert.h>
 #include <stdint.h>
 
-/* kheap.c reserves its window from the PMM and converts the physical base of
+/* kheap.c takes its window from the PMM and converts the physical base of
  * that window to a virtual address. Here the window is a plain host
  * allocation, so P2V is shadowed to point at it -- mm.h is included first so
- * its own definition is in place and complete before being replaced. */
+ * its own definition is in place and complete before being replaced. The PMM
+ * hands back 18 MiB, not the 16 the heap used to hard-code, so a heap that
+ * still assumed its old address would fall over here rather than at boot. */
 #include "mm.h"
 #include "pmm.h"
 #include "io.h"
@@ -27,7 +29,10 @@
 #define irq_restore(f) ((void)(f))
 static uint8_t *arena;
 static uint64_t arena_base;
+#define HOST_HEAP_BASE 0x1200000ull
 void pmm_reserve_range(uint64_t base, uint64_t len) { (void)base; (void)len; }
+uint64_t pmm_alloc_contig(uint64_t n) { (void)n; return HOST_HEAP_BASE; }
+void panic(const char *msg) { fprintf(stderr, "panic: %s\n", msg); abort(); }
 #define P2V(x) ((void *)(arena + ((uint64_t)(x) - arena_base)))
 
 #include "kheap.h"
@@ -39,7 +44,7 @@ static void heap_setup(void) {
         assert(arena);
         arena = (uint8_t *)(((uintptr_t)arena + 4095) & ~(uintptr_t)4095);
     }
-    arena_base = KHEAP_START;
+    arena_base = HOST_HEAP_BASE;
     kheap_init();
     assert(kheap_check() == 0);
 }
