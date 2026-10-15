@@ -21,6 +21,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "gui.h"
+#include "gfx.h"
+#include "font.h"
 #include "pkg.h"
 #include "notify.h"
 #include "string.h"
@@ -88,21 +90,20 @@ static void soft_draw(window_t *w, int cx, int cy, int cw, int ch) {
     for (int t = 0; t < 2; t++) {
         int x, y, bw, bh; tab_rect(cx, cy, t, &x, &y, &bw, &bh);
         int on = (st.tab == t);
-        g_round(x, y, bw, bh, 6, on ? COL_ACCENT : 0x22222E, 255);
+        g_round(x, y, bw, bh, 7, on ? COL_ACCENT : COL_PANEL_2, 255);
         const char *label = t == TAB_AVAILABLE ? "Available" : "Installed";
-        g_text(x + bw / 2 - g_text_width(label, 1) / 2, y + 7, label,
-               on ? 0xFFFFFF : COL_TEXT_DIM, 1);
+        text_c(x + bw / 2, y + bh / 2, label, on ? FONT_SEMIBOLD : FONT_MEDIUM, 12, on ? 0xFFFFFF : COL_TEXT_DIM);
     }
     { int x, y, bw, bh; refresh_rect(cx, cy, cw, &x, &y, &bw, &bh);
-      g_round(x, y, bw, bh, 6, 0x22222E, 255);
-      g_text(x + bw / 2 - g_text_width("Refresh", 1) / 2, y + 7, "Refresh", COL_TEXT_DIM, 1); }
+      g_round(x, y, bw, bh, 7, COL_PANEL_2, 255);
+      text_c(x + bw / 2, y + bh / 2, "Refresh", FONT_MEDIUM, 12, COL_TEXT); }
 
     /* the repository this is all coming from: worth seeing, because it is the
      * difference between installing off the disk and off the network. */
     char sub[140];
     snprintf(sub, sizeof sub, "%s", pkg_repo_in_use());
     g_text(cx + 14, cy + 48, sub, COL_TEXT_DIM, 1);
-    g_hline(cx + 12, cy + HEAD_H - 8, cw - 24, 0x2A2A38);
+    g_hline(cx + 12, cy + HEAD_H - 8, cw - 24, COL_SEP);
 
     if (st.status[0])
         g_text(cx + 14, cy + ch - 20, st.status,
@@ -129,32 +130,30 @@ static void soft_draw(window_t *w, int cx, int cy, int cw, int ch) {
         if (i >= st.n) break;
         pkg_entry *e = &st.list[i];
         int ry = top + r * ROW_H;
-        if (i == st.sel) g_round(cx + 8, ry + 2, cw - 16, ROW_H - 4, 7, 0x1F1F2B, 255);
+        if (i == st.sel) gfx_rrect(cx + 8, ry + 2, cw - 16, ROW_H - 4, 9, THEME_DARK ? 0xFFFFFF : 0x000000,
+                                   THEME_DARK ? 12 : 8);
 
-        g_text(cx + 18, ry + 8, e->name, COL_TEXT, 1);
-        int nx = cx + 18 + g_text_width(e->name, 1) + 10;
-        g_text(nx, ry + 8, e->version, COL_TEXT_DIM, 1);
-        nx += g_text_width(e->version, 1) + 10;
-        g_round(nx, ry + 7, g_text_width(e->kind, 1) + 10, 14, 4, 0x2A2A38, 255);
-        g_text(nx + 5, ry + 8, e->kind, COL_TEXT_DIM, 1);
+        int nx = cx + 18;
+        nx += font_draw(FONT_SEMIBOLD, 13, nx, ry + 20, e->name, -1, COL_TEXT, 255) + 8;
+        nx += font_draw(FONT_REGULAR, 12, nx, ry + 20, e->version, -1, COL_TEXT_DIM, 255) + 8;
+        int kw = font_width(FONT_MEDIUM, 11, e->kind, -1) + 12;
+        gfx_rrect(nx, ry + 8, kw, 17, 8, COL_ACCENT, THEME_DARK ? 40 : 30);
+        text_c(nx + kw / 2, ry + 16, e->kind, FONT_MEDIUM, 11, COL_ACCENT);
 
         /* the summary, trimmed to what is left after the button */
-        int room = (cw - BTN_W - 44 - 18) / 8;
-        char line[80];
-        int k = 0;
-        for (; e->summary[k] && k < room && k < (int)sizeof(line) - 1; k++) line[k] = e->summary[k];
-        if (e->summary[k] && k > 3) { k -= 3; line[k++] = '.'; line[k++] = '.'; line[k++] = '.'; }
-        line[k] = 0;
-        g_text(cx + 18, ry + 28, line, COL_TEXT_DIM, 1);
+        text_fit_l(cx + 18, ry + 37, e->summary, cw - BTN_W - 44 - 18, FONT_REGULAR, 12, COL_TEXT_DIM);
 
         int bx, by, bw, bh; row_btn_rect(cx, cw, ry, &bx, &by, &bw, &bh);
         int busy = st.job && strcmp(st.job_name, e->name) == 0;
-        const char *label = busy ? "..." : e->installed ? "Remove" : "Install";
-        uint32_t fill = busy ? 0x3A3A22 : e->installed ? 0x33222A : 0x1F3320;
-        uint32_t ink  = busy ? COL_WARN : e->installed ? COL_BAD : COL_GOOD;
-        g_round(bx, by, bw, bh, 6, fill, 255);
-        g_rect(bx, by, bw, bh, ink);
-        g_text(bx + bw / 2 - g_text_width(label, 1) / 2, by + 7, label, ink, 1);
+        const char *label = busy ? "Working" TXT_ELLIPSIS : e->installed ? "Remove" : "Install";
+        /* Install is the thing you came for, so it is the filled one */
+        if (!busy && !e->installed) {
+            gfx_rrect(bx, by, bw, bh, bh / 2, COL_ACCENT, 255);
+            text_c(bx + bw / 2, by + bh / 2, label, FONT_SEMIBOLD, 12, 0xFFFFFF);
+        } else {
+            gfx_rrect(bx, by, bw, bh, bh / 2, THEME_DARK ? 0xFFFFFF : 0x000000, THEME_DARK ? 22 : 14);
+            text_c(bx + bw / 2, by + bh / 2, label, FONT_SEMIBOLD, 12, busy ? COL_WARN : COL_BAD);
+        }
     }
 
     if (st.n > st.rows) {

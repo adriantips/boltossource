@@ -523,6 +523,10 @@ void g_set_font(int face) {
 }
 int g_get_font(void) { return g_face; }
 int g_font_height(int scale) { return (g_face == FONT_RETRO ? 8 : 16) * scale; }
+/* Two pixels under the baseline. The browser had 8 * scale + 1 written in,
+ * which is right for the 8x8 face and straight through the x-height of
+ * every other one -- links came out struck through. */
+int g_underline_y(int scale) { return g_face == FONT_RETRO ? 8 * scale + 1 : 12 * scale + 2; }
 
 static int legacy_retro(void) { return g_face == FONT_RETRO || !fonts_ok; }
 

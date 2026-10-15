@@ -6,6 +6,9 @@
  * ===========================================================================*/
 #include <stdint.h>
 #include "gui.h"
+#include "gfx.h"
+#include "font.h"
+#include "icons.h"
 #include "hw.h"
 #include "fs.h"
 #include "pit.h"
@@ -132,13 +135,14 @@ static void cal_draw(window_t *w, int cx, int cy, int cw, int ch) {
     kstrlcat(title, " ", sizeof(title));
     char yb[8]; sh_utoa((uint64_t)cal.year, yb);
     kstrlcat(title, yb, sizeof(title));
-    int tw = g_text_width(title, 2);
-    g_text(cx + (cw - tw) / 2, y, title, COL_TEXT, 2);
+    text_c(cx + cw / 2, y + 9, title, FONT_SEMIBOLD, 20, COL_TEXT);
 
     /* nav arrows */
     int aw = 28, ay = y - 4;
-    g_round(x0, ay, aw, 26, 6, COL_PANEL_3, 255);          g_text(x0 + 10, y, "<", COL_TEXT, 2);
-    g_round(cx + cw - pad - aw, ay, aw, 26, 6, COL_PANEL_3, 255); g_text(cx + cw - pad - aw + 9, y, ">", COL_TEXT, 2);
+    g_round(x0, ay, aw, 26, 8, COL_PANEL_3, 255);
+    glyph_draw_c(GLYPH_CHEV_L, x0 + aw / 2, ay + 13, 18, COL_TEXT, 255);
+    g_round(cx + cw - pad - aw, ay, aw, 26, 8, COL_PANEL_3, 255);
+    glyph_draw_c(GLYPH_CHEV_R, cx + cw - pad - aw / 2, ay + 13, 18, COL_TEXT, 255);
     chots[0].x = x0 - cx; chots[0].y = ay - cy; chots[0].w = aw; chots[0].h = 26; chots[0].d = -1;
     chots[1].x = (cx + cw - pad - aw) - cx; chots[1].y = ay - cy; chots[1].w = aw; chots[1].h = 26; chots[1].d = +1;
     nchot = 2;
@@ -207,8 +211,8 @@ static void cal_draw(window_t *w, int cx, int cy, int cw, int ch) {
     /* "Add event" button on the right */
     add_bw = g_text_width("+ Add event", 1) + 16; add_bh = 20;
     int abx = cx + cw - pad - add_bw, aby = py - 4;
-    g_round(abx, aby, add_bw, add_bh, 5, COL_ACCENT, 255);
-    g_text(abx + 8, aby + 5, "+ Add event", 0xFFFFFF, 1);
+    g_round(abx, aby, add_bw, add_bh, 6, COL_ACCENT, 255);
+    text_c(abx + add_bw / 2, aby + add_bh / 2, "+ Add event", FONT_MEDIUM, 12, 0xFFFFFF);
     add_bx = abx - cx; add_by = aby - cy;
     /* list this day's events */
     int ey = py + 18, shown = 0;

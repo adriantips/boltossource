@@ -21,6 +21,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "gui.h"
+#include "font.h"
 #include "framebuffer.h"
 #include "png_enc.h"
 #include "screenshot.h"
@@ -197,8 +198,9 @@ static void do_save(void) {
 
 /* ------------------------------------------------------------- drawing ---- */
 static void btn(int x, int y, int w, int h, const char *label, uint32_t bg, uint32_t fg) {
-    g_round(x, y, w, h, 6, bg, 255);
-    g_text(x + (w - g_text_width(label, 1)) / 2, y + (h - 8) / 2, label, fg, 1);
+    g_round(x, y, w, h, 7, bg, 255);
+    /* centred on the caps, not on an 8 px glyph box this was written for */
+    text_c(x + w / 2, y + h / 2, label, FONT_MEDIUM, 12, fg);
 }
 
 /* toolbar geometry, shared by the draw and the hit test so they cannot drift */
@@ -237,12 +239,12 @@ static void snip_draw(window_t *w, int cx, int cy, int cw, int ch) {
     if (!S.shot) {
         const char *l1 = "Press New to capture the screen.";
         const char *l2 = "Then drag on the picture to crop it.";
-        g_text(ax + (aw - g_text_width(l1, 1)) / 2, ay + ah / 2 - 14, l1, COL_TEXT_DIM, 1);
-        g_text(ax + (aw - g_text_width(l2, 1)) / 2, ay + ah / 2 + 2, l2, COL_TEXT_DIM, 1);
+        text_c(ax + aw / 2, ay + ah / 2 - 9, l1, FONT_MEDIUM, 13, COL_TEXT_DIM);
+        text_c(ax + aw / 2, ay + ah / 2 + 11, l2, FONT_REGULAR, 13, COL_TEXT_MUTE);
         S.vw = S.vh = 0;
         /* Not a return: the footer carries the status line, and "no panel to
          * capture" is exactly the message you need when there is no picture. */
-        g_text(cx + 12, cy + ch - 22, S.status, COL_TEXT_DIM, 1);
+        text_l(cx + 12, cy + ch - FOOT_H / 2, S.status, FONT_REGULAR, 12, COL_TEXT_DIM);
         return;
     }
 
@@ -283,8 +285,8 @@ static void snip_draw(window_t *w, int cx, int cy, int cw, int ch) {
     char dim[48];
     snprintf(dim, sizeof dim, "%d x %d%s", sw, sh,
              (S.sw >= 4 && S.sh >= 4) ? "  selection" : "  whole screen");
-    g_text(cx + 12, cy + ch - 22, S.status, COL_TEXT_DIM, 1);
-    g_text(cx + cw - 12 - g_text_width(dim, 1), cy + ch - 22, dim, COL_TEXT, 1);
+    text_l(cx + 12, cy + ch - FOOT_H / 2, S.status, FONT_REGULAR, 12, COL_TEXT_DIM);
+    text_r(cx + cw - 12, cy + ch - FOOT_H / 2, dim, FONT_MEDIUM, 12, COL_TEXT);
 }
 
 /* --------------------------------------------------------------- input ---- */

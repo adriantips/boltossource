@@ -13,6 +13,8 @@
  * ===========================================================================*/
 #include <stdint.h>
 #include "gui.h"
+#include "gfx.h"
+#include "font.h"
 #include "mixer.h"
 #include "audio.h"
 #include "keyboard.h"
@@ -20,11 +22,12 @@
 #include "stdio.h"
 
 #define PAD      18
-#define HEAD_H   58
+#define HEAD_H   72
 #define FADER_W  16
 #define METER_W  7
-#define MUTE_H   22
-#define FOOT_H   46
+#define MUTE_H   26
+#define BELOW_H  (10 + MUTE_H + 44)   /* button, label, level -- under a fader */
+#define FOOT_H   42
 
 static window_t *win;
 static int grabbed = -1;       /* the fader the mouse is dragging, -1 for none */
@@ -47,14 +50,16 @@ static void fader_rect(int c, int cx, int cy, int cw, int ch, int *x, int *y, in
     *w = FADER_W;
     *x = colx + colw / 2 - (FADER_W + 6 + METER_W) / 2;
     *y = cy + HEAD_H;
-    *h = ch - HEAD_H - MUTE_H - FOOT_H;
+    *h = ch - HEAD_H - BELOW_H - FOOT_H;
     if (*h < 40) *h = 40;
 }
 
 /* ---------------------------------------------------------------- drawing -- */
 
+static int imin_(int a, int b) { return a < b ? a : b; }
+
 static void draw_meter(int x, int y, int h, int peak, uint32_t col) {
-    g_round(x, y, METER_W, h, 3, 0x1A1A24, 255);
+    gfx_rrect(x, y, METER_W, h, 3, THEME_DARK ? 0x000000 : 0x000000, THEME_DARK ? 70 : 18);
     int lit = h * peak / 100;
     if (lit < 1 && peak > 0) lit = 1;
     /* Filled from the bottom, and red over the top fifth -- a meter that is
@@ -63,19 +68,19 @@ static void draw_meter(int x, int y, int h, int peak, uint32_t col) {
         int yy = y + h - 1 - i;
         int frac = i * 100 / (h > 0 ? h : 1);
         uint32_t c = frac > 85 ? COL_BAD : (frac > 65 ? COL_WARN : col);
-        g_fill(x + 1, yy, METER_W - 2, 1, c);
+        gfx_fill(x + 1, yy, METER_W - 2, 1, c);
     }
 }
 
 static void mixer_draw(window_t *w, int cx, int cy, int cw, int ch) {
     (void)w;
-    g_fill(cx, cy, cw, ch, COL_PANEL);
+    gfx_fill(cx, cy, cw, ch, COL_PANEL);
 
-    g_text(cx + PAD, cy + 14, "Volume mixer", COL_TEXT, 2);
+    text_l(cx + PAD, cy + 28, "Volume mixer", FONT_BOLD, 20, COL_TEXT);
     char sub[72];
     snprintf(sub, sizeof sub, "%s%s", audio_name(),
-             audio_pcm_ok() ? "" : "  (tones only -- no PCM codec)");
-    g_text(cx + PAD, cy + 36, sub, COL_TEXT_DIM, 1);
+             audio_pcm_ok() ? "" : "  " TXT_EMDASH " tones only, no PCM codec");
+    text_l(cx + PAD, cy + 50, sub, FONT_REGULAR, 12, COL_TEXT_DIM);
 
     for (int c = 0; c < mixer_count(); c++) {
         int colx, colw;
@@ -94,18 +99,20 @@ static void mixer_draw(window_t *w, int cx, int cy, int cw, int ch) {
          * (a ring) and which channel currently owns the codec (a dot over its
          * label). They are usually not the same channel. */
         if (c == sel)
-            g_round(colx + 2, fy - 6, colw - 4, fh + MUTE_H + 14, 8, 0x22222E, 255);
+            gfx_rrect(colx + 4, fy - 10, colw - 8, fh + BELOW_H + 6, 12, THEME_DARK ? 0xFFFFFF : 0x000000,
+                      THEME_DARK ? 12 : 9);
         if (c == mixer_active() && !mixer_is_input(c))
-            g_round(colx + colw / 2 - 2, fy - 12, 4, 4, 2, COL_GOOD, 255);
+            gfx_circle((float)(colx + colw / 2), (float)(fy - 4) - 0.5f, 2.5f, COL_GOOD, 255);
 
         /* track, then the filled part, then the cap */
-        g_round(fx, fy, fw, fh, FADER_W / 2, 0x2C2C38, 255);
+        gfx_rrect(fx, fy, fw, fh, FADER_W / 2, THEME_DARK ? 0xFFFFFF : 0x000000, THEME_DARK ? 22 : 16);
         int fill = fh * vol / 100;
         if (fill > 0)
-            g_round(fx, fy + fh - fill, fw, fill, FADER_W / 2, col, 255);
-        int capy = fy + fh - fill - 5;
-        if (capy < fy - 5) capy = fy - 5;
-        g_round(fx - 4, capy, fw + 8, 11, 5, muted ? 0x6A6A78 : COL_TEXT, 255);
+            gfx_rrect(fx, fy + fh - fill, fw, fill, FADER_W / 2, col, 255);
+        int capy = fy + fh - fill - 6;
+        if (capy < fy - 6) capy = fy - 6;
+        gfx_shadow(fx - 5, capy, fw + 10, 12, 6, 4, 1, 0, 70);
+        gfx_rrect(fx - 5, capy, fw + 10, 12, 6, muted ? 0x8E8E93 : 0xFFFFFF, 255);
 
         draw_meter(fx + fw + 6, fy, fh, mixer_peak(c), COL_GOOD);
 
@@ -113,36 +120,36 @@ static void mixer_draw(window_t *w, int cx, int cy, int cw, int ch) {
          * mute; on the input it is a monitor, because a microphone's meter
          * only means anything while the ring is actually open and holding it
          * open costs a running DMA engine. */
-        int my = fy + fh + 8;
+        int my = fy + fh + 10;
         int monitoring = mixer_is_input(c) && audio_capture_active();
-        uint32_t bg = mixer_is_input(c) ? (monitoring ? COL_GOOD : COL_PANEL_3)
-                                        : (muted ? COL_BAD : COL_PANEL_3);
+        int lit = monitoring || (!mixer_is_input(c) && muted);
+        uint32_t bg = mixer_is_input(c) ? COL_GOOD : COL_BAD;
         const char *ml = mixer_is_input(c) ? (monitoring ? "Listening" : "Listen")
                                            : (muted ? "Muted" : "Mute");
-        g_round(colx + 6, my, colw - 12, MUTE_H - 4, 6, bg, 255);
-        g_text(colx + colw / 2 - g_text_width(ml, 1) / 2, my + 5, ml,
-               (monitoring || (!mixer_is_input(c) && muted)) ? 0xFFFFFF : COL_TEXT_DIM, 1);
+        int bw = colw - 16 < 76 ? colw - 16 : 76;
+        if (lit) gfx_rrect(colx + colw / 2 - bw / 2, my, bw, MUTE_H, 8, bg, 255);
+        else     gfx_rrect(colx + colw / 2 - bw / 2, my, bw, MUTE_H, 8, THEME_DARK ? 0xFFFFFF : 0x000000,
+                           THEME_DARK ? 22 : 14);
+        text_c(colx + colw / 2, my + MUTE_H / 2, ml, FONT_MEDIUM, 12, lit ? 0xFFFFFF : COL_TEXT);
 
         /* label + the number, under everything */
-        int ly = my + MUTE_H + 4;
+        int ly = my + MUTE_H + 16;
         const char *lab = mixer_label(c);
-        g_text(colx + colw / 2 - g_text_width(lab, 1) / 2, ly, lab,
-               c == MIX_MASTER ? COL_TEXT : COL_TEXT_DIM, 1);
+        text_c(colx + colw / 2, ly, lab, c == MIX_MASTER ? FONT_SEMIBOLD : FONT_MEDIUM, 13,
+               c == MIX_MASTER ? COL_TEXT : COL_TEXT_DIM);
         char pct[20];
         if (mixer_is_input(c))
             snprintf(pct, sizeof pct, "%s", audio_capture_ok() ? audio_capture_name() : "none");
         else if (c == MIX_MASTER) snprintf(pct, sizeof pct, "%d%%", vol);
         else snprintf(pct, sizeof pct, "%d%% (%d)", vol, eff);   /* what the codec gets */
-        g_text(colx + colw / 2 - g_text_width(pct, 1) / 2, ly + 14, pct,
-               muted ? COL_BAD : COL_TEXT_DIM, 1);
+        font_draw_fit(FONT_REGULAR, 11, colx + colw / 2 - imin_(font_width(FONT_REGULAR, 11, pct, -1), colw - 8) / 2,
+                      ly + 22, pct, colw - 8, muted ? COL_BAD : COL_TEXT_MUTE, 255);
     }
 
-    g_text(cx + PAD, cy + ch - 28,
-           "Drag a fader or click the track. Arrows move the selected one, M mutes,",
-           COL_TEXT_DIM, 1);
-    g_text(cx + PAD, cy + ch - 14,
-           "R restores the defaults. Levels are kept in /etc/mixer.conf.",
-           COL_TEXT_DIM, 1);
+    text_wrap(cx + PAD, cy + ch - FOOT_H + 4, cw - 2 * PAD,
+              "Drag a fader or click its track. Arrows move the selected one, M mutes, "
+              "R restores the defaults. Levels are kept in /etc/mixer.conf.",
+              FONT_REGULAR, 11, 15, 2, COL_TEXT_MUTE);
 }
 
 /* ----------------------------------------------------------------- input --- */
@@ -179,6 +186,10 @@ static void mixer_click(window_t *w, int lx, int ly) {
     (void)w;
     grabbed = -1;
     int cx = last_cx, cy = last_cy, cw = last_cw, ch = last_ch;
+    /* Clicks arrive relative to the client area and the layout is in desktop
+     * coordinates. This compared one with the other for years, so the faders
+     * only answered with the window parked in the top-left corner. */
+    lx += cx; ly += cy;
     for (int c = 0; c < mixer_count(); c++) {
         int colx, colw;
         column(c, cx, cw, &colx, &colw);
@@ -202,14 +213,14 @@ static void mixer_click(window_t *w, int lx, int ly) {
         break;
     }
     mixer_save();
-    gui_request_redraw();
+    gui_redraw_window(win);
 }
 
 static void mixer_drag(window_t *w, int lx, int ly) {
     (void)w; (void)lx;
     if (grabbed < 0) return;
-    set_from_y(grabbed, ly, last_cy, last_ch, last_cw, last_cx);
-    gui_request_redraw();
+    set_from_y(grabbed, ly + last_cy, last_cy, last_ch, last_cw, last_cx);
+    gui_redraw_window(win);
 }
 
 /* The wheel moves the selected column in fives -- the step the tray slider and
@@ -221,7 +232,7 @@ static void mixer_scroll(window_t *w, int delta) {
     mixer_set_volume(sel, mixer_volume(sel) + delta * 5);
     gain_changed(sel);
     mixer_save();
-    gui_request_redraw();
+    gui_redraw_window(win);
 }
 
 static void mixer_key(window_t *w, char c) {
@@ -242,7 +253,7 @@ static void mixer_key(window_t *w, char c) {
     }
     gain_changed(sel);
     mixer_save();
-    gui_request_redraw();
+    gui_redraw_window(win);
 }
 
 /* The meters only mean anything if they are repainted while sound is playing,
@@ -250,7 +261,7 @@ static void mixer_key(window_t *w, char c) {
 static void mixer_tick(window_t *w) {
     if (w && !w->open && audio_capture_active()) audio_capture_close();
     audio_capture_pump();          /* no-op unless the input is open */
-    if (mixer_peak(MIX_MASTER) > 0 || audio_capture_active()) gui_request_redraw();
+    if (mixer_peak(MIX_MASTER) > 0 || audio_capture_active()) gui_redraw_window(w);
 }
 
 /* draw() is the only callback given the client rect, so it stashes it. */
@@ -260,7 +271,7 @@ static void mixer_draw_wrap(window_t *w, int cx, int cy, int cw, int ch) {
 }
 
 void mixer_app_init(void) {
-    win = gui_add_window("Mixer", 460, 400, 0x9B6CF2, ICON_MIXER);
+    win = gui_add_window("Mixer", 480, 460, 0x9B6CF2, ICON_MIXER);
     if (!win) return;
     win->draw   = mixer_draw_wrap;
     win->click  = mixer_click;
@@ -268,8 +279,9 @@ void mixer_app_init(void) {
     win->scroll = mixer_scroll;
     win->key    = mixer_key;
     win->tick   = mixer_tick;
+    win->lazy_tick = 1;          /* mixer_tick asks while a meter moves */
     win->min_w  = 400;
-    win->min_h  = 320;
+    win->min_h  = 400;
     win->x = 300; win->y = 110;
 }
 

@@ -43,6 +43,9 @@
  * ===========================================================================*/
 #include <stdint.h>
 #include "gui.h"
+#include "gfx.h"
+#include "font.h"
+#include "icons.h"
 #include "audio.h"
 #include "mixer.h"
 #include "sound.h"
@@ -379,7 +382,7 @@ static void open_path(const char *path, int focus) {
         }
     }
     if (win) { if (focus) gui_open(win); else gui_show_unfocused(win); }
-    gui_request_redraw();
+    gui_redraw_window(win);
 }
 
 /* Opened from the desktop -- a double-click in File Explorer -- so the player
@@ -435,7 +438,7 @@ void media_seek_ms(uint32_t ms) {
      * out first is exactly the lag that makes a seek bar feel broken. */
     release_device();
     if (playing && !prime_chunk()) playing = 0;
-    gui_request_redraw();
+    gui_redraw_window(win);
 }
 
 /* Where the sound is, not where the decoder is: the decode cursor runs up to
@@ -478,7 +481,7 @@ static hot_t hots[PLMAX + 12];
 static int   nhot, ox, oy;
 static int   grab;                    /* H_SEEK / H_VOL while a drag is in flight */
 static int   list_y, list_rows = 1;
-static const int row_h = 24;
+static const int row_h = 30;
 
 static void reg(int x, int y, int w, int h, int id) {
     if (nhot < (int)(sizeof hots / sizeof hots[0])) {
@@ -489,16 +492,18 @@ static void reg(int x, int y, int w, int h, int id) {
     }
 }
 
-static int button(int x, int y, const char *label, int id, uint32_t bg, uint32_t fg) {
-    int w = g_text_width(label, 1) + 20, h = 26;
-    g_round(x, y, w, h, 6, bg, 255);
-    g_text(x + 10, y + (h - 8) / 2, label, fg, 1);
-    reg(x, y, w, h, id);
-    return w;
+/* A glyph on a quiet disc: the transport's secondary buttons. `on` is for
+ * the toggles (repeat), which tint themselves rather than change shape. */
+static void icon_btn(int x, int y, int r, int glyph, int gsz, int id, int on) {
+    gfx_circle((float)x, (float)y, (float)r, on ? COL_ACCENT : (THEME_DARK ? 0xFFFFFF : 0x000000),
+               on ? 46 : (THEME_DARK ? 14 : 10));
+    glyph_draw_c(glyph, x, y, gsz, on ? COL_ACCENT : COL_TEXT, 255);
+    reg(x - r, y - r, 2 * r, 2 * r, id);
 }
 
 static void draw_meter(int x, int y, int w, int h) {
-    g_fill(x, y, w, h, 0x12121A);
+    gfx_rrect(x, y, w, h, 10, 0x000000, THEME_DARK ? 70 : 14);
+    x += 10; w -= 20;
     int bw = 4, gap = 2, n = w / (bw + gap);
     if (n > PEAKS) n = PEAKS;
 
@@ -514,88 +519,108 @@ static void draw_meter(int x, int y, int w, int h) {
         if (cur > peak_head) cur = peak_head;
     }
 
+    int mid = y + h / 2;
     for (int i = 0; i < n; i++) {
         int32_t slot = (int32_t)cur - (n - i);
         int lvl = 0;
         if (slot >= 0 && (uint32_t)slot + PEAKS > peak_head) lvl = peaks[(uint32_t)slot % PEAKS];
-        int bh = lvl * (h - 4) / 255;
+        /* mirrored about the middle, the way every player draws a waveform */
+        int bh = lvl * (h - 12) / 255;
         int bx = x + i * (bw + gap);
-        if (bh < 2) { g_fill(bx, y + h - 3, bw, 1, 0x2A2A3A); continue; }
-        g_fill(bx, y + h - 2 - bh, bw, bh, lvl > 200 ? COL_WARN : COL_ACCENT);
+        if (bh < 2) { gfx_fill(bx, mid, bw, 1, THEME_DARK ? 0x3A3A44 : 0xC7C7CC); continue; }
+        gfx_rrect(bx, mid - bh / 2, bw, bh, 2, lvl > 200 ? COL_WARN : COL_ACCENT, 255);
     }
 }
 
+/* y is the centre line. The hot strip is wider than the bar by the knob's
+ * radius each side, which set_from_slider() takes back off. */
 static void draw_slider(int x, int y, int w, int pct, int id, uint32_t fill) {
-    g_round(x, y, w, 6, 3, 0x33333F, 255);
-    if (pct > 0) g_round(x, y, w * pct / 100, 6, 3, fill, 255);
-    g_round(x + w * pct / 100 - 4, y - 4, 9, 14, 4, COL_TEXT, 255);
-    reg(x - 6, y - 8, w + 12, 22, id);
+    gfx_rrect(x, y - 2, w, 4, 2, THEME_DARK ? 0xFFFFFF : 0x000000, THEME_DARK ? 36 : 22);
+    int fw = w * pct / 100;
+    if (fw > 0) gfx_rrect(x, y - 2, fw, 4, 2, fill, 255);
+    gfx_shadow(x + fw - 6, y - 6, 12, 12, 6, 4, 1, 0, 70);
+    gfx_circle((float)(x + fw), (float)y, 6.5f, 0xFFFFFF, 255);
+    gfx_ring((float)(x + fw), (float)y, 6.5f, 1.0f, 0x000000, 30);
+    reg(x - 6, y - 10, w + 12, 20, id);
 }
 
 static void media_draw(window_t *w, int cx, int cy, int cw, int ch) {
     (void)w;
     nhot = 0; ox = cx; oy = cy;
-    g_fill(cx, cy, cw, ch, 0x0E0E16);
+    gfx_fill(cx, cy, cw, ch, COL_PANEL);
+    int pad = 20, y = cy + 18;
 
-    int y = cy + 12;
-    g_text(cx + 16, y, have ? name : "Nothing playing", COL_TEXT, 2);
-    y += 26;
+    /* the artwork: a WAV has none and nothing here reads ID3 tags, so it is
+     * the accent colour and a note, which is what every player shows anyway */
+    int art = 72;
+    gfx_shadow(cx + pad, y, art, art, 14, 12, 4, 0, THEME_DARK ? 110 : 50);
+    gfx_rrect_vgrad(cx + pad, y, art, art, 14, gfx_lerp(COL_ACCENT, 0xFFFFFF, 28, 100),
+                    gfx_lerp(COL_ACCENT, 0x000000, 30, 100), 255);
+    glyph_draw_c(GLYPH_MUSIC, cx + pad + art / 2, y + art / 2, 32, 0xFFFFFF, 240);
 
+    int tx = cx + pad + art + 16, tw = cx + cw - pad - tx;
+    text_fit_l(tx, y + 22, have ? name : "Nothing playing", tw, FONT_SEMIBOLD, 17, COL_TEXT);
     char sub[96]; sub[0] = 0;
     if (!have && problem[0]) {
-        g_text(cx + 16, y, problem, COL_BAD, 1);
+        text_wrap(tx, y + 36, tw, problem, FONT_REGULAR, 12, 16, 2, COL_BAD);
     } else if (have) {
         /* Whatever the file turned out to be, in its own words -- the two
          * formats have nothing in common to tabulate (an MP3 has no bit depth
          * and a WAV has no bitrate), so each names itself. */
         strlcat(sub, snd_describe(&trk), sizeof sub);
-        strlcat(sub, "  -  ", sizeof sub);
+        strlcat(sub, "  " TXT_BULLET "  ", sizeof sub);
         strlcat(sub, problem[0] ? problem : audio_name(), sizeof sub);
-        g_text(cx + 16, y, sub, problem[0] ? COL_WARN : COL_TEXT_DIM, 1);
+        text_wrap(tx, y + 36, tw, sub, FONT_REGULAR, 12, 16, 2, problem[0] ? COL_WARN : COL_TEXT_DIM);
     } else {
-        g_text(cx + 16, y, "Open a .wav or .mp3 from File Explorer, or pick one below", COL_TEXT_DIM, 1);
+        text_wrap(tx, y + 36, tw, "Open a .wav or .mp3 from File Explorer, or pick one below",
+                  FONT_REGULAR, 12, 16, 2, COL_TEXT_DIM);
     }
-    y += 22;
+    y += art + 16;
 
-    draw_meter(cx + 16, y, cw - 32, 56);
-    y += 66;
+    draw_meter(cx + pad, y, cw - 2 * pad, 52);
+    y += 52 + 20;
 
     /* seek bar + times */
     uint32_t pos = media_position_ms(), dur = media_duration_ms();
     int pct = dur ? (int)((uint64_t)pos * 100 / dur) : 0;
-    draw_slider(cx + 16, y + 6, cw - 32, pct, H_SEEK, COL_ACCENT);
+    draw_slider(cx + pad, y, cw - 2 * pad, pct, H_SEEK, COL_ACCENT);
     char tl[12], tr[12];
     mmss(pos, tl); mmss(dur, tr);
-    g_text(cx + 16, y + 20, tl, COL_TEXT_DIM, 1);
-    g_text(cx + cw - 16 - g_text_width(tr, 1), y + 20, tr, COL_TEXT_DIM, 1);
-    y += 40;
+    text_l(cx + pad, y + 16, tl, FONT_REGULAR, 11, COL_TEXT_MUTE);
+    text_r(cx + cw - pad, y + 16, tr, FONT_REGULAR, 11, COL_TEXT_MUTE);
+    y += 30;
 
-    /* transport */
-    int bx = cx + 16;
-    bx += button(bx, y, "|<", H_PREV, COL_PANEL_3, COL_TEXT) + 6;
-    bx += button(bx, y, playing ? "Pause" : "Play", H_PLAY, COL_ACCENT, 0xFFFFFF) + 6;
-    bx += button(bx, y, "Stop", H_STOP, COL_PANEL_3, COL_TEXT) + 6;
-    bx += button(bx, y, ">|", H_NEXT, COL_PANEL_3, COL_TEXT) + 6;
-    button(bx, y, "Repeat", H_REPEAT, repeat ? COL_ACCENT_DIM : COL_PANEL_3,
-           repeat ? 0xFFFFFF : COL_TEXT_DIM);
-    y += 34;
+    /* transport, centred, with play as the one big button */
+    int mid = cx + cw / 2, ty = y + 26;
+    icon_btn(mid - 118, ty, 17, GLYPH_REPEAT, 18, H_REPEAT, repeat);
+    icon_btn(mid - 62, ty, 19, GLYPH_PREV, 20, H_PREV, 0);
+    gfx_shadow(mid - 26, ty - 26, 52, 52, 26, 10, 3, 0, 90);
+    gfx_circle((float)mid, (float)ty, 26.0f, COL_ACCENT, 255);
+    glyph_draw_c(playing ? GLYPH_PAUSE : GLYPH_PLAY, mid + (playing ? 0 : 2), ty, 24, 0xFFFFFF, 255);
+    reg(mid - 26, ty - 26, 52, 52, H_PLAY);
+    icon_btn(mid + 62, ty, 19, GLYPH_NEXT, 20, H_NEXT, 0);
+    icon_btn(mid + 118, ty, 17, GLYPH_STOP, 18, H_STOP, 0);
+    y += 52 + 16;
 
     /* volume: the system's, so this and the tray slider are one control */
     int vol = audio_volume();
-    g_text(cx + 16, y + 3, "Vol", COL_TEXT_DIM, 1);
-    reg(cx + 12, y - 2, 34, 20, H_MUTE);
-    draw_slider(cx + 52, y + 6, cw - 52 - 60, vol, H_VOL, COL_ACCENT_DIM);
+    int muted = mixer_muted(MIX_MASTER);
+    glyph_draw_c(muted || !vol ? GLYPH_VOL_MUTE : vol > 66 ? GLYPH_VOL_2 : vol > 25 ? GLYPH_VOL_1 : GLYPH_VOL_0,
+                 cx + pad + 10, y + 10, 18, muted ? COL_BAD : COL_TEXT_DIM, 255);
+    reg(cx + pad - 4, y - 4, 30, 28, H_MUTE);
+    draw_slider(cx + pad + 36, y + 10, cw - 2 * pad - 36 - 48, vol, H_VOL, COL_TEXT_DIM);
     char pc[8];
     utoa_small((uint32_t)vol, pc);
     strlcat(pc, "%", sizeof pc);
-    g_text(cx + cw - 16 - g_text_width(pc, 1), y + 3, pc, COL_TEXT_DIM, 1);
-    y += 28;
+    text_r(cx + cw - pad, y + 10, pc, FONT_REGULAR, 12, COL_TEXT_DIM);
+    y += 32;
 
     /* playlist */
-    g_hline(cx + 16, y, cw - 32, 0x24242E);
-    y += 8;
-    g_text(cx + 16, y, pl_dir, COL_TEXT_DIM, 1);
-    y += 18;
+    gfx_fill(cx + pad, y, cw - 2 * pad, 1, COL_SEP);
+    y += 12;
+    glyph_draw_c(GLYPH_FOLDER, cx + pad + 8, y + 9, 16, COL_TEXT_MUTE, 255);
+    text_fit_l(cx + pad + 24, y + 9, pl_dir, cw - 2 * pad - 24, FONT_MEDIUM, 12, COL_TEXT_DIM);
+    y += 24;
 
     list_y = y;
     list_rows = (cy + ch - 8 - y) / row_h;
@@ -608,15 +633,21 @@ static void media_draw(window_t *w, int cx, int cy, int cw, int ch) {
     if (pl_scroll < 0) pl_scroll = 0;
 
     if (pl_n == 0)
-        g_text(cx + 16, y + 4, "No .wav files in this folder", COL_TEXT_DIM, 1);
+        text_l(cx + pad, y + row_h / 2, "No sound files in this folder", FONT_REGULAR, 13, COL_TEXT_DIM);
 
     for (int i = pl_scroll; i < pl_n && i < pl_scroll + list_rows; i++) {
         int ry = list_y + (i - pl_scroll) * row_h;
         int sel = (i == pl_cur);
-        if (sel) g_round(cx + 12, ry, cw - 24, row_h - 2, 5, 0x223046, 255);
-        if (sel && playing) g_text(cx + 20, ry + (row_h - 10) / 2, ">", COL_ACCENT, 1);
-        g_text(cx + 34, ry + (row_h - 10) / 2, pl[i], sel ? COL_ACCENT : COL_TEXT, 1);
-        reg(cx + 12, ry, cw - 24, row_h - 2, H_TRACK0 + i);
+        if (sel) gfx_rrect(cx + pad - 8, ry, cw - 2 * pad + 16, row_h - 2, 8, COL_ACCENT, THEME_DARK ? 46 : 34);
+        int ry_c = ry + (row_h - 2) / 2;
+        if (sel && playing) glyph_draw_c(GLYPH_VOL_2, cx + pad + 6, ry_c, 15, COL_ACCENT, 255);
+        else {
+            char num[8]; utoa_small((uint32_t)(i + 1), num);
+            text_c(cx + pad + 6, ry_c, num, FONT_REGULAR, 11, COL_TEXT_MUTE);
+        }
+        text_fit_l(cx + pad + 26, ry_c, pl[i], cw - 2 * pad - 26, sel ? FONT_MEDIUM : FONT_REGULAR, 13,
+                   sel ? COL_ACCENT : COL_TEXT);
+        reg(cx + pad - 8, ry, cw - 2 * pad + 16, row_h - 2, H_TRACK0 + i);
     }
 }
 
@@ -652,7 +683,7 @@ static void media_click(window_t *w, int lx, int ly) {
         case H_VOL:    grab = H_VOL;  set_from_slider(H_VOL, lx); break;
         default:       if (h->id >= H_TRACK0) media_select(h->id - H_TRACK0); break;
         }
-        gui_request_redraw();
+        gui_redraw_window(win);
         return;
     }
 }
@@ -662,7 +693,7 @@ static void media_click(window_t *w, int lx, int ly) {
  * volume. Every drag stream begins with a click, which is where grab is set. */
 static void media_drag(window_t *w, int lx, int ly) {
     (void)w; (void)ly;
-    if (grab) { set_from_slider(grab, lx); gui_request_redraw(); }
+    if (grab) { set_from_slider(grab, lx); gui_redraw_window(win); }
 }
 
 static void media_scroll(window_t *w, int delta) {
@@ -670,7 +701,7 @@ static void media_scroll(window_t *w, int delta) {
     pl_scroll -= delta;
     if (pl_scroll > pl_n - list_rows) pl_scroll = pl_n - list_rows;
     if (pl_scroll < 0) pl_scroll = 0;
-    gui_request_redraw();
+    gui_redraw_window(win);
 }
 
 static void media_key(window_t *w, char c) {
@@ -689,7 +720,7 @@ static void media_key(window_t *w, char c) {
     case KEY_DOWN:  audio_set_volume(audio_volume() - 5); break;
     default: return;
     }
-    gui_request_redraw();
+    gui_redraw_window(win);
 }
 
 /* Where to look the first time somebody opens the player. The app is built
@@ -709,13 +740,13 @@ static void pick_start_folder(void) {
  * from the main loop whether this window is on screen or not. */
 static void media_tick(window_t *w) {
     (void)w;
-    if (!picked && !have) { picked = 1; pick_start_folder(); gui_request_redraw(); }
-    if (playing) gui_request_redraw();
+    if (!picked && !have) { picked = 1; pick_start_folder(); gui_redraw_window(win); }
+    if (playing) gui_redraw_window(win);
 }
 
 void media_app_init(void) {
     scan_dir(pl_dir);
-    win = gui_add_window("Media", 480, 520, 0x5AC8FA, ICON_MEDIA);
+    win = gui_add_window("Media", 480, 580, 0x5AC8FA, ICON_MEDIA);
     if (!win) return;
     win->draw   = media_draw;
     win->click  = media_click;
@@ -723,6 +754,7 @@ void media_app_init(void) {
     win->scroll = media_scroll;
     win->key    = media_key;
     win->tick   = media_tick;
-    win->min_w  = 380; win->min_h = 400;
+    win->min_w  = 380; win->min_h = 460;
+    win->lazy_tick = 1;          /* media_tick asks while it plays */
     win->x = 260; win->y = 70;
 }

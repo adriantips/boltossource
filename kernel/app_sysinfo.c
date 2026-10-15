@@ -6,6 +6,9 @@
  * ===========================================================================*/
 #include <stdint.h>
 #include "gui.h"
+#include "gfx.h"
+#include "font.h"
+#include "icons.h"
 #include "hw.h"
 #include "gpu.h"
 #include "pmm.h"
@@ -45,9 +48,9 @@ static void si_draw(window_t *win, int cx, int cy, int cw, int ch) {
 
     /* header card with the bolt logo */
     g_round(x, y, w, 70, 12, COL_PANEL_2, 255);
-    gui_icon(ICON_START, x + 20, y + 18, 2, COL_ACCENT);
-    g_text(x + 64, y + 16, "BoltOS", COL_TEXT, 3);
-    g_text(x + 64, y + 46, "64-bit kernel  -  long mode", COL_TEXT_DIM, 1);
+    icon_draw(ICON_START, x + 14, y + 11, 48, 255);
+    font_draw(FONT_BOLD, 24, x + 74, y + 34, "BoltOS", -1, COL_TEXT, 255);
+    text_l(x + 74, y + 51, "64-bit kernel  " TXT_BULLET "  long mode", FONT_REGULAR, 12, COL_TEXT_DIM);
     y += 84;
 
     char buf[64], a[24], b[24];

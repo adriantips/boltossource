@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "gui.h"
+#include "font.h"
 #include "hw.h"           /* rtc_now, for the shuffle seed */
 #include "pit.h"
 #include "keyboard.h"
@@ -255,7 +256,7 @@ enum { BAR_NEW = 0, BAR_UNDO, BAR_DRAW, BAR_AUTO, NBAR };
 static const int   BAR_W[NBAR]     = { 48, 52, 56, 52 };
 static const char *BAR_LABEL[NBAR] = { "New", "Undo", "", "Auto" };
 static int bar_x(int i) {
-    int x = 8;
+    int x = 12;                     /* clear of the window's rounded corner */
     for (int k = 0; k < i && k < NBAR; k++) x += BAR_W[k] + 5;
     return x;
 }
@@ -281,8 +282,8 @@ static void draw_card(int x, int y, int w, int h, uint8_t card, int selected) {
     uint32_t col = RED(card) ? 0xC62828 : 0x1A1A1A;
 
     const char *r = rank_name(RANK(card));
-    g_text(x + 4, y + 4, r, col, 1);
-    pip(x + 4, y + 14, 8, SUIT(card), col);
+    font_draw(FONT_SEMIBOLD, 13, x + 5, y + 15, r, -1, col, 255);
+    pip(x + 5, y + 19, 9, SUIT(card), col);
 
     /* The big centre pip only fits once the card is reasonably tall, and a
      * squashed one looks like dirt. */
@@ -291,8 +292,8 @@ static void draw_card(int x, int y, int w, int h, uint8_t card, int selected) {
         pip(x + (w - s) / 2, y + (h - s) / 2, s, SUIT(card), col);
     }
     if (h >= 56) {                                   /* mirrored corner */
-        int rw = g_text_width(r, 1);
-        g_text(x + w - 4 - rw, y + h - 12, r, col, 1);
+        int rw = font_width(FONT_SEMIBOLD, 13, r, -1);
+        font_draw(FONT_SEMIBOLD, 13, x + w - 5 - rw, y + h - 6, r, -1, col, 255);
     }
     if (selected) g_rect(x, y, w, h, COL_ACCENT);
 }
@@ -396,9 +397,8 @@ static void sol_draw(window_t *w, int cx, int cy, int cw, int ch) {
         else               strlcpy(lab, BAR_LABEL[i], sizeof lab);
         int live = (i != BAR_UNDO) || S.have_undo;
         int bx = cx + bar_x(i), by = cy + ch - BAR_H + 3;
-        g_round(bx, by, BAR_W[i], BAR_H - 6, 5, live ? 0x1B5E20 : 0x134A18, 255);
-        g_text(bx + (BAR_W[i] - g_text_width(lab, 1)) / 2, by + (BAR_H - 6 - 8) / 2,
-               lab, live ? 0xD7FFD9 : 0x6B8C6E, 1);
+        g_round(bx, by, BAR_W[i], BAR_H - 6, 6, live ? 0x1B5E20 : 0x134A18, 255);
+        text_c(bx + BAR_W[i] / 2, by + (BAR_H - 6) / 2, lab, FONT_MEDIUM, 12, live ? 0xD7FFD9 : 0x6B8C6E);
     }
 
     uint64_t end = S.end_tick ? S.end_tick : pit_ticks();
@@ -406,14 +406,14 @@ static void sol_draw(window_t *w, int cx, int cy, int cw, int ch) {
     char line[80];
     snprintf(line, sizeof line, "Moves %u   %u:%02u", S.g.moves, sec / 60, sec % 60);
     int lx0 = cx + bar_x(NBAR) + 10;
-    g_text(lx0, cy + ch - BAR_H + 9, line, 0xE8F5E9, 1);
+    text_l(lx0, cy + ch - BAR_H / 2, line, FONT_REGULAR, 12, 0xE8F5E9);
 
     const char *msg = S.g.won        ? "You win. New deal?"
                     : auto_finishable() ? "Press A to finish it."
                     : S.status;
-    int mw = g_text_width(msg, 1);
-    if (msg[0] && lx0 + g_text_width(line, 1) + 16 + mw < cx + cw - 10)
-        g_text(cx + cw - 10 - mw, cy + ch - BAR_H + 9, msg, 0xB9F6CA, 1);
+    int mw = font_width(FONT_REGULAR, 12, msg, -1);
+    if (msg[0] && lx0 + font_width(FONT_REGULAR, 12, line, -1) + 16 + mw < cx + cw - 14)
+        text_r(cx + cw - 14, cy + ch - BAR_H / 2, msg, FONT_REGULAR, 12, 0xB9F6CA);
 }
 
 /* --------------------------------------------------------------- input ---- */

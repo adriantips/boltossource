@@ -75,6 +75,7 @@ int  g_get_font(void);
 /* The 8x8 bitmap face whatever the setting says: Settings shows it as a sample. */
 void g_text_retro(int x, int y, const char *s, uint32_t color, int scale);
 int  g_font_height(int scale);   /* glyph box height for the active face */
+int  g_underline_y(int scale);   /* where an underline goes, from the line top */
 int  g_glyph_ink(char c);        /* 1 if the active face draws anything for c */
 /* proportional (variable-width) text: glyphs are trimmed to their ink box plus a
  * 1px gap, so prose reads like a real font instead of a monospace grid. italic

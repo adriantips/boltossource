@@ -7,6 +7,9 @@
  * ===========================================================================*/
 #include <stdint.h>
 #include "gui.h"
+#include "font.h"
+#include "gfx.h"
+#include "icons.h"
 #include "html.h"
 #include "dom.h"
 #include "layout.h"
@@ -23,7 +26,7 @@
 #include "commands.h"          /* sh_utoa */
 
 #define TOOLBAR_H  36
-#define STATUS_H   20
+#define STATUS_H   26
 #define SBW        12
 #define MAXHIST    24
 #define HTTP_CAP   (256 * 1024)
@@ -206,7 +209,7 @@ static void emit_line(browser_t *st, int cx, int cy, int draw, int *pen_y,
                         g_fill(ax - 2, cy + py, it->w + 4, line_h, it->bg & 0xFFFFFF);
                     g_text_pn(ax, cy + py, it->text, it->len, it->color, it->scale, it->italic);
                     if (it->link >= 0) {
-                        g_hline(ax, cy + py + 8 * it->scale + 1, it->w, it->color);
+                        g_hline(ax, cy + py + g_underline_y(it->scale), it->w, it->color);
                         if (st->nhits < (int)(sizeof(st->hits)/sizeof(st->hits[0])))
                             st->hits[st->nhits++] = (hitrect){ xstart+off+it->x, py, it->w, line_h, it->link, it->run, 0 };
                     }
@@ -944,7 +947,7 @@ static void paint_text_box(browser_t *st, layout_box *b, int ox, int oy, int cl,
         pen_x+=space;
         if (pen_y+lh>=clipT && pen_y<=clipB) {
             g_text_pn(pen_x, pen_y, w, wl, col, scale, s->italic);
-            if (href) { g_hline(pen_x, pen_y+8*scale+1, ww, col);
+            if (href) { g_hline(pen_x, pen_y+g_underline_y(scale), ww, col);
                 add_hit(st, pen_x, pen_y, ww, lh, href, -1, 0); }
         }
         pen_x+=ww;
@@ -1265,10 +1268,9 @@ static void submit_form(browser_t *st, int run) {
 
 /* ---- drawing ----------------------------------------------------------- */
 static void draw_button(int x, int y, int w, int h, const char *label, int hot, uint32_t accent) {
-    g_round(x, y, w, h, 5, hot ? 0x33334A : 0x24242E, 255);
-    g_rect(x, y, w, h, hot ? accent : 0x3A3A48);
-    int tw = g_text_width(label, 1);
-    g_text(x + (w - tw) / 2, y + (h - 8) / 2, label, COL_TEXT, 1);
+    (void)accent;
+    g_round(x, y, w, h, 7, hot ? COL_PANEL_3 : COL_PANEL_2, 255);
+    text_c(x + w / 2, y + h / 2, label, FONT_MEDIUM, 12, COL_TEXT);
 }
 
 static void browser_draw(window_t *w, int cx, int cy, int cw, int ch) {
@@ -1278,26 +1280,31 @@ static void browser_draw(window_t *w, int cx, int cy, int cw, int ch) {
     uint32_t pbg = (st->doc && (st->doc->page_bg & 0x1000000)) ? st->doc->page_bg & 0xFFFFFF : WEB_BG;
     g_fill(cx, cy, cw, ch, pbg);
     /* toolbar */
-    g_fill(cx, cy, cw, TOOLBAR_H, COL_PANEL_2);
-    g_hline(cx, cy + TOOLBAR_H, cw, 0x33333F);
+    g_fill(cx, cy, cw, TOOLBAR_H, COL_TITLEBAR);
+    g_hline(cx, cy + TOOLBAR_H, cw, COL_SEP);
 
     int mxp = mouse_x() - cx, myp = mouse_y() - cy;
     int back_hot = mxp >= 8 && mxp < 38 && myp >= 7 && myp < 29;
-    draw_button(cx + 8, cy + 7, 30, 22, "<", back_hot, w->accent);
+    if (back_hot) g_round(cx + 8, cy + 7, 30, 22, 7, COL_PANEL_3, 255);
+    glyph_draw_c(GLYPH_ARROW_L, cx + 23, cy + 18, 18, st->histlen > 0 ? COL_TEXT : COL_TEXT_MUTE, 255);
 
     int addr_x = 44, addr_w = cw - 44 - 64 - 8;
     if (addr_w < 60) addr_w = 60;
-    g_round(cx + addr_x, cy + 7, addr_w, 22, 5, 0x16161E, 255);
-    g_rect(cx + addr_x, cy + 7, addr_w, 22, st->editing ? w->accent : 0x33333F);
+    g_round(cx + addr_x, cy + 6, addr_w, 24, 8, THEME_DARK ? 0x1C1C1E : 0xFFFFFF, 255);
+    if (st->editing) gfx_rrect_stroke(cx + addr_x - 1, cy + 5, addr_w + 2, 26, 9, 2, COL_ACCENT, 255);
     const char *shown = st->editing ? st->addr : st->url;
-    /* clip the url to the bar width */
-    int maxchars = (addr_w - 12) / 8;
     int slen = (int)strlen(shown);
-    int off = (st->editing && slen > maxchars) ? slen - maxchars : 0;
-    g_text(cx + addr_x + 6, cy + 14, shown + off, st->editing ? COL_TEXT : COL_TEXT_DIM, 1);
+    if (!st->editing && slen > 8 && !strncmp(shown, "https://", 8))
+        glyph_draw_c(GLYPH_LOCK, cx + addr_x + 14, cy + 18, 14, COL_TEXT_MUTE, 255);
+    int tx0 = cx + addr_x + 28, room = addr_w - 28 - 10;
+    /* while typing, keep the end of the text (and the caret) in view */
+    int off = 0;
+    if (st->editing)
+        while (off < slen && font_width(FONT_REGULAR, 13, shown + off, -1) > room) off++;
+    text_fit_l(tx0, cy + 18, shown + off, room, FONT_REGULAR, 13, st->editing ? COL_TEXT : COL_TEXT_DIM);
     if (st->editing && (pit_ticks() / 500) % 2 == 0) {
-        int cxp = cx + addr_x + 6 + (slen - off) * 8;
-        g_fill(cxp, cy + 11, 2, 14, COL_ACCENT);
+        int cxp = tx0 + font_width(FONT_REGULAR, 13, shown + off, -1);
+        g_fill(cxp, cy + 11, 2, 15, COL_ACCENT);
     }
 
     int go_x = cw - 64;
@@ -1334,8 +1341,8 @@ static void browser_draw(window_t *w, int cx, int cy, int cw, int ch) {
     }
 
     /* status bar */
-    g_fill(cx, cy + ch - STATUS_H, cw, STATUS_H, COL_PANEL_2);
-    g_hline(cx, cy + ch - STATUS_H, cw, 0x33333F);
+    g_fill(cx, cy + ch - STATUS_H, cw, STATUS_H, COL_TITLEBAR);
+    g_hline(cx, cy + ch - STATUS_H, cw, COL_SEP);
     struct netif *nif = netif_default();
     char link[40]; link[0] = 0;
     sappend(link, nif ? (nif->link_up ? "online" : "link down") : "no NIC", sizeof(link));
@@ -1352,9 +1359,12 @@ static void browser_draw(window_t *w, int cx, int cy, int cw, int ch) {
             }
         }
     }
-    g_text(cx + 8, cy + ch - STATUS_H + 6, hov[0] ? hov : st->status,
-           hov[0] ? COL_ACCENT : COL_TEXT_DIM, 1);
-    g_text(cx + cw - g_text_width(link, 1) - 10, cy + ch - STATUS_H + 6, link, nif && nif->link_up ? COL_GOOD : COL_BAD, 1);
+    int lw = font_width(FONT_MEDIUM, 11, link, -1);
+    text_fit_l(cx + 12, cy + ch - STATUS_H / 2, hov[0] ? hov : st->status, cw - lw - 48,
+               FONT_REGULAR, 12, hov[0] ? COL_ACCENT : COL_TEXT_DIM);
+    uint32_t lc = nif && nif->link_up ? COL_GOOD : COL_BAD;
+    gfx_circle((float)(cx + cw - lw - 22), (float)(cy + ch - STATUS_H / 2), 3.5f, lc, 255);
+    text_r(cx + cw - 12, cy + ch - STATUS_H / 2, link, FONT_MEDIUM, 11, COL_TEXT_DIM);
 }
 
 /* ---- input ------------------------------------------------------------- */
