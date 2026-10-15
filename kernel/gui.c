@@ -1882,6 +1882,15 @@ void gui_run(void) {
             shell_tick(now);
         }
 
+        /* Brightness is applied on the way to VRAM, so only what gets
+         * presented picks a new level up -- and with frames built from damage
+         * that was the Terminal you typed `display brightness 40` into and
+         * nothing else (t_quick: "40% made the screen 89% as bright"). The
+         * backbuffer is never dimmed, so a change is one full present and no
+         * recomposite. */
+        static int dim_seen = 100;
+        if (fb_dim() != dim_seen) { dim_seen = fb_dim(); gui_present_all(); }
+
         /* A frame when there is something to draw -- and while animating, at
          * most every 8 ms: 125 fps is more than any panel here shows. A stale
          * window nobody can see does not count, or the loop would spin on
