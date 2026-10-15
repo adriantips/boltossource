@@ -14,9 +14,10 @@ from boltvm import BoltVM
 
 LOGIN_USER, LOGIN_PASS = "user", "bolt"
 
-# The boot mode (1024x768) and TASKBAR_H in kernel/gui.c.
-SCREEN_W, SCREEN_H, TASKBAR_H = 1024, 768, 48
-AVAIL = SCREEN_H - TASKBAR_H
+# The boot mode (1024x768) and SHELF_H in include/gui_int.h: the dock is an
+# island floating 6px off the bottom, and maximise leaves it the whole strip.
+SCREEN_W, SCREEN_H, SHELF_H = 1024, 768, 68
+AVAIL = SCREEN_H - SHELF_H
 
 
 def rect(zone):
@@ -109,10 +110,11 @@ def main():
 
         # A point inside the top-left quarter that the dragged window will not
         # be covering: grabbing the title bar near its right end pushes the
-        # window off the left edge, where clamp_window() stops it. Not too near
-        # the right end, though -- the last 138px of a title bar are the close,
-        # maximise and minimise buttons, and the first version of this test
-        # grabbed the close button and spent a while looking like a focus bug.
+        # window off the left edge, where clamp_window() stops it. The caption
+        # buttons used to be the last 138px of the bar, and the first version
+        # of this test grabbed Close and spent a while looking like a focus
+        # bug. They are traffic lights at the left end now, so the right end is
+        # just title bar.
         probe = (300, 200)
         grab_x = x + w - 160
         clean = vm.screenshot("snap-before.ppm")

@@ -24,15 +24,21 @@ LOGIN_USER, LOGIN_PASS = "user", "bolt"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WALLDIR = os.path.join(ROOT, "assets", "wallpapers")
 
-# The "1080p" chip in Settings. The rows are laid out in app_settings.c and the
-# window opens at a fixed place, so this is stable -- but if that layout moves,
-# this is the line to fix, and the symptom will be a resolution that never
-# changed rather than anything about wallpapers.
-CHIP_1080P = (358, 493)
+# Settings opens at (90, 50) with a 220px sidebar, so the client starts at
+# (90, 82) and the page at x = 90 + 220 + 28. The rows are laid out in
+# app_settings.c -- if that layout moves, these are the lines to fix, and the
+# symptom will be a resolution that never changed rather than anything about
+# wallpapers.
+SIDEBAR_DISPLAY = (90 + 10 + 60, 82 + 84 + 38 + 17)      # second sidebar item
+_SEG_X, _SEG_W = 90 + 220 + 28 + 16, 860 - 220 - 56 - 32  # the resolution picker
+_SEG_SLOT = (_SEG_W - 4) // 5                              # five modes
+CHIP_1080P = (_SEG_X + 2 + 2 * _SEG_SLOT + _SEG_SLOT // 2, 82 + 66 + 62 + 15)
 
-RENDERS = ["mountain-1024x768.jpg",  "mountain-1280x720.jpg",
-           "mountain-1920x1080.jpg", "mountain-2560x1440.jpg",
-           "mountain-3840x2160.jpg"]
+# The default wallpaper since the glass desktop. Mountain is still shipped,
+# with the same set of renders, but it is no longer what a fresh disk gets.
+RENDERS = ["aurora-1024x768.jpg",  "aurora-1280x720.jpg",
+           "aurora-1920x1080.jpg", "aurora-2560x1440.jpg",
+           "aurora-3840x2160.jpg"]
 
 
 def run(vm, line, timeout=15):
@@ -40,6 +46,14 @@ def run(vm, line, timeout=15):
     vm.type(line + "\n")
     time.sleep(2.0)
     return vm.serial()
+
+
+def field(out, name):
+    """The last `name ...` line of a `display` report, without the name."""
+    for ln in reversed(out.splitlines()):
+        if ln.startswith(name + " "):
+            return ln[len(name):].strip()
+    raise AssertionError("no %r line in:\n%s" % (name, out[-800:]))
 
 
 def patch(img, box):
@@ -66,19 +80,27 @@ def main():
             assert f in out, "%s was not seeded:\n%s" % (f, out[-800:])
         print("  ok: one render seeded per entry in the resolution table")
 
-        # No saved choice on a fresh disk, so the boot mode picks the file.
-        out = run(vm, "cat /home/.wallpaper")
-        assert "/usr/share/wallpapers/mountain-1024x768.jpg" in out, \
+        # No choice made on a fresh disk, so the boot mode picks the file.
+        # Asked of `display`, which reports what is on the panel. This used to
+        # cat /home/.wallpaper, but the boot restore no longer writes that --
+        # and the test disks still carry one naming the mountain from before
+        # the glass desktop, which is exactly the stale preference the restore
+        # now ignores.
+        out = run(vm, "display")
+        assert "/usr/share/wallpapers/aurora-1024x768.jpg" in field(out, "wallpaper"), \
             "a fresh machine did not come up on the 1024x768 render:\n" + out[-800:]
         print("  ok: a machine with no saved choice gets the render for its mode")
 
         # And it is genuinely on the panel. The sample is far right and low,
-        # clear of the icon grid and the taskbar, where only wallpaper can be.
+        # clear of the icon grid and above the tray, where only wallpaper can
+        # be -- and clear of the Terminal's shadow too. Windows cast a soft one
+        # now that reaches 64px past their edge, and the box this used to use
+        # (768,380)-(1008,560) caught enough of it to read 13% dark.
         vm.screenshot("wall-1024x768")
         shot = Image.open(os.path.join(ROOT, "test", "out", "wall-1024x768"))
         assert shot.size == (1024, 768), "panel is %s" % (shot.size,)
-        box = (768, 380, 1008, 560)
-        want = patch(Image.open(os.path.join(WALLDIR, "mountain-1024x768.jpg")), box)
+        box = (880, 590, 1010, 670)
+        want = patch(Image.open(os.path.join(WALLDIR, "aurora-1024x768.jpg")), box)
         got = patch(shot, box)
         off = max(abs(a - b) for a, b in zip(want, got))
         assert off <= 12, \
@@ -89,19 +111,21 @@ def main():
         # reprogrammed), and the wallpaper has to move with it.
         vm.open_app("Settings", probe=False)
         time.sleep(2.0)
+        vm.click(*SIDEBAR_DISPLAY)
+        time.sleep(1.0)
         vm.click(*CHIP_1080P)
         time.sleep(8.0)                      # mode set, then an 8 MP decode
 
         vm.open_app("Terminal")
-        out = run(vm, "cat /home/.wallpaper")
-        assert "/usr/share/wallpapers/mountain-1920x1080.jpg" in out, \
+        out = run(vm, "display")
+        assert "/usr/share/wallpapers/aurora-1920x1080.jpg" in field(out, "wallpaper"), \
             "the wallpaper did not follow the mode change:\n" + out[-800:]
 
         vm.screenshot("wall-1920x1080")
         shot = Image.open(os.path.join(ROOT, "test", "out", "wall-1920x1080"))
         assert shot.size == (1920, 1080), "the mode never changed: panel is %s" % (shot.size,)
         box = (1440, 540, 1890, 880)
-        want = patch(Image.open(os.path.join(WALLDIR, "mountain-1920x1080.jpg")), box)
+        want = patch(Image.open(os.path.join(WALLDIR, "aurora-1920x1080.jpg")), box)
         got = patch(shot, box)
         off = max(abs(a - b) for a, b in zip(want, got))
         assert off <= 12, \

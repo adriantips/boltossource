@@ -16,7 +16,7 @@ from boltvm import BoltVM
 
 LOGIN_USER, LOGIN_PASS = "user", "bolt"
 
-PANEL_W, PANEL_H, TASKBAR_H = 1024, 768, 48
+PANEL_W, PANEL_H, SHELF_H = 1024, 768, 68
 
 
 def gui_run(vm, line, expect, timeout=30):
@@ -61,13 +61,14 @@ def main():
 
         # The window manager works in the new coordinate space, not the old one.
         ln = snap_line(vm, "max")
-        assert "682x%d+0+0" % (512 - TASKBAR_H) in ln, \
+        assert "682x%d+0+0" % (512 - SHELF_H) in ln, \
             "a maximised window should fill the scaled desktop:\n" + ln
         print("  ok: maximise fills the scaled desktop, not the panel")
 
-        # Click the maximise button where the *panel* has it. Slot 1 of three
-        # 46px caption buttons counted from the right edge of the window.
-        lx, ly = 682 - 2 * 46 + 23, 16
+        # Click the maximise button where the *panel* has it: the third traffic
+        # light, 18 + 2 * 20 px in from the window's left edge (light_cx() in
+        # kernel/gui_shell.c), on the middle of the 32px title bar.
+        lx, ly = 18 + 2 * 20, 16
         vm.click(lx * PANEL_W // 682, ly * PANEL_H // 512)
         time.sleep(0.6)
         ln = snap_line(vm)
@@ -78,10 +79,10 @@ def main():
         # The rect it restored to was saved on a 1024-wide desktop. It has to
         # be cut down to this one, or the window comes back with its own close
         # button past the right edge -- which is how this was found. The bottom
-        # is allowed to sit under the taskbar; any window you drag down does.
+        # is allowed to sit under the dock; any window you drag down does.
         w, h = (int(v) for v in ln.split()[-1].split("+")[0].split("x"))
         x, y = (int(v) for v in ln.split()[-1].split("+")[1:])
-        assert 0 <= x and x + w <= 682 and 0 <= y < 512 - TASKBAR_H, \
+        assert 0 <= x and x + w <= 682 and 0 <= y < 512 - SHELF_H, \
             "restored to %dx%d+%d+%d: its title bar is off the 682x512 desktop" % (w, h, x, y)
         print("  ok: a window restored after the desktop shrank still fits on it")
 

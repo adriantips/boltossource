@@ -18,7 +18,20 @@ from boltvm import BoltVM
 
 LOGIN_USER, LOGIN_PASS = "user", "bolt"
 
-SCREEN_W, SCREEN_H, TASKBAR_H = 1024, 768, 48
+SCREEN_W, SCREEN_H = 1024, 768
+
+# Quick Settings, from kernel/gui_shell.c. The panel hangs off the tray's
+# right edge (SW - 12) and sits 10px above it, so where it lands does not
+# depend on how wide the clock's text happens to be today -- but where the
+# tray's status icons are does, by a few pixels, so the click that opens it
+# aims at a spot inside that group for any plausible clock width.
+QS_W, QS_H = 352, 16 + 2 * 74 + 8 + 2 * 46 + 8 + 48
+QS_X = SCREEN_W - 12 - QS_W
+QS_Y = SCREEN_H - 6 - 56 - QS_H - 10
+TRAY_STATUS = (SCREEN_W - 150, SCREEN_H - 34)
+# brightness: the first slider row, 52px in, 24px short of the right edge
+BRIGHT_X0, BRIGHT_W = QS_X + 52, QS_W - 52 - 24
+BRIGHT_Y = QS_Y + 16 + 2 * 74 + 8 + 23
 
 
 def gui_run(vm, line, expect, timeout=45):
@@ -113,19 +126,18 @@ def main():
 
         vm.open_app("Terminal")
 
-        # The panel itself. The tray speaker opens it; the second slider row is
-        # brightness, and clicking halfway along it has to mean 50%.
-        px = min(SCREEN_W - 96 + 14 - 126, SCREEN_W - 6 - 252)
-        py = SCREEN_H - TASKBAR_H - 186 - 8
-        vm.click(SCREEN_W - 96 + 14, SCREEN_H - TASKBAR_H + 14)
-        time.sleep(0.6)
+        # The panel itself. The tray's network/volume group opens it; the first
+        # slider row is brightness, and clicking halfway along it has to mean
+        # 50%.
+        vm.click(*TRAY_STATUS)
+        time.sleep(0.8)
         shot = vm.screenshot("quick-open.ppm")
         assert os.path.getsize(shot) > 1000, "no frame with the panel open"
 
-        vm.click(px + 44 + 81, py + 34 + 34 + 12)     # halfway along row 1
+        vm.click(BRIGHT_X0 + BRIGHT_W // 2, BRIGHT_Y)
         time.sleep(0.5)
-        vm.click(SCREEN_W - 96 + 14, SCREEN_H - TASKBAR_H + 14)   # close it
-        time.sleep(0.4)
+        vm.click(*TRAY_STATUS)                        # close it
+        time.sleep(0.6)
 
         out = gui_run(vm, "display", "bright")
         got = int(field(out, "bright").split("%")[0])
