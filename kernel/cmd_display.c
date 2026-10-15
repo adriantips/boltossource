@@ -31,6 +31,12 @@ static void show(void) {
     kprintf("\n");
 
     kprintf("bright   %d%% (%s)\n", backlight_get(), backlight_name());
+    /* What is on the panel, not what /home/.wallpaper says: the boot restore
+     * stopped writing that file with the glass desktop, and a swap that
+     * follows a mode change never did, so it can name a picture nobody is
+     * looking at. */
+    const char *wp = gui_wallpaper_path();
+    kprintf("wallpaper %s\n", wp && wp[0] ? wp : "none (a colour field)");
     int us = gui_frame_copy_us(), bl = gui_blend_us();
     kprintf("motion   %s, animations %s (a frame copy takes %d.%d ms, a blend %d.%d)\n",
             settings_motion_name(g_settings.motion), gui_motion_reduced() ? "off" : "on",
