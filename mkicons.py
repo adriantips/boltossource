@@ -246,7 +246,7 @@ def lucide_inner(name):
     src = open(os.path.join(LUCIDE, name + ".mjs"), encoding="utf-8").read()
     # Renamed icons survive as one-line re-exports of the new name. Reading
     # one of those as an icon finds no shapes, and the glyph came out blank:
-    # trash-2, circle-help and smile were empty squares for a whole release.
+    # trash-2, circle-help and smile were empty squares from the redesign on.
     alias = re.search(r"export \{ default \} from '\./([\w-]+)\.mjs'", src)
     if alias:
         return lucide_inner(alias.group(1))

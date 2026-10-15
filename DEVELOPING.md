@@ -446,8 +446,26 @@ and that link sees only `libc/string.c` — which has `kstrlcat` but *not*
 
 Every app is one `kernel/app_*.c` file that registers a window and a few
 callbacks. The compositor does the framing, dragging, focus, z-order,
-minimise/maximise, the taskbar button and the title bar; the app draws its
+minimise/maximise, the dock icon and the title bar; the app draws its
 client area and answers input.
+
+Two things about the compositor that are easy to trip over:
+
+- **Nothing redraws unless it is asked to.** A window is re-rendered into its
+  surface when it is stale: on input, when `gui_redraw_window(win)` is called,
+  or every app tick (~150 ms) if it has a `tick` callback. Set
+  `win->lazy_tick = 1` for a window whose tick only sometimes changes what it
+  shows, and call `gui_redraw_window(win)` when it does -- a clock that
+  repaints once a second instead of seven times. `gui_request_redraw()`
+  repaints *every* window and is almost never what you want.
+- **`gui_add_window(title, w, h, ...)` takes the whole window**, 32 px title
+  bar included. Size it from your client layout plus 32, or your bottom row
+  is under the window's edge.
+
+For anything new, draw with `gfx.h`, `font.h` and the controls in `ui.h`
+(Settings and File Explorer are the examples). The old `g_text(x, y, s, c,
+scale)` still works, and puts the baseline 12 px below `y` -- code that
+centres it on an 8 px glyph box comes out low.
 
 ```c
 #include "gui.h"
