@@ -19,7 +19,7 @@
 #include "kprintf.h"
 
 #define PNG(n) extern const uint8_t _binary_##n##_png_start[], _binary_##n##_png_end[];
-PNG(apps_16) PNG(apps_24) PNG(apps_32) PNG(apps_48) PNG(apps_64) PNG(apps_96)
+PNG(apps_16) PNG(apps_20) PNG(apps_24) PNG(apps_32) PNG(apps_40) PNG(apps_48) PNG(apps_64) PNG(apps_96)
 PNG(glyphs_16) PNG(glyphs_20) PNG(glyphs_24) PNG(cursors_32)
 #undef PNG
 
@@ -34,7 +34,8 @@ typedef struct {
 
 #define A(n, s) { s, _binary_##n##_png_start, _binary_##n##_png_end, 0, 0, 0, 0, 0 }
 static atlas_t apps[] = {
-    A(apps_16, 16), A(apps_24, 24), A(apps_32, 32), A(apps_48, 48), A(apps_64, 64), A(apps_96, 96)
+    A(apps_16, 16), A(apps_20, 20), A(apps_24, 24), A(apps_32, 32), A(apps_40, 40), A(apps_48, 48),
+    A(apps_64, 64), A(apps_96, 96)
 };
 static atlas_t glyphs[] = { A(glyphs_16, 16), A(glyphs_20, 20), A(glyphs_24, 24) };
 static atlas_t cursors = A(cursors_32, 32);
@@ -178,7 +179,8 @@ int cursor_image(int kind, const uint32_t **px, int *stride) {
 void icons_preload(void) {
     load_app(&cursors);
     load_app(&apps[0]);       /* 16: title bars, menus      */
-    load_app(&apps[3]);       /* 48: the dock, Start, desktop */
+    load_app(&apps[4]);       /* 40: the dock and Start     */
+    load_app(&apps[5]);       /* 48: desktop icons, Files   */
     load_glyph(&glyphs[0]);
     load_glyph(&glyphs[1]);
 }

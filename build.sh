@@ -348,7 +348,7 @@ done
 echo "[3d1b/6] icons, glyphs and cursors (assets/icons/*.png -> blobs)"
 # Drawn by mkicons.py and committed, so a build needs no browser. Re-run that
 # script after changing a drawing.
-for a in apps-16 apps-24 apps-32 apps-48 apps-64 apps-96 glyphs-16 glyphs-20 glyphs-24 cursors-32; do
+for a in apps-16 apps-20 apps-24 apps-32 apps-40 apps-48 apps-64 apps-96 glyphs-16 glyphs-20 glyphs-24 cursors-32; do
     [ -f "assets/icons/$a.png" ] || { echo "ERROR: assets/icons/$a.png missing -- run: python mkicons.py"; exit 1; }
     cp "assets/icons/$a.png" "build/$a.png"
     ( cd build && "$OBJCOPY" -I binary -O elf64-x86-64 "$a.png" "${a//-/_}_png.o" )

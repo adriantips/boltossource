@@ -35,7 +35,9 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 from mkuifont import Font  # noqa: E402
 
-APP_SIZES = [16, 24, 32, 48, 64, 96]
+# 20 and 40 are what the switcher, the dock and Start draw at; scaling the
+# next size down to them was a third of what a dock frame cost under TCG.
+APP_SIZES = [16, 20, 24, 32, 40, 48, 64, 96]
 GLYPH_SIZES = [16, 20, 24]
 COLS = 8
 CHROME_CANDIDATES = [
@@ -242,6 +244,12 @@ def page_shape(fold=True, lines=True, badge=None, badge_col="#0A84FF", x=24, y=1
 def lucide_inner(name):
     """The element list of a Lucide icon, as SVG, in its own 24-unit space."""
     src = open(os.path.join(LUCIDE, name + ".mjs"), encoding="utf-8").read()
+    # Renamed icons survive as one-line re-exports of the new name. Reading
+    # one of those as an icon finds no shapes, and the glyph came out blank:
+    # trash-2, circle-help and smile were empty squares for a whole release.
+    alias = re.search(r"export \{ default \} from '\./([\w-]+)\.mjs'", src)
+    if alias:
+        return lucide_inner(alias.group(1))
     out = []
     for tag, attrs in re.findall(r'\[\s*"(\w+)",\s*\{([^}]*)\}\s*\]', src):
         kv = dict(re.findall(r'(\w+):\s*"([^"]*)"', attrs))

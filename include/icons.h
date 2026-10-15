@@ -6,7 +6,7 @@
  *  BoltOS  -  include/icons.h
  *
  *  Two kinds of picture. Icons (ICON_* in gui.h) are full colour and drawn
- *  by mkicons.py into atlases at 16, 24, 32, 48, 64 and 96 px; asking for a
+ *  by mkicons.py into atlases at 16, 20, 24, 32, 40, 48, 64 and 96 px; asking for a
  *  size in between scales the next one up down. Glyphs (GLYPH_*, glyphs.h)
  *  are monochrome UI symbols -- Lucide's -- at 16, 20 and 24, tinted to
  *  whatever colour the caller passes.
