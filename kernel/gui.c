@@ -856,7 +856,8 @@ static void wm_track(uint64_t now) {
             }
         }
         int focused = (i == wm_focus);
-        if (focused != s->focus_prev && s->stale < 1) s->stale = 1;
+        int refocus = focused != s->focus_prev;
+        if (refocus && s->stale < 1) s->stale = 1;
         s->open_prev = w->open; s->min_prev = w->minimized; s->focus_prev = focused;
         s->gx = w->x; s->gy = w->y; s->gw = w->w; s->gh = w->h;
         if (s->anim != WA_NONE) {
@@ -878,6 +879,19 @@ static void wm_track(uint64_t now) {
             if (vis) gui_damage(f.x, f.y, f.w, f.h, L_WIN);
         } else if (vis && s->stale) {
             gui_damage(r.x, r.y, r.w, s->stale == 1 ? TITLE_H : r.h, L_WIN);
+            /* Focus changes the shadow too -- the focused window casts a
+             * bigger, darker one -- and damaging only the title bar left the
+             * old shadow on screen until something else happened to repaint
+             * that patch of wallpaper (a window that lost focus to a snapped
+             * neighbour kept a dark band under it, cut square where the dock
+             * had redrawn its corner). So the ring around the window, and the
+             * bottom corners, which show what is under them. */
+            if (refocus) {
+                gui_damage(f.x, f.y, f.w, r.y - f.y, L_WIN);
+                gui_damage(f.x, r.y + r.h - WIN_R, f.w, f.y + f.h - (r.y + r.h - WIN_R), L_WIN);
+                gui_damage(f.x, r.y, r.x - f.x, r.h, L_WIN);
+                gui_damage(r.x + r.w, r.y, f.x + f.w - (r.x + r.w), r.h, L_WIN);
+            }
         }
         s->foot_ok = vis;
         if (vis) s->foot = f;
