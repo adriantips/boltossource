@@ -71,6 +71,13 @@ static void styles(void) {
 #define HOT_A   (g_theme.dark ? 26 : 16)
 #define PRESS_A (g_theme.dark ? 40 : 26)
 
+/* A rule across glass. COL_SEP is an opaque colour picked for window
+ * backgrounds, and painted over a blurred wallpaper it comes out as a hard
+ * black line -- the notification centre had one under its last card. */
+static void glass_rule(int x, int y, int w) {
+    gfx_fill_a(x, y, w, 1, g_theme.dark ? 0xFFFFFF : 0x000000, g_theme.dark ? 30 : 24);
+}
+
 /* A glass panel: where it is, the cache of what is behind it, its layer. */
 typedef struct {
     int        layer;
@@ -729,7 +736,7 @@ static void draw_menu(void) {
     int x = p->x, y = p->y + 5;
     for (int i = 0; i < nmi; i++) {
         if (mi[i].flags & MF_SEP) {
-            gfx_fill(x + 12, y + SEP_H / 2, p->w - 24, 1, COL_SEP);
+            glass_rule(x + 12, y + SEP_H / 2, p->w - 24);
             y += SEP_H;
             continue;
         }
@@ -1224,7 +1231,7 @@ static void draw_qs(void) {
     }
     /* footer */
     int fy0 = y + p->h - 48;
-    gfx_fill(x + 16, fy0, QS_W - 32, 1, COL_SEP);
+    glass_rule(x + 16, fy0, QS_W - 32);
     battery_t b;
     char bt[40];
     if (power_battery(&b) && b.present) {
@@ -1342,7 +1349,7 @@ static void draw_nc(void) {
     }
     /* the calendar */
     int cy0 = y + h - CAL_H;
-    gfx_fill(x + 16, cy0, w - 32, 1, COL_SEP);
+    glass_rule(x + 16, cy0, w - 32);
     static const char *MON[13] = { "", "January", "February", "March", "April", "May", "June",
         "July", "August", "September", "October", "November", "December" };
     struct rtc_time t; rtc_now(&t);
