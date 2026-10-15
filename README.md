@@ -42,16 +42,22 @@ honest account of what it cannot do yet.
 
 ![BoltOS Desktop](imageshowcase.png)
 
-*A screenshot of the BoltOS desktop showing the windowed GUI, taskbar, and desktop launcher icons.*
+*The BoltOS desktop: glass dock and tray, windows with their own surfaces, and the apps on the control kit.*
 
 ## Desktop & apps
 
-The GUI (`kernel/gui.c`) is a compositing window manager: every window draws into
-a backbuffer through vector helpers (`g_fill`, `g_round`, `g_text`, `gui_icon`, …),
-which is flipped to the framebuffer. Windows support move/resize, focus/z-order,
-minimize/maximize, a taskbar with pinning, right-click context menus, and a
-desktop of double-clickable launcher icons. Font rendering uses **TrueType**
-outlines (`kernel/ttf.c`) in addition to the built-in bitmap fonts. A
+The GUI is a compositing window manager built from damage: every window renders
+into a surface of its own (`kernel/gui.c`), and a frame redraws only what
+changed, so a window can open, minimise or tile with an animation without its
+app drawing an extra frame. Around the windows, `kernel/gui_shell.c` draws the
+shell in blurred glass -- a floating dock, a tray, Start with search, Quick
+Settings, a notification centre, context menus, Alt+Tab -- and
+`kernel/gui_login.c` the sign-in and lock screens. Drawing goes through
+`kernel/gfx.c` (anti-aliased shapes, shadows, the glass), text is Inter and
+DejaVu Sans Mono rasterised from their outlines (`kernel/font.c`), icons come
+from atlases `mkicons.py` renders (`kernel/icons.c`), and newer apps are built
+on a small control kit (`kernel/ui.c`). Under QEMU without acceleration the
+desktop turns its animations off by itself; see `display motion`. A
 system-wide clipboard (`kernel/clipboard.c`) carries text, an image or a
 list of files -- one item, typed, so every reader asks what kind it is before
 taking it.
@@ -131,15 +137,15 @@ driver.
 ### Virtual desktops
 
 Four of them. A window belongs to the desktop it was opened on, and from the
-others it is not merely unpainted -- it is out of the taskbar, out of Alt+Tab,
+others it is not merely unpainted -- it is out of the dock, out of Alt+Tab,
 and out of every hit test, so nothing you click or type can reach a window you
-cannot see. Closed-but-pinned taskbar launchers are shortcuts rather than
+cannot see. Pinned dock icons with nothing open are shortcuts rather than
 windows, so they appear on all four.
 
 Win+1..4 switches, Ctrl+Alt+Left/Right walks, Win+Shift+Left/Right
 takes the focused window with you (following it, because throwing a window
-somewhere you cannot see is not a feature), and the pips at the left of the
-taskbar do the same with the mouse -- lit where there are windows, wide where
+somewhere you cannot see is not a feature), and the pips in the panel left of
+the dock do the same with the mouse -- lit where there are windows, wide where
 you are. `desk`, `desk N` and `desk move N` are the shell front end, for the
 Terminal and for a session over SSH.
 

@@ -125,16 +125,18 @@ the recovery entry from the boot menu to read your files off the disk.
 
 ## The desktop
 
-A taskbar at the bottom, a Start button in the middle of it, and your windows
-above.
+Three panels of glass along the bottom of the screen: the desktop switcher on
+the left, the dock in the middle — Start and search, then your pinned and open
+apps — and the tray on the right with the network, the volume and the clock.
+Your windows sit above them.
 
 ### Getting around
 
 | | |
 | --- | --- |
-| **Start menu** | Tap the **Win** key, or click the Start button. Start typing to filter the apps. |
-| **Switch windows** | **Alt+Tab** forward, **Shift+Alt+Tab** back. |
-| **Close a window** | **Alt+F4**, or the × in its title bar. |
+| **Start menu** | Tap the **Win** key, or click the bolt at the left of the dock. Start typing to search apps, settings and files. |
+| **Switch windows** | **Alt+Tab** forward, **Shift+Alt+Tab** back. Hold Alt to see them all. |
+| **Close a window** | **Alt+F4**, or the red light at the left of its title bar. Yellow minimises it to the dock, green maximises. |
 | **Show the desktop** | **Win+D**, and again to put everything back. |
 | **Snap a window** | Drag it to the left or right edge for half the screen, or the top to maximise. **Win+Left/Right/Up/Down** does the same. |
 | **Lock the screen** | **Ctrl+Alt+L**. It also locks itself after ten idle minutes. |
@@ -145,7 +147,7 @@ All of these can be changed — see [Keyboard shortcuts](#keyboard-shortcuts).
 ### Virtual desktops
 
 There are four, so you can keep what you are doing apart from what you were
-doing. The four pips at the left end of the taskbar show which one you are on
+doing. The four pips in the panel left of the dock show which one you are on
 and which ones have windows.
 
 | | |
@@ -156,24 +158,34 @@ and which ones have windows.
 | Click a pip | Go to that desktop |
 
 A window lives on one desktop. From the others it is not just hidden — it is out
-of the taskbar and out of Alt+Tab, and nothing you click or type can reach it.
+of the dock and out of Alt+Tab, and nothing you click or type can reach it.
 
 ### Notifications
 
-The bell in the taskbar keeps everything the machine has told you, with a badge
-for what you have not read. Click it to open the notification centre: click a
-row to mark it read, the × on a row to remove it, **Clear** to empty the list.
-Toasts appear bottom-right for a few seconds; clicking one opens the centre on
-it.
+The bell beside the clock keeps everything the machine has told you, with a dot
+for what you have not read. Click the clock to open the notification centre,
+with a calendar under it: click a card to mark it read, the × on a card to
+remove it, **Clear all** to empty the list. Toasts appear in the corner for a
+few seconds; clicking one opens the centre on it.
 
 Some of these matter. If you see **"Disk write failed. Changes are RAM-only"**,
 stop and read [Troubleshooting](#troubleshooting) before you reboot.
 
-### Volume, network and the clock
+### Quick Settings
 
-At the right end of the taskbar. Click the speaker for a volume slider (the
-scroll wheel over it works too), the network glyph to see whether you are online
-and on what address, and the clock for a calendar.
+Click the network and speaker icons in the tray. Tiles for the network, Focus
+(which holds toasts back), dark mode, mute, screen recording and a screenshot;
+sliders for brightness and volume; and the Mixer, for one level per source.
+
+### Animations
+
+Windows grow open, fly to the dock when you minimise them, slide between
+desktops; panels fade in. On a machine that draws slowly — QEMU without
+acceleration is the usual one — that is a slideshow, so **Auto** turns all of
+it off there and things simply appear where they are going. Settings →
+Display → Animations picks Auto, Full or Reduced, and so does
+`display motion auto|full|reduced` in a terminal. `display` says which is in
+force and why.
 
 ### Keyboard shortcuts
 
