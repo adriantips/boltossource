@@ -445,6 +445,54 @@ static int      desk_from = -1, desk_dir;
 static uint64_t desk_t0;
 #define DESK_MS 320
 
+/* ---- reduce motion ---------------------------------------------------------- */
+int gui_motion_off;
+static int copy_us;             /* one 1024x768 frame copied, measured at boot */
+static int blend_us;            /* a 128x128 alpha fill, the same            */
+
+/* Time a frame-sized copy and a small alpha blend: the cheapest thing a
+ * frame is made of, and the thing most of one is made of. Best of three,
+ * because the first can land on a host that is busy doing something else.
+ *
+ * Measured here, on the same host, at this point in boot:
+ *
+ *                     copy 1024x768    blend 128x128
+ *     QEMU, TCG           7.3 ms           0.7 ms
+ *     QEMU, WHPX          0.3 ms          <0.05 ms
+ *
+ * `display bench` gets four or five times the TCG figures for the same work
+ * and I have not pinned down why; the thresholds are set against these,
+ * since these are what this function sees. A window fade at TCG speed is
+ * three or four frames of a half-transparent window, so Auto turns it off. */
+static void motion_calibrate(void) {
+    if (!BB || !BG) return;
+    uint64_t best = ~0ull, bbest = ~0ull;
+    for (int k = 0; k < 3; k++) {
+        uint64_t t = now_us();
+        for (int y = 0; y < 256; y++) gfx_memcpy32(BB + y * 1024, BG + y * 1024, 1024);
+        t = now_us() - t;
+        if (t < best) best = t;
+        t = now_us();
+        gfx_fill_a(0, 0, 128, 128, 0x808080, 128);
+        t = now_us() - t;
+        if (t < bbest) bbest = t;
+    }
+    copy_us = (int)(best * 3);
+    blend_us = (int)bbest;
+}
+
+#define MOTION_SLOW_COPY_US  2500    /* WHPX 300, TCG 7300 */
+#define MOTION_SLOW_BLEND_US  250    /* WHPX <50, TCG  700 */
+void gui_motion_apply(void) {
+    int m = g_settings.motion;
+    int slow = copy_us > MOTION_SLOW_COPY_US || blend_us > MOTION_SLOW_BLEND_US;
+    int off = m == MOTION_REDUCED || (m == MOTION_AUTO && slow);
+    if (off != gui_motion_off) { gui_motion_off = off; gui_damage_all(); }
+}
+int gui_motion_reduced(void) { return gui_motion_off; }
+int gui_frame_copy_us(void)  { return copy_us; }
+int gui_blend_us(void)       { return blend_us; }
+
 int gui_window_focused(window_t *win) { return wm_focus >= 0 && &wins[wm_focus] == win; }
 
 /* topmost open, non-minimised window index on this desktop, or -1 */
@@ -778,24 +826,24 @@ static void wm_track(uint64_t now) {
         int visible_desk = on_desk(w);
         if (w->open && !s->open_prev) {
             if (visible_desk && !w->minimized) {
-                s->anim = WA_OPEN; s->t0 = now; s->dur = 230;
+                s->anim = WA_OPEN; s->t0 = now; s->dur = motion_ms(230);
             }
             s->stale = 2;
         } else if (!w->open && s->open_prev) {
             if (visible_desk && !s->min_prev && s->s.px) {
-                s->anim = WA_CLOSE; s->t0 = now; s->dur = 170;
+                s->anim = WA_CLOSE; s->t0 = now; s->dur = motion_ms(170);
             }
         } else if (w->open && w->minimized && !s->min_prev) {
             if (visible_desk && s->s.px) {
                 rect_t d;
                 shell_dock_rect(i, &d);
-                s->anim = WA_MIN; s->t0 = now; s->dur = 300; s->to = d;
+                s->anim = WA_MIN; s->t0 = now; s->dur = motion_ms(300); s->to = d;
             }
         } else if (w->open && !w->minimized && s->min_prev) {
             if (visible_desk) {
                 rect_t d;
                 shell_dock_rect(i, &d);
-                s->anim = WA_RESTORE; s->t0 = now; s->dur = 300; s->to = d;
+                s->anim = WA_RESTORE; s->t0 = now; s->dur = motion_ms(300); s->to = d;
             }
             s->stale = 2;
         } else if (w->open && !w->minimized &&
@@ -803,7 +851,7 @@ static void wm_track(uint64_t now) {
             int direct = (i == wm_drag || i == resize_id);
             if (w->w != s->gw || w->h != s->gh) s->stale = 2;
             if (!direct && visible_desk && s->anim == WA_NONE && s->gw > 0) {
-                s->anim = WA_GEOM; s->t0 = now; s->dur = 220;
+                s->anim = WA_GEOM; s->t0 = now; s->dur = motion_ms(220);
                 s->from.x = s->gx; s->from.y = s->gy; s->from.w = s->gw; s->from.h = s->gh;
             }
         }
@@ -837,7 +885,7 @@ static void wm_track(uint64_t now) {
     }
     if (desk_from >= 0) {
         any_anim = 1;
-        if (now >= desk_t0 + DESK_MS) { desk_from = -1; gui_damage_all(); }
+        if (now >= desk_t0 + (uint64_t)motion_ms(DESK_MS)) { desk_from = -1; gui_damage_all(); }
     }
 }
 
@@ -1668,6 +1716,7 @@ void gui_run(void) {
     BBS.px = BB; BBS.w = W; BBS.h = H; BBS.stride = W;
     gfx_bind(&BBS, 0, 0, 0, 0, W, H);
     ws_stale_title = stale_title;
+    motion_calibrate();        /* before settings_init applies Auto */
 
     font_init();
     settings_init();           /* theme + logical size + wallpaper */

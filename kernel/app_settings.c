@@ -55,6 +55,7 @@ static int      sl_x[4], sl_w[4]; /* slider geometry, desktop coords, by id-SL_B
 #define ID_TEST      1000
 #define ID_MIXER     1001
 #define SL_BASE      1100         /* sliders: + 0 brightness, 1 volume */
+#define ID_MOTION    1200         /* + MOTION_*                    */
 
 /* ---- wallpapers ------------------------------------------------------------- */
 typedef struct { const char *name; const char *stem; int style; } wpick_t;
@@ -295,7 +296,22 @@ static int draw_display(int x, int y, int w) {
     ui_slider(&U, sl_x[0], y + 30, sl_w[0], backlight_get(), SL_BASE + 0);
     snprintf(line, sizeof line, "%d%%", backlight_get());
     text_r(x + w - 16, y + 30, line, FONT_REGULAR, 12, COL_TEXT_DIM);
-    return y + 70;
+    y += 70;
+
+    ui_card(x, y, w, 116);
+    row_label(x + 16, y + 30, "Animations", "Auto turns them off on a machine that draws slowly");
+    const char *mo[MOTION_COUNT];
+    for (int i = 0; i < MOTION_COUNT; i++) mo[i] = settings_motion_name(i);
+    ui_segmented(&U, x + 16, y + 62, w - 32, mo, MOTION_COUNT, g_settings.motion, ID_MOTION);
+    if (g_settings.motion == MOTION_AUTO) {
+        int us = gui_frame_copy_us();
+        snprintf(line, sizeof line, "%s " TXT_EMDASH " a frame copy takes %d.%d ms",
+                 gui_motion_reduced() ? "Off" : "On", us / 1000, us / 100 % 10);
+    } else {
+        snprintf(line, sizeof line, "%s", gui_motion_reduced() ? "Off" : "On");
+    }
+    text_r(x + w - 16, y + 30, line, FONT_REGULAR, 12, COL_TEXT_DIM);
+    return y + 126;
 }
 
 static int draw_sound(int x, int y, int w) {
@@ -447,6 +463,7 @@ static void act(int id, int lx_desktop) {
     if (id >= ID_SCALE && id < ID_SCALE + settings_scale_count()) { g_settings.scale_index = id - ID_SCALE; settings_apply(); return; }
     if (id >= ID_AUDIO && id < ID_AUDIO + settings_audio_count()) { g_settings.audio_device = id - ID_AUDIO; settings_apply(); return; }
     if (id >= ID_FONT && id < ID_FONT + settings_font_count()) { g_settings.font = id - ID_FONT; settings_apply(); return; }
+    if (id >= ID_MOTION && id < ID_MOTION + MOTION_COUNT) { g_settings.motion = id - ID_MOTION; gui_motion_apply(); return; }
     if (id == ID_TEST) {
         /* 880 Hz for ~200 ms; the tick silences it. Honours Muted. */
         pcspk_tone(880);

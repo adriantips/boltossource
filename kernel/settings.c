@@ -168,6 +168,9 @@ const char *settings_audio_name(int i)       { return (i >= 0 && i < NAUDIO) ? a
 int         settings_font_count(void)        { return NFONT; }
 const char *settings_font_name(int i)        { return (i >= 0 && i < NFONT) ? font_names[i] : ""; }
 
+static const char *motion_names[MOTION_COUNT] = { "Auto", "Full", "Reduced" };
+const char *settings_motion_name(int i)      { return (i >= 0 && i < MOTION_COUNT) ? motion_names[i] : ""; }
+
 int         settings_aspect_count(void)      { return NASP; }
 const char *settings_aspect_name(int i)      { return (i >= 0 && i < NASP) ? asp_tab[i].name : ""; }
 void settings_aspect_ratio(int i, int *num, int *den) {
@@ -194,6 +197,7 @@ void settings_init(void) {
     g_settings.audio_device = 0;     /* PC Speaker */
     g_settings.font         = 1;     /* Arial (8x16) is the default face */
     g_settings.scale_index  = 0;     /* Auto: 100% unless the panel is huge */
+    g_settings.motion       = MOTION_AUTO;
     settings_apply();
 }
 
@@ -207,5 +211,6 @@ void settings_apply(void) {
     g_theme.sel        = g_settings.accent;
     pcspk_set_enabled(g_settings.audio_device == 0);   /* PC Speaker vs Muted */
     g_set_font(g_settings.font);                        /* swap the GUI font face */
+    gui_motion_apply();
     gui_apply_display();             /* re-mode the panel + repaint if changed */
 }

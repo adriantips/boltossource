@@ -1674,7 +1674,7 @@ static void layout_panels(void) {
 
     float t;
     int a = panel_alpha_anim(start_open, start_closing, start_t0, 240, 160, &t);
-    if (start_closing && now >= start_t0 + 160) start_closing = 0;
+    if (start_closing && now >= start_t0 + (uint64_t)motion_ms(160)) start_closing = 0;
     if (a > 0) {
         start_rect(&x, &y, &w, &h);
         int off = (int)((1.0f - t) * 36.0f);
@@ -1682,7 +1682,7 @@ static void layout_panels(void) {
         P[P_START].env = (rect_t){ x, y, w, off ? h + 36 : h };
     }
     a = panel_alpha_anim(qs_open, qs_closing, qs_t0, 220, 150, &t);
-    if (qs_closing && now >= qs_t0 + 150) qs_closing = 0;
+    if (qs_closing && now >= qs_t0 + (uint64_t)motion_ms(150)) qs_closing = 0;
     if (a > 0) {
         qs_rect(&x, &y, &w, &h);
         int off = (int)((1.0f - t) * 20.0f);
@@ -1690,7 +1690,7 @@ static void layout_panels(void) {
         P[P_QS].env = (rect_t){ x, y, w, off ? h + 20 : h };
     }
     a = panel_alpha_anim(nc_open, nc_closing, nc_t0, 240, 160, &t);
-    if (nc_closing && now >= nc_t0 + 160) nc_closing = 0;
+    if (nc_closing && now >= nc_t0 + (uint64_t)motion_ms(160)) nc_closing = 0;
     if (a > 0) {
         nc_rect(&x, &y, &w, &h);
         int off = (int)((1.0f - t) * 40.0f);
@@ -1756,25 +1756,27 @@ int shell_update(uint64_t now) {
         }
         d->target = tg;
         float diff = d->target - d->scale;
-        if (diff > 0.002f || diff < -0.002f) { d->scale += diff * 0.35f; anim = 1; }
+        if (gui_motion_off) d->scale = d->target;
+        else if (diff > 0.002f || diff < -0.002f) { d->scale += diff * 0.35f; anim = 1; }
         else d->scale = d->target;
-        if (d->bounce0 && now < d->bounce0 + 900) anim = 1;
+        if (d->bounce0 && now < d->bounce0 + (uint64_t)motion_ms(900)) anim = 1;
     }
     if (anim) {
         int x, y, w, h; dock_layout(&x, &y, &w, &h);
         gui_damage(x - 8, y - 34, w + 16, h + 34, L_SHELL);
     }
     layout_panels();
-    if (start_open || start_closing) { if (now < start_t0 + 260) anim = 1; }
-    if (qs_open || qs_closing) { if (now < qs_t0 + 240) anim = 1; }
-    if (nc_open || nc_closing) { if (now < nc_t0 + 260) anim = 1; }
-    if (menu_open && now < menu_t0 + 160) anim = 1;
-    if (sw_open && now < sw_t0 + 180) anim = 1;
-    if (prompt_active && now < prompt_t0 + 200) anim = 1;
+    #define RUNNING(t0, ms) (now < (t0) + (uint64_t)motion_ms(ms))
+    if (start_open || start_closing) { if (RUNNING(start_t0, 260)) anim = 1; }
+    if (qs_open || qs_closing) { if (RUNNING(qs_t0, 240)) anim = 1; }
+    if (nc_open || nc_closing) { if (RUNNING(nc_t0, 260)) anim = 1; }
+    if (menu_open && RUNNING(menu_t0, 160)) anim = 1;
+    if (sw_open && RUNNING(sw_t0, 180)) anim = 1;
+    if (prompt_active && RUNNING(prompt_t0, 200)) anim = 1;
     if (rec_active()) anim = 1;          /* the recording dot breathes */
     int sh = gui_snap_hint();
     if (sh != snap_shown) { snap_shown = sh; snap_t0 = now; }
-    if (sh != SNAP_NONE && now < snap_t0 + 200) {
+    if (sh != SNAP_NONE && RUNNING(snap_t0, 200)) {
         rect_t r; gui_snap_rect(sh, &r);
         gui_damage(r.x, r.y, r.w, r.h, L_WIN);
         anim = 1;

@@ -91,10 +91,19 @@ static inline float ease_back(float t)  {
     return 1.0f + c3 * u * u * u + c1 * u * u;
 }
 static inline float clamp01(float v) { return v < 0.0f ? 0.0f : v > 1.0f ? 1.0f : v; }
-/* progress of an animation that started at t0 and lasts dur ms, 0..1 */
+/* Reduce motion. With it on, every animation is over the moment it starts:
+ * a window appears where it is going, a panel opens already opaque. Auto
+ * turns it on for a machine that copies a frame too slowly for a fade to be
+ * anything but a slideshow -- QEMU without acceleration, mostly. */
+extern int gui_motion_off;
+static inline int motion_ms(int ms) { return gui_motion_off ? 0 : ms; }
+
+/* progress of an animation that started at t0 and lasts dur ms, 0..1.
+ * One that has not started yet is at 0 even with motion off: a toast's
+ * fade-out is timed this way, and it must not fade out on arrival. */
 static inline float anim_t(uint64_t now, uint64_t t0, int dur) {
-    if (dur <= 0 || now >= t0 + (uint64_t)dur) return 1.0f;
-    if (now <= t0) return 0.0f;
+    if (now < t0) return 0.0f;
+    if (dur <= 0 || gui_motion_off || now >= t0 + (uint64_t)dur) return 1.0f;
     return (float)(now - t0) / (float)dur;
 }
 

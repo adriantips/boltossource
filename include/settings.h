@@ -23,7 +23,10 @@ typedef struct {
     int      audio_device;  /* 0 = PC Speaker, 1 = Muted                 */
     int      font;          /* 0 = Retro 8x8, 1 = Arial 8x16 (default)   */
     int      scale_index;   /* display scaling table index (0 = Auto)     */
+    int      motion;        /* MOTION_*                                   */
 } settings_t;
+
+enum { MOTION_AUTO = 0, MOTION_FULL, MOTION_REDUCED, MOTION_COUNT };
 
 extern settings_t g_settings;
 
@@ -69,3 +72,5 @@ const char *settings_audio_name(int i);
 
 int         settings_font_count(void);
 const char *settings_font_name(int i);
+
+const char *settings_motion_name(int i);           /* i in 0..MOTION_COUNT-1   */

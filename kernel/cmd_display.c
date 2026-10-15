@@ -31,6 +31,10 @@ static void show(void) {
     kprintf("\n");
 
     kprintf("bright   %d%% (%s)\n", backlight_get(), backlight_name());
+    int us = gui_frame_copy_us(), bl = gui_blend_us();
+    kprintf("motion   %s, animations %s (a frame copy takes %d.%d ms, a blend %d.%d)\n",
+            settings_motion_name(g_settings.motion), gui_motion_reduced() ? "off" : "on",
+            us / 1000, us / 100 % 10, bl / 1000, bl / 100 % 10);
     int fr, last, avg, worst;
     gui_frame_stats(&fr, &last, &avg, &worst);
     kprintf("frames   %d since last asked; last %d.%d ms, mean %d.%d ms, worst %d.%d ms\n",
@@ -88,6 +92,19 @@ int cmd_display(int argc, char **argv) {
         return 0;
     }
 
+    if (strcmp(argv[1], "motion") == 0) {
+        if (argc < 3) { kprintf("usage: display motion auto|full|reduced\n"); return 1; }
+        for (int i = 0; i < MOTION_COUNT; i++) {
+            if (strcasecmp(argv[2], settings_motion_name(i)) != 0) continue;
+            g_settings.motion = i;
+            gui_motion_apply();
+            show();
+            return 0;
+        }
+        kprintf("display: motion is auto, full or reduced (%s)\n", argv[2]);
+        return 1;
+    }
+
     if (strcmp(argv[1], "res") == 0) {
         if (argc < 3) { kprintf("usage: display res NAME   (e.g. 1080p)\n"); return 1; }
         for (int i = 0; i < settings_res_count(); i++) {
@@ -102,6 +119,6 @@ int cmd_display(int argc, char **argv) {
     }
 
     kprintf("usage: display | display scale NAME | display res NAME"
-            " | display brightness PCT\n");
+            " | display brightness PCT | display motion MODE\n");
     return 1;
 }
