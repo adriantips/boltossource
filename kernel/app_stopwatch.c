@@ -7,6 +7,8 @@
  * ===========================================================================*/
 #include <stdint.h>
 #include "gui.h"
+#include "gfx.h"
+#include "font.h"
 #include "pit.h"
 #include "pcspk.h"
 #include "string.h"
@@ -114,69 +116,75 @@ static void sw_click(window_t *w, int lx, int ly) {
 }
 
 /* ---- draw --------------------------------------------------------------- */
+/* bg 0 means the quiet grey every secondary button here is */
 static void btn(int x, int y, int w, int h, const char *label, int id, uint32_t bg, uint32_t fg) {
-    g_round(x, y, w, h, 8, bg, 255);
-    int lw = g_text_width(label, 1);
-    g_text(x + (w - lw) / 2, y + (h - 8) / 2, label, fg, 1);
+    if (bg) gfx_rrect(x, y, w, h, h / 2, bg, 255);
+    else    gfx_rrect(x, y, w, h, h / 2, THEME_DARK ? 0xFFFFFF : 0x000000, THEME_DARK ? 22 : 14);
+    text_c(x + w / 2, y + h / 2, label, FONT_MEDIUM, 13, fg);
     hot(x, y, w, h, id);
 }
 
 static void sw_draw(window_t *w, int cx, int cy, int cw, int ch) {
-    (void)w;
-    g_fill(cx, cy, cw, ch, COL_PANEL);
+    (void)w; (void)ch;
+    gfx_fill(cx, cy, cw, ch, COL_PANEL);
     nshot = 0; org_x = cx; org_y = cy;
 
-    /* tab bar */
-    int tw = (cw - 28) / 2, tx = cx + 10, ty = cy + 10;
-    g_round(tx, ty, tw, 30, 8, S.tab == TAB_SW ? COL_ACCENT : COL_PANEL_3, 255);
-    g_text(tx + (tw - g_text_width("Stopwatch", 1)) / 2, ty + 11, "Stopwatch", S.tab == TAB_SW ? 0xFFFFFF : COL_TEXT, 1);
-    hot(tx, ty, tw, 30, B_TAB_SW);
-    int tx2 = tx + tw + 8;
-    g_round(tx2, ty, tw, 30, 8, S.tab == TAB_TIMER ? COL_ACCENT : COL_PANEL_3, 255);
-    g_text(tx2 + (tw - g_text_width("Timer", 1)) / 2, ty + 11, "Timer", S.tab == TAB_TIMER ? 0xFFFFFF : COL_TEXT, 1);
-    hot(tx2, ty, tw, 30, B_TAB_TM);
+    /* the two modes, as a segmented control */
+    int sx = cx + 16, sw = cw - 32, sy = cy + 14, half = (sw - 4) / 2;
+    gfx_rrect(sx, sy, sw, 32, 9, 0x000000, THEME_DARK ? 60 : 14);
+    for (int k = 0; k < 2; k++) {
+        int on = (k == 0) == (S.tab == TAB_SW);
+        int kx = sx + 2 + k * half;
+        if (on) {
+            gfx_shadow(kx, sy + 2, half, 28, 7, 4, 1, 0, 60);
+            gfx_rrect(kx, sy + 2, half, 28, 7, THEME_DARK ? 0x5A5A62 : 0xFFFFFF, 255);
+        }
+        text_c(kx + half / 2, sy + 16, k ? "Timer" : "Stopwatch", on ? FONT_SEMIBOLD : FONT_REGULAR, 13, COL_TEXT);
+        hot(kx, sy, half, 32, k ? B_TAB_TM : B_TAB_SW);
+    }
 
-    /* big readout */
+    /* big readout, as large as the window allows */
     char buf[16];
     uint64_t val = (S.tab == TAB_SW) ? sw_elapsed() : tm_remaining();
     fmt_time(val, buf, sizeof(buf));
-    int scale = 5;
-    while (scale > 2 && g_text_width(buf, scale) > cw - 28) scale--;
-    int bw = g_text_width(buf, scale);
+    int px = 64;
+    while (px > 28 && font_width(FONT_DISPLAY, px, buf, -1) > cw - 32) px -= 4;
+    int bw = font_width(FONT_DISPLAY, px, buf, -1);
     uint32_t tcol = (S.tab == TAB_TIMER && S.ringing) ? COL_BAD : COL_TEXT;
-    g_text(cx + (cw - bw) / 2, cy + 88, buf, tcol, scale);
+    int base = cy + 60 + font_capheight(FONT_DISPLAY, px) + (64 - px) / 2 + 12;
+    font_draw(FONT_DISPLAY, px, cx + (cw - bw) / 2, base, buf, -1, tcol, 255);
 
-    int by = cy + 88 + 8 * scale + 28;
-    int bh = 38;
+    int by = cy + 152;
+    int bh = 40;
 
     if (S.tab == TAB_SW) {
-        int half = (cw - 28) / 2;
-        btn(cx + 10, by, half, bh, S.sw_run ? "Stop" : "Start", B_SW_TOGGLE,
-            S.sw_run ? COL_WARN : COL_GOOD, 0xFFFFFF);
-        btn(cx + 10 + half + 8, by, half, bh, "Reset", B_SW_RESET, COL_PANEL_3, COL_TEXT);
+        int bw2 = (cw - 32 - 12) / 2;
+        btn(cx + 16, by, bw2, bh, "Reset", B_SW_RESET, 0, COL_TEXT);
+        btn(cx + 16 + bw2 + 12, by, bw2, bh, S.sw_run ? "Stop" : "Start", B_SW_TOGGLE,
+            S.sw_run ? COL_BAD : COL_GOOD, 0xFFFFFF);
     } else {
-        /* adjust row (disabled visual while running) */
-        int q = (cw - 10 - 10 - 3 * 8) / 4, ax = cx + 10;
-        uint32_t abg = S.tm_run ? COL_PANEL_2 : COL_PANEL_3;
-        btn(ax, by, q, bh, "-1m",  B_TM_M1,  abg, COL_TEXT); ax += q + 8;
-        btn(ax, by, q, bh, "-10s", B_TM_M10, abg, COL_TEXT); ax += q + 8;
-        btn(ax, by, q, bh, "+10s", B_TM_P10, abg, COL_TEXT); ax += q + 8;
-        btn(ax, by, q, bh, "+1m",  B_TM_P1,  abg, COL_TEXT);
-        int by2 = by + bh + 10, half = (cw - 28) / 2;
-        btn(cx + 10, by2, half, bh, S.tm_run ? "Pause" : "Start", B_TM_TOGGLE,
+        /* adjust row (dimmed while running) */
+        int q = (cw - 32 - 3 * 8) / 4, ax = cx + 16;
+        uint32_t fg = S.tm_run ? COL_TEXT_MUTE : COL_TEXT;
+        btn(ax, by, q, 34, "-1m",  B_TM_M1,  0, fg); ax += q + 8;
+        btn(ax, by, q, 34, "-10s", B_TM_M10, 0, fg); ax += q + 8;
+        btn(ax, by, q, 34, "+10s", B_TM_P10, 0, fg); ax += q + 8;
+        btn(ax, by, q, 34, "+1m",  B_TM_P1,  0, fg);
+        int by2 = by + 34 + 10, bw2 = (cw - 32 - 12) / 2;
+        btn(cx + 16, by2, bw2, bh, "Reset", B_TM_RESET, 0, COL_TEXT);
+        btn(cx + 16 + bw2 + 12, by2, bw2, bh, S.tm_run ? "Pause" : "Start", B_TM_TOGGLE,
             S.tm_run ? COL_WARN : COL_GOOD, 0xFFFFFF);
-        btn(cx + 10 + half + 8, by2, half, bh, "Reset", B_TM_RESET, COL_PANEL_3, COL_TEXT);
     }
 }
 
 void stopwatch_app_init(void) {
     memset(&S, 0, sizeof(S));
     S.tm_set = S.tm_remain = 60000;        /* default 1 minute */
-    window_t *win = gui_add_window("Stopwatch", 320, 280, 0x4FC3F7, ICON_STOPWATCH);
+    window_t *win = gui_add_window("Stopwatch", 320, 300, 0x4FC3F7, ICON_STOPWATCH);
     if (!win) return;
     win->draw  = sw_draw;
     win->click = sw_click;
     win->tick  = sw_tick;
-    win->min_w = 280; win->min_h = 250;
+    win->min_w = 280; win->min_h = 300;
     win->x = 380; win->y = 130;
 }

@@ -6,6 +6,9 @@
  * ===========================================================================*/
 #include <stdint.h>
 #include "gui.h"
+#include "gfx.h"
+#include "font.h"
+#include "icons.h"
 #include "pmm.h"
 #include "kheap.h"
 #include "sysreg.h"
@@ -53,30 +56,38 @@ static void tm_tick(window_t *w) {
 static void pct_str(int v, char *out) { sh_utoa((uint64_t)v, out); kstrlcat(out, "%", 8); }
 
 static void graph(int x, int y, int w, int h, const uint8_t *data, int n, uint32_t color) {
-    g_round(x, y, w, h, 4, 0x0E0E16, 255);
-    for (int i = 1; i < 4; i++) g_hline(x + 2, y + h * i / 4, w - 4, 0x1E1E2A);   /* grid */
-    int base = y + h - 2, avail = h - 4, span = w - 4;
-    int start = n > span ? n - span : 0;
+    gfx_rrect(x, y, w, h, 8, 0x000000, THEME_DARK ? 70 : 12);
+    for (int i = 1; i < 4; i++)
+        gfx_fill_a(x + 6, y + h * i / 4, w - 12, 1, THEME_DARK ? 0xFFFFFF : 0x000000, THEME_DARK ? 14 : 16);
+    gfx_clip_push(x, y, w, h);
+    int base = y + h - 3, avail = h - 8, span = w - 8;
+    int start = n > span / 2 ? n - span / 2 : 0;
+    int px = -1, py = 0;
     for (int i = start; i < n; i++) {
-        int col = x + 2 + (i - start);
+        int col = x + 4 + (i - start) * 2;
         int vh = data[i] * avail / 100;
-        if (vh > 0) {
-            g_blend(col, base - vh, 1, vh, color, 130);     /* translucent fill   */
-            g_fill(col, base - vh, 1, 2, color);            /* bright top of bar  */
-        }
+        /* an area under a line: the fill faint, the line itself the colour */
+        if (vh > 0) gfx_fill_a(col, base - vh, 2, vh, color, 60);
+        if (px >= 0) gfx_line((float)px, (float)py, (float)col, (float)(base - vh), 1.6f, color, 255);
+        px = col; py = base - vh;
     }
+    gfx_clip_pop();
 }
 
-static void card(int x, int y, int w, int h, const char *label, int pct,
+static void card(int x, int y, int w, int h, int glyph, const char *label, int pct,
                  const char *sub, const uint8_t *hist, int n, uint32_t color) {
-    g_round(x, y, w, h, 8, COL_PANEL_2, 255);
-    g_text(x + 16, y + 14, label, color, 1);
+    gfx_rrect(x, y, w, h, 12, COL_PANEL_2, 255);
+    gfx_rrect_stroke(x, y, w, h, 12, 1, THEME_DARK ? 0xFFFFFF : 0x000000, THEME_DARK ? 14 : 18);
+    glyph_draw_c(glyph, x + 26, y + 26, 18, color, 255);
+    text_l(x + 42, y + 26, label, FONT_SEMIBOLD, 13, COL_TEXT);
     char big[8]; pct_str(pct, big);
-    g_text(x + 16, y + 36, big, COL_TEXT, 3);
-    if (sub) g_text(x + 16, y + 78, sub, COL_TEXT_DIM, 1);
-    int gx = x + 168, gw = w - 168 - 16;
+    font_draw(FONT_DISPLAY, 36, x + 18, y + 76, big, -1, COL_TEXT, 255);
+    if (sub) text_fit_l(x + 18, y + h - 20, sub, 150, FONT_REGULAR, 12, COL_TEXT_DIM);
+    int gx = x + 180, gw = w - 180 - 14;
     graph(gx, y + 14, gw, h - 28, hist, n, color);
 }
+
+static int imax_(int a, int b) { return a > b ? a : b; }
 
 static void mib_pair(uint64_t used_b, uint64_t total_b, char *out, int cap) {
     char a[12], b[12];
@@ -109,73 +120,83 @@ static int task_cpu(task_t *t, int load) {
 
 static void tm_draw(window_t *w, int cx, int cy, int cw, int ch) {
     (void)w;
-    g_fill(cx, cy, cw, ch, COL_PANEL);
-    int pad = 14, x = cx + pad, y = cy + pad, cardw = cw - 2 * pad;
+    gfx_fill(cx, cy, cw, ch, COL_PANEL);
+    int pad = 16, x = cx + pad, y = cy + pad, cardw = cw - 2 * pad;
     int load = gui_cpu_load();
 
-    /* CPU card */
-    card(x, y, cardw, 116, "CPU", load, tm.brand[0] ? tm.brand : "Processor",
+    card(x, y, cardw, 112, GLYPH_CPU, "Processor", load, tm.brand[0] ? tm.brand : "Processor",
          tm.cpu, tm.n, COL_ACCENT);
 
-    /* Memory card */
     uint64_t totp = pmm_total_count(), frep = pmm_free_count();
     uint64_t total_b = totp * 4096, used_b = total_b - frep * 4096;
     char memsub[28]; mib_pair(used_b, total_b, memsub, sizeof(memsub));
-    card(x, y + 128, cardw, 116, "Memory", ram_percent(), memsub,
-         tm.ram, tm.n, 0x9B6CF2);
+    card(x, y + 124, cardw, 112, GLYPH_MEMORY, "Memory", ram_percent(), memsub,
+         tm.ram, tm.n, 0xBF5AF2);
 
     /* process table */
-    int ty = y + 256;
-    g_text(x, ty, "Processes", COL_TEXT, 1); ty += 20;
-    g_text(x,        ty, "NAME",  COL_TEXT_DIM, 1);
-    g_text(x + 130,  ty, "PID",   COL_TEXT_DIM, 1);
-    g_text(x + 180,  ty, "STATE", COL_TEXT_DIM, 1);
-    g_text(x + 260,  ty, "CPU",   COL_TEXT_DIM, 1);
-    g_text(x + 330,  ty, "MEM",   COL_TEXT_DIM, 1);
-    ty += 6; g_hline(x, ty + 8, cardw, 0x2C2C38); ty += 16;
+    int ty = y + 252;
+    text_l(x, ty + 8, "Processes", FONT_SEMIBOLD, 14, COL_TEXT);
+    char cnt[16]; sh_utoa((uint64_t)task_count(), cnt);
+    text_l(x + 80, ty + 8, cnt, FONT_REGULAR, 12, COL_TEXT_MUTE);
+    ty += 24;
+    static const char *HD[5] = { "Name", "PID", "State", "CPU", "Memory" };
+    const int col[5] = { 12, 170, 230, 310, 420 };
+    gfx_rrect(x, ty, cardw, 26, 7, THEME_DARK ? 0xFFFFFF : 0x000000, THEME_DARK ? 10 : 8);
+    for (int k = 0; k < 5; k++) text_l(x + col[k], ty + 13, HD[k], FONT_MEDIUM, 11, COL_TEXT_DIM);
+    ty += 30;
 
     for (int i = 0; i < task_count(); i++) {
         task_t *t = task_get(i);
-        int ry = ty + i * 18;
-        if (ry + 16 > cy + ch - 24) break;
+        int ry = ty + i * 26;
+        if (ry + 26 > cy + ch - 30) break;
+        int mid = ry + 13;
+        if (i & 1) gfx_rrect(x, ry, cardw, 26, 7, THEME_DARK ? 0xFFFFFF : 0x000000, THEME_DARK ? 5 : 4);
         char num[12];
-        g_text(x, ry, t->name, COL_TEXT, 1);
-        sh_utoa((uint64_t)t->pid, num); g_text(x + 130, ry, num, COL_TEXT_DIM, 1);
-        g_text(x + 180, ry, t->state, state_color(t->state), 1);
-        int tc = task_cpu(t, load); pct_str(tc, num); g_text(x + 260, ry, num, COL_TEXT, 1);
-        /* tiny cpu bar */
-        g_fill(x + 300, ry + 2, 24, 6, 0x24242E);
-        g_fill(x + 300, ry + 2, 24 * tc / 100, 6, COL_ACCENT);
+        glyph_draw_c(GLYPH_ACTIVITY, x + col[0] + 7, mid, 14, COL_TEXT_MUTE, 255);
+        text_fit_l(x + col[0] + 22, mid, t->name, col[1] - col[0] - 30, FONT_REGULAR, 13, COL_TEXT);
+        sh_utoa((uint64_t)t->pid, num); text_l(x + col[1], mid, num, FONT_REGULAR, 13, COL_TEXT_DIM);
+        uint32_t sc = state_color(t->state);
+        gfx_circle((float)(x + col[2] + 4), (float)mid, 3.5f, sc, 255);
+        text_l(x + col[2] + 14, mid, t->state, FONT_REGULAR, 13, COL_TEXT_DIM);
+        int tc = task_cpu(t, load); pct_str(tc, num);
+        text_l(x + col[3], mid, num, FONT_REGULAR, 13, COL_TEXT);
+        gfx_rrect(x + col[3] + 40, mid - 3, 50, 6, 3, THEME_DARK ? 0xFFFFFF : 0x000000, THEME_DARK ? 20 : 14);
+        if (tc > 0) gfx_rrect(x + col[3] + 40, mid - 3, imax_(50 * tc / 100, 6), 6, 3, COL_ACCENT, 255);
         uint64_t kb = 64 + (uint64_t)t->pid * 48 + strlen(t->name) * 16;
-        char hb[12]; sh_human(kb * 1024, hb); g_text(x + 330, ry, hb, COL_TEXT_DIM, 1);
+        char hb[12]; sh_human(kb * 1024, hb);
+        text_l(x + col[4], mid, hb, FONT_REGULAR, 13, COL_TEXT_DIM);
     }
 
     /* footer */
     uint64_t hu = 0, htot = 0; kheap_usage(&hu, &htot);
-    char foot[64]; char tmp[16];
+    char foot[80]; char tmp[16];
     foot[0] = 0;
-    sh_utoa(pit_ticks() / (pit_hz() ? pit_hz() : 1000), tmp);
-    kstrlcat(foot, "Up ", sizeof(foot)); kstrlcat(foot, tmp, sizeof(foot)); kstrlcat(foot, "s   ", sizeof(foot));
-    sh_utoa((uint64_t)task_count(), tmp);
-    kstrlcat(foot, tmp, sizeof(foot)); kstrlcat(foot, " tasks   ", sizeof(foot));
+    uint64_t up = pit_ticks() / (pit_hz() ? pit_hz() : 1000);
+    sh_utoa(up / 60, tmp);
+    kstrlcat(foot, "Up ", sizeof(foot)); kstrlcat(foot, tmp, sizeof(foot)); kstrlcat(foot, " min   " TXT_BULLET "   ", sizeof(foot));
     sh_utoa((uint64_t)svc_count(), tmp);
-    kstrlcat(foot, tmp, sizeof(foot)); kstrlcat(foot, " services   heap ", sizeof(foot));
-    sh_human(hu, tmp); kstrlcat(foot, tmp, sizeof(foot)); kstrlcat(foot, "/", sizeof(foot));
+    kstrlcat(foot, tmp, sizeof(foot)); kstrlcat(foot, " services   " TXT_BULLET "   kernel heap ", sizeof(foot));
+    sh_human(hu, tmp); kstrlcat(foot, tmp, sizeof(foot)); kstrlcat(foot, " of ", sizeof(foot));
     sh_human(htot, tmp); kstrlcat(foot, tmp, sizeof(foot));
-    g_text(x, cy + ch - 18, foot, COL_TEXT_DIM, 1);
+    gfx_fill(cx, cy + ch - 30, cw, 1, COL_SEP);
+    text_l(x, cy + ch - 15, foot, FONT_REGULAR, 11, COL_TEXT_MUTE);
 }
 
 void taskmgr_app_init(void) {
     memset(&tm, 0, sizeof(tm));
     hw_cpu_brand(tm.brand);
-    /* keep the brand short enough to sit left of the graph (~18 chars) */
-    if (strlen(tm.brand) > 18) tm.brand[18] = 0;
+    /* The brand is drawn fitted to the card with an ellipsis now; it used to
+     * be cut at 18 bytes, which left "QEMU TCG CPU versi" on screen. Leading
+     * spaces are Intel's, and they would push the ellipsis in early. */
+    int lead = 0; while (tm.brand[lead] == ' ') lead++;
+    if (lead) memmove(tm.brand, tm.brand + lead, strlen(tm.brand + lead) + 1);
     for (int i = (int)strlen(tm.brand) - 1; i >= 0 && tm.brand[i] == ' '; i--) tm.brand[i] = 0;
-    window_t *win = gui_add_window("Task Manager", 564, 540, 0x9B6CF2, ICON_TASKMGR);
+    window_t *win = gui_add_window("Task Manager", 580, 560, 0x9B6CF2, ICON_TASKMGR);
     if (!win) return;
     win->draw = tm_draw;
     win->tick = tm_tick;
-    win->x = 470; win->y = 70;
+    win->min_w = 540; win->min_h = 420;
+    win->x = 380; win->y = 60;
     /* prime the graphs so they aren't empty on first open */
     uint8_t r0 = (uint8_t)ram_percent();
     for (int i = 0; i < 40; i++) hist_push(0, r0);

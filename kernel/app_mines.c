@@ -8,6 +8,9 @@
  * ===========================================================================*/
 #include <stdint.h>
 #include "gui.h"
+#include "gfx.h"
+#include "font.h"
+#include "icons.h"
 #include "pit.h"
 #include "string.h"
 #include "commands.h"     /* sh_utoa */
@@ -147,21 +150,21 @@ static void mines_draw(window_t *w, int cx, int cy, int cw, int ch) {
     /* header: mines-left counter, reset, mode toggle, status */
     g_fill(cx, cy, cw, HEADH, COL_PANEL_2);
     char cnt[8]; sh_utoa((uint64_t)(MINES - ms.flags >= 0 ? MINES - ms.flags : 0), cnt);
-    g_text(cx + PAD, cy + 14, "Mines", COL_TEXT_DIM, 1);
-    g_text(cx + PAD + 52, cy + 12, cnt, COL_BAD, 2);
+    text_l(cx + PAD, cy + HEADH / 2, "Mines", FONT_REGULAR, 13, COL_TEXT_DIM);
+    text_l(cx + PAD + 46, cy + HEADH / 2, cnt, FONT_BOLD, 20, COL_BAD);
 
     /* reset button (status face) */
     int rbw = 34, rbx = cx + cw / 2 - rbw / 2, rby = cy + 5;
     g_round(rbx, rby, rbw, 34, 8, COL_PANEL_3, 255);
-    const char *face = ms.over ? (ms.won ? ":D" : ":(") : ":)";
-    g_text(rbx + 6, rby + 9, face, ms.won ? COL_GOOD : (ms.over ? COL_BAD : COL_TEXT), 2);
+    if (ms.over && !ms.won) text_c(rbx + rbw / 2, rby + 17, ":(", FONT_BOLD, 16, COL_BAD);
+    else glyph_draw_c(GLYPH_SMILE, rbx + rbw / 2, rby + 17, 20, ms.won ? COL_GOOD : COL_TEXT, 255);
     mhots[nmhot].x = rbx - cx; mhots[nmhot].y = rby - cy; mhots[nmhot].w = rbw; mhots[nmhot].h = 34; mhots[nmhot].id = HB_RESET; nmhot++;
 
     /* mode toggle */
     int mbw = g_text_width(ms.flag_mode ? "Flag" : "Dig", 1) + 22;
     int mbx = cx + cw - PAD - mbw, mby = cy + 9;
     g_round(mbx, mby, mbw, 26, 6, ms.flag_mode ? COL_WARN : COL_ACCENT, 255);
-    g_text(mbx + 11, mby + 5, ms.flag_mode ? "Flag" : "Dig", 0xFFFFFF, 1);
+    text_c(mbx + mbw / 2, mby + 13, ms.flag_mode ? "Flag" : "Dig", FONT_MEDIUM, 12, 0xFFFFFF);
     mhots[nmhot].x = mbx - cx; mhots[nmhot].y = mby - cy; mhots[nmhot].w = mbw; mhots[nmhot].h = 26; mhots[nmhot].id = HB_MODE; nmhot++;
 
     /* grid */
@@ -172,19 +175,19 @@ static void mines_draw(window_t *w, int cx, int cy, int cw, int ch) {
             uint8_t st = ms.state[r][c];
             if (st == HID || st == FLAG) {
                 g_round(x + 1, y + 1, CELL - 2, CELL - 2, 5, COL_PANEL_3, 255);
-                g_hline(x + 3, y + 2, CELL - 6, 0x3A3A48);          /* top highlight */
+                gfx_fill_a(x + 4, y + 2, CELL - 8, 1, 0xFFFFFF, THEME_DARK ? 30 : 140);   /* top highlight */
                 if (st == FLAG) {
                     g_fill(x + CELL / 2 - 1, y + 7, 2, 12, COL_TEXT);
                     g_round(x + CELL / 2 + 1, y + 7, 8, 6, 2, COL_BAD, 255);
                 }
             } else {                                                /* revealed */
-                g_round(x + 1, y + 1, CELL - 2, CELL - 2, 5, 0x12121A, 255);
+                g_round(x + 1, y + 1, CELL - 2, CELL - 2, 5, THEME_DARK ? 0x141418 : 0xE5E5EA, 255);
                 if (ms.mine[r][c]) {
                     g_round(x + CELL / 2 - 5, y + CELL / 2 - 5, 10, 10, 5,
                             ms.over && !ms.won ? COL_BAD : COL_TEXT, 255);
                 } else if (ms.adj[r][c]) {
                     char d[2] = { (char)('0' + ms.adj[r][c]), 0 };
-                    g_text(x + CELL / 2 - 4, y + CELL / 2 - 7, d, num_color(ms.adj[r][c]), 2);
+                    text_c(x + CELL / 2, y + CELL / 2, d, FONT_BOLD, 15, num_color(ms.adj[r][c]));
                 }
             }
         }
@@ -194,7 +197,7 @@ static void mines_draw(window_t *w, int cx, int cy, int cw, int ch) {
                       ms.over ? "Boom. Press the face to retry." :
                       ms.flag_mode ? "Flag mode: tap cells to mark mines" :
                                      "Dig: left-click reveals, right-click flags";
-    g_text(cx + PAD, cy + ch - 18, msg, COL_TEXT_DIM, 1);
+    text_l(cx + PAD, cy + ch - 16, msg, FONT_REGULAR, 12, COL_TEXT_DIM);
 }
 
 void mines_app_init(void) {
@@ -202,7 +205,7 @@ void mines_app_init(void) {
     ms.rng = 0x2545F491;
     new_game();
     int w = COLS * CELL + 2 * PAD + 4;
-    int h = HEADH + ROWS * CELL + 2 * PAD + 28;
+    int h = HEADH + ROWS * CELL + 2 * PAD + 28 + 32;    /* + the title bar */
     window_t *win = gui_add_window("Minesweeper", w, h, 0x34C759, ICON_MINES);
     if (!win) return;
     win->draw   = mines_draw;

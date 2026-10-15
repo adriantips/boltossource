@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "gui.h"
+#include "font.h"
 #include "clipboard.h"
 #include "keyboard.h"
 #include "notify.h"
@@ -98,8 +99,9 @@ static void do_copy(void) {
 
 /* ------------------------------------------------------------- drawing ---- */
 static void btn(int x, int y, int w, int h, const char *label, uint32_t bg, uint32_t fg) {
-    g_round(x, y, w, h, 6, bg, 255);
-    g_text(x + (w - g_text_width(label, 1)) / 2, y + (h - 8) / 2, label, fg, 1);
+    g_round(x, y, w, h, 7, bg, 255);
+    /* centred on the caps, not on an 8 px glyph box this was written for */
+    text_c(x + w / 2, y + h / 2, label, FONT_MEDIUM, 12, fg);
 }
 
 static void cm_draw(window_t *w, int cx, int cy, int cw, int ch) {

@@ -235,7 +235,9 @@ void paint_app_init(void) {
         return;
     }
     canvas_clear();
-    window_t *win = gui_add_window("Paint", CANVW + 2 * PAD + 4, CANVH + TOOLH + 2 * PAD + 4,
+    /* + 32: gui_add_window() takes the whole window, title bar included, and
+     * this was written as if it did not -- the canvas lost its bottom 28 px. */
+    window_t *win = gui_add_window("Paint", CANVW + 2 * PAD + 4, CANVH + TOOLH + 2 * PAD + 4 + 32,
                                    0xE0556B, ICON_PAINT);
     if (!win) return;
     win->draw  = paint_draw;
