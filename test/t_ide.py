@@ -62,14 +62,14 @@ def main():
     with BoltVM(name="ide", net=False) as vm:
         sign_in(vm)
 
-        # The Code launcher is the second icon of the second desktop row. A
-        # double-click is two press/release pairs, and the compositor samples
-        # the mouse rather than queueing events, so a pair can be missed --
-        # hence the retry until the window's Run button appears.
+        # This used to double-click a Code launcher on the desktop, which the
+        # glass desktop no longer has (it keeps This PC, Home, Documents and
+        # the bin). Start is the way in now, and still retried until the
+        # window's Run button is actually on screen.
         run = None
-        for _ in range(4):
-            vm.click(135, 133, double=True)
-            time.sleep(2.0)
+        for _ in range(3):
+            vm.open_app("Code", probe=False)
+            time.sleep(1.0)
             run = find_color(vm.screenshot("ide.ppm"), RUN_RGB)
             if run:
                 break
