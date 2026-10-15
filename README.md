@@ -44,6 +44,25 @@ honest account of what it cannot do yet.
 
 *The BoltOS desktop: glass dock and tray, windows with their own surfaces, and the apps on the control kit.*
 
+October 2026 brought the huge UI revamp: liquid glass, Inter rasterised from
+its outlines, icons drawn at the sizes they are shown, and nine apps rebuilt.
+Every capture below is a QEMU screendump of the current build at 1920x1080.
+
+| | |
+| --- | --- |
+| ![Start menu](website/public/shots/startmenu.webp) | ![Four windows tiled](website/public/shots/tiled.webp) |
+| Start: pinned apps, All apps, and one search box for apps, settings and files. | Four windows in four quarters, snapped with Win+arrow. |
+| ![Quick Settings](website/public/shots/quicksettings.webp) | ![Notification centre](website/public/shots/notifications.webp) |
+| Quick Settings, hung off the tray. | The notification centre, with a calendar under it. |
+| ![Settings](website/public/shots/settings_max.webp) | ![Terminal](website/public/shots/terminal_sysinfo.webp) |
+| Settings: five themes and ten accent colours. | The Terminal in DejaVu Sans Mono, after `display res 1080p` and `sysinfo`. |
+| ![Media](website/public/shots/media_max.webp) | ![DOOM](website/public/shots/doom_play.webp) |
+| Media, playing a WAV with its level meter going. | DOOM E1M1, compiled into the kernel. |
+
+Before-and-after sliders against the September desktop are at
+[boltos.dev/revamp](https://boltos.dev/revamp), and the rest is in the
+[gallery](https://boltos.dev/gallery).
+
 ## Desktop & apps
 
 The GUI is a compositing window manager built from damage: every window renders
