@@ -8,7 +8,8 @@ import { links } from '@/data/site'
 import { systems } from '@/data/systems'
 import { cn } from '@/lib/utils'
 
-const primary = [
+const primary: { to: string; label: string; isNew?: boolean }[] = [
+  { to: '/revamp', label: 'Revamp', isNew: true },
   { to: '/system', label: 'System' },
   { to: '/apps', label: 'Apps' },
   { to: '/gallery', label: 'Gallery' },
@@ -59,6 +60,7 @@ export function Nav() {
               }
             >
               {item.label}
+              {item.isNew && <span className="aurora-chip ml-1.5 inline-block size-1.5 -translate-y-2 rounded-full" aria-label="new" />}
             </NavLink>
           ))}
         </nav>
@@ -134,7 +136,11 @@ export function Nav() {
           >
             {[{ to: '/', label: 'Home' }, ...primary, { to: '/download', label: 'Download' }].map(item => (
               <Link key={item.to} to={item.to} className="flex items-center justify-between rounded-2xl px-4 py-3.5 text-[22px] tracking-tight hover:bg-white/[0.05]">
-                {item.label} <ArrowUpRight className="size-4 text-fog" />
+                <span className="flex items-center gap-3">
+                  {item.label}
+                  {'isNew' in item && item.isNew && <span className="aurora-chip rounded-full px-2 py-0.5 font-mono text-[10px] text-black">NEW</span>}
+                </span>
+                <ArrowUpRight className="size-4 text-fog" />
               </Link>
             ))}
             <div className="mt-2 border-t border-line px-4 pt-4 pb-2">

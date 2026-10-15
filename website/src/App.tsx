@@ -3,6 +3,7 @@ import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import { Layout } from '@/components/site/Layout'
 import Home from '@/pages/Home'
 
+const Revamp = lazy(() => import('@/pages/Revamp'))
 const SystemOverview = lazy(() => import('@/pages/SystemOverview'))
 const SystemDetail = lazy(() => import('@/pages/SystemDetail'))
 const Apps = lazy(() => import('@/pages/Apps'))
@@ -20,6 +21,7 @@ export default function App() {
         <Routes>
           <Route element={<Layout />}>
             <Route index element={<Home />} />
+            <Route path="revamp" element={<Revamp />} />
             <Route path="system" element={<SystemOverview />} />
             <Route path="system/:slug" element={<SystemDetail />} />
             <Route path="apps" element={<Apps />} />

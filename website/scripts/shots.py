@@ -9,6 +9,12 @@ screenshot exists as far as the pages are concerned.
 
 The historical June 2026 images and boltcraft's own screenshot are picked up
 from the repository root, so they do not need to be copied anywhere first.
+
+Some images have no source left to regenerate them from, and their WebP in
+public/shots is the master copy: the June desktop (imageshowcase.png became
+the glass desktop in d1505f1), the text-mode boot menu, and every v1_* --
+the September desktop, kept for the before/after on /revamp. KEEP carries
+those into the manifest as they are.
 """
 import json, os, sys
 from PIL import Image
@@ -21,9 +27,9 @@ os.makedirs(THUMB, exist_ok=True)
 
 # renames for the second capture pass, and files from the repo itself
 RENAME = {"login_1024": "login", "bootmenu_227": "bootmenu"}
-SKIP = {"login_check", "bootmenu_225", "doom_play2"}
+SKIP = {"login_check", "bootmenu_225", "doom_play2", "term_check", "keys_check", "ptr_check", "ptr_test", "ptr_test2"}
+KEEP = ("legacy_", "v1_", "bootmenu")
 EXTRA = {
-    "legacy_desktop": os.path.join(REPO, "imageshowcase.png"),
     "legacy_icons": os.path.join(REPO, "m.png"),
     "legacy_login": os.path.join(REPO, "boot.png"),
     "legacy_nssite": os.path.join(REPO, "nssite.png"),
@@ -45,6 +51,12 @@ for k, p in EXTRA.items():
         src[k] = p
 
 manifest = {}
+for f in sorted(os.listdir(OUT)):
+    k = f[:-5]
+    if f.endswith(".webp") and k.startswith(KEEP) and k not in src:
+        with Image.open(os.path.join(OUT, f)) as im:
+            manifest[k] = [im.width, im.height]
+        print(k, "(kept)")
 for k, p in sorted(src.items()):
     im = Image.open(p).convert("RGB")
     # text-mode captures (the boot menu) are 720x400; double them with
@@ -65,12 +77,14 @@ from PIL import ImageChops
 if "desktop" in src:
     desk = Image.open(src["desktop"]).convert("RGB")
     for k, p in sorted(src.items()):
-        if k.endswith("_max") or k.startswith(("legacy", "desktop", "boot", "login", "tiled", "doom_play", "strike_play", "boltcraft_shot", "startsearch", "terminal")):
+        if k.endswith("_max") or k.startswith(("legacy", "v1_", "desktop", "boot", "login", "lock", "tiled", "doom_play", "strike_play", "boltcraft_shot", "start", "quick", "notif", "terminal")):
             continue
         im = Image.open(p).convert("RGB")
         if im.size != desk.size:
             continue
-        H = im.height - 56  # leave the taskbar out of the search
+        # leave the dock out of the search: it grows an icon for every open
+        # app, which would drag every crop down to the bottom of the screen
+        H = im.height - 80
         diff = ImageChops.difference(im.crop((0, 0, im.width, H)), desk.crop((0, 0, im.width, H))).convert("L")
         mask = diff.point(lambda v: 255 if v > 24 else 0)
         px = mask.load()

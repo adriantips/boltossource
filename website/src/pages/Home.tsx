@@ -10,16 +10,19 @@ import SpotlightCard from '@/components/bits/SpotlightCard'
 import { Container, SectionHead, Button, ArrowLink, CodeBlock } from '@/components/site/Blocks'
 import { MaskLines, Reveal } from '@/components/site/Reveal'
 import { Shot } from '@/components/site/Shot'
+import { Compare } from '@/components/site/Compare'
 import { Mark } from '@/components/site/Logo'
 import { systems } from '@/data/systems'
 import { stats, downloads } from '@/data/site'
 import { hasShot, thumbSrc } from '@/data/shots'
+import { revamp, numbers } from '@/data/revamp'
 
 export default function Home() {
   return (
     <>
       <Hero />
       <HeroShot />
+      <RevampBand />
       <Marquee />
       <Stats />
       <Layers />
@@ -61,12 +64,15 @@ function Hero() {
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 1, delay: 0.2 }}
-            className="mb-8 inline-flex items-center gap-3 rounded-full border border-line bg-black/40 py-1.5 pr-4 pl-1.5 backdrop-blur"
+            className="mb-8"
           >
-            <span className="rounded-full bg-white px-2.5 py-0.5 font-mono text-[10.5px] font-medium text-black">0.2</span>
-            <span className="font-mono text-[11.5px] text-smoke">
-              <DecryptedText text="x86-64 · BIOS + UEFI · written from scratch" animateOn="view" sequential speed={28} />
-            </span>
+            <Link to="/revamp" className="group inline-flex items-center gap-3 rounded-full border border-white/15 bg-black/40 py-1.5 pr-3 pl-1.5 backdrop-blur transition-colors hover:border-white/40">
+              <span className="aurora-chip rounded-full px-2.5 py-0.5 font-mono text-[10.5px] font-medium text-black">NEW</span>
+              <span className="font-mono text-[11.5px] text-smoke group-hover:text-white">
+                <DecryptedText text="The huge UI revamp is here" animateOn="view" sequential speed={28} />
+              </span>
+              <ArrowUpRight className="size-3.5 text-fog transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-white" />
+            </Link>
           </motion.div>
 
           <h1 className="display text-[clamp(3.3rem,11.5vw,11.5rem)]">
@@ -119,7 +125,7 @@ function HeroShot() {
           <div className="relative overflow-hidden rounded-2xl border border-line-strong bg-coal p-1.5 shadow-[0_60px_160px_-40px_rgba(255,255,255,0.18)] sm:rounded-[22px] sm:p-2">
             <motion.img
               src="/shots/desktop.webp"
-              alt="The BoltOS desktop at 1920 by 1080"
+              alt="The BoltOS glass desktop at 1920 by 1080"
               width={1920}
               height={1080}
               style={{ filter }}
@@ -128,9 +134,64 @@ function HeroShot() {
           </div>
         </motion.div>
         <div className="mt-6 flex flex-col justify-between gap-2 text-[13px] text-fog sm:flex-row">
-          <span>The BoltOS desktop, captured from the current build at 1920×1080.</span>
+          <span>The glass desktop, captured from the current build at 1920×1080.</span>
           <span className="font-mono">QEMU · 2 CPUs · 2 GiB</span>
         </div>
+      </Container>
+    </section>
+  )
+}
+
+// The October redesign, as loud as this site gets: the one band in colour.
+function RevampBand() {
+  return (
+    <section className="relative overflow-hidden border-y border-line py-28 sm:py-44">
+      <div className="aurora-field pointer-events-none absolute -inset-x-32 inset-y-0 opacity-80" />
+      <div className="grid-bg fade-edges pointer-events-none absolute inset-0 opacity-30" />
+      <Container className="relative">
+        <Reveal>
+          <p className="inline-flex items-center gap-3 rounded-full border border-white/15 bg-black/40 py-1.5 pr-4 pl-1.5 backdrop-blur">
+            <span className="aurora-chip rounded-full px-2.5 py-0.5 font-mono text-[10.5px] font-medium text-black">NEW</span>
+            <span className="font-mono text-[11.5px] text-smoke">{revamp.dates}</span>
+          </p>
+        </Reveal>
+        <h2 className="display mt-8 text-[clamp(4rem,15.5vw,16rem)] !leading-[0.86]">
+          <MaskLines lines={['The huge', <span className="aurora-text">UI revamp.</span>]} />
+        </h2>
+        <div className="mt-10 grid gap-10 lg:grid-cols-[1.3fr_1fr] lg:items-end">
+          <Reveal>
+            <p className="max-w-2xl text-[clamp(1.1rem,1.6vw,1.35rem)] leading-relaxed text-white/80">
+              The whole desktop, redrawn. Liquid glass, Inter rasterised from its outlines, icons drawn for the sizes they are
+              shown at, a dock, Quick Settings, a notification centre and nine rebuilt apps. Still no GPU, still not a line of
+              anybody else&apos;s kernel.
+            </p>
+          </Reveal>
+          <Reveal delay={0.1} className="flex flex-wrap gap-3 lg:justify-end">
+            <Button to="/revamp">Everything that changed <ArrowUpRight className="size-4" /></Button>
+            <Button to="/download" variant="ghost"><DownloadIcon className="size-4" /> Get it</Button>
+          </Reveal>
+        </div>
+
+        <Reveal className="relative mt-16 sm:mt-20">
+          <div className="glass rounded-2xl p-1.5 sm:rounded-[22px] sm:p-2">
+            <Compare before="v1_desktop" after="desktop" beforeLabel="September" afterLabel="October" start={50} className="rounded-xl border-0 sm:rounded-[16px]" />
+          </div>
+          <p className="mt-4 text-center font-mono text-[11px] tracking-[0.14em] text-fog uppercase">Drag the line · same machine, one month apart</p>
+        </Reveal>
+
+        {/* one Reveal for the whole grid: a translated cell inside an
+            overflow-hidden box makes the box scrollable, and scrollIntoView
+            will happily scroll it and leave it there */}
+        <Reveal className="mt-16 grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-white/10 bg-white/10 lg:grid-cols-4">
+          {numbers.map(n => (
+            <div key={n.label} className="bg-black/75 p-6 sm:p-8">
+              <div className="display text-[clamp(2rem,4vw,3.4rem)] tabular-nums">
+                {n.value}<span className="ml-1 text-[0.45em] text-fog">{n.unit}</span>
+              </div>
+              <p className="mt-3 text-[13px] leading-snug text-smoke">{n.label}</p>
+            </div>
+          ))}
+        </Reveal>
       </Container>
     </section>
   )
@@ -142,7 +203,7 @@ function Marquee() {
       <ScrollVelocity
         texts={[
           <span className="mx-6 inline-flex items-center gap-12 font-medium tracking-[-0.04em]">Boot chain <Star /> Preemptive kernel <Star /> SMP <Star /> BoltFS <Star /> NVMe <Star /> xHCI USB <Star /> TLS 1.3 <Star /> IPv6 <Star /> SSH <Star /></span>,
-          <span className="mx-6 inline-flex items-center gap-12 serif-i text-smoke">BoltCC <Star /> BoltJS <Star /> BoltPy <Star /> DOOM <Star /> MP3 <Star /> HD Audio <Star /> PE32+ <Star /> S3 sleep <Star /> Fuzzing <Star /></span>,
+          <span className="mx-6 inline-flex items-center gap-12 serif-i text-smoke">Liquid glass <Star /> Inter <Star /> BoltCC <Star /> BoltJS <Star /> BoltPy <Star /> DOOM <Star /> MP3 <Star /> HD Audio <Star /> PE32+ <Star /> S3 sleep <Star /> Fuzzing <Star /></span>,
         ]}
         velocity={40}
         className="text-[clamp(2.2rem,5.5vw,4.8rem)] leading-[1.15]"

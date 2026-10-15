@@ -12,7 +12,7 @@ function sitemap(): Plugin {
     generateBundle() {
       const systems = fs.readFileSync(path.resolve(import.meta.dirname, 'src/data/systems.ts'), 'utf8')
       const slugs = [...systems.matchAll(/^\s+slug: '([a-z0-9-]+)'/gm)].map((m) => m[1])
-      const pages = ['', 'system', 'apps', 'gallery', 'timeline', 'creator', 'download', 'docs', ...slugs.map((s) => `system/${s}`)]
+      const pages = ['', 'revamp', 'system', 'apps', 'gallery', 'timeline', 'creator', 'download', 'docs', ...slugs.map((s) => `system/${s}`)]
       const urls = pages.map((p) => `  <url><loc>https://boltos.dev/${p}</loc></url>`).join('\n')
       this.emitFile({
         type: 'asset',
