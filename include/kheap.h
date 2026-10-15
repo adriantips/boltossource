@@ -17,6 +17,7 @@ typedef struct {
 } kheap_stats;
 
 void  kheap_init(void);
+void  kheap_window(uint64_t *phys, uint64_t *bytes);  /* where it ended up */
 void *kmalloc(uint64_t size);
 void  kfree(void *p);
 void  kheap_usage(uint64_t *used, uint64_t *total);   /* live payload / managed bytes */
