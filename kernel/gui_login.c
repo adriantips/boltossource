@@ -380,7 +380,7 @@ int login_frame(uint64_t now) {
         t_splash = 0;
         t_reveal = now;
     }
-    if (t_reveal && now < t_reveal + REVEAL_MS) {
+    if (t_reveal && now < t_reveal + (uint64_t)motion_ms(REVEAL_MS)) {
         float r = ease_out(anim_t(now, t_reveal, REVEAL_MS));
         draw_splash(now);
         draw_screen((int)(255 * r), (int)(255 * r));

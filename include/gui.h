@@ -154,6 +154,10 @@ void      gui_frame_stats(int *frames, int *last_ms10, int *avg_ms10, int *max_m
  * shell, copy out) and how many damage rectangles it had. Resets. */
 void      gui_frame_stages(int ms10[4], int *ndmg_worst);
 void      gui_bench(void);                  /* `display bench`: time the primitives */
+void      gui_motion_apply(void);           /* g_settings.motion -> live; cheap      */
+int       gui_motion_reduced(void);         /* 1 if animations are off right now     */
+int       gui_frame_copy_us(void);          /* boot calibration: one 1024x768 copy   */
+int       gui_blend_us(void);               /* ...and one 128x128 alpha fill         */
 int       gui_screen_w(void);               /* logical desktop width           */
 int       gui_screen_h(void);               /* logical desktop height          */
 int       gui_panel_w(void);                /* physical panel width (fixed)    */
