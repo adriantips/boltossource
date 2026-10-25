@@ -143,11 +143,13 @@ def raw_entry(name11, attr, cluster, size):
             struct.pack("<HI", cluster & 0xFFFF, size))
 
 
-def build_esp(total_sectors, part_lba, label, files, volume_id):
+def build_esp(total_sectors, part_lba, label, files, volume_id, placed=None):
     """Return `total_sectors * SECTOR` bytes of FAT32 holding `files`.
 
     `files` maps a path like "EFI/BOOT/BOOTX64.EFI" to its bytes. Only 8.3 names
-    are supported, which is all the UEFI boot path needs.
+    are supported, which is all the UEFI boot path needs. Every file is one
+    contiguous run of clusters; if `placed` is a dict, it is filled with each
+    path's first sector relative to the start of the partition.
     """
     spc, reserved, nfats, fat_size, clusters = fat32_geometry(total_sectors)
     cluster_bytes = spc * SECTOR
@@ -197,6 +199,8 @@ def build_esp(total_sectors, part_lba, label, files, volume_id):
             parent = here
         cl = alloc_chain(data)
         tree[parent][parts[-1]] = (0x20, cl, len(data))
+        if placed is not None:
+            placed[path] = reserved + nfats * fat_size + (cl - 2) * spc
 
     # --- render each directory into its (single) cluster --------------------
     dir_cluster = {"": root_cluster}
@@ -289,6 +293,13 @@ def main(argv):
     ap.add_argument("bootx64")
     ap.add_argument("--esp-mb", type=int, default=64)
     ap.add_argument("--data-mb", type=int, default=32)
+    # BoltOS TV: no raw copy of the kernel in the gap. The boot header points
+    # stage2 at the clusters of the ESP's own kernel.bin instead, which
+    # build_esp lays down contiguously, so both firmware paths load the same
+    # bytes and the image carries one kernel rather than two. The cost is that
+    # the stick stops booting legacy BIOS if something rewrites kernel.bin in
+    # place and the file moves -- acceptable for an image you flash and leave.
+    ap.add_argument("--shared-kernel", action="store_true")
     a = ap.parse_args(argv[1:])
 
     stage1 = open(a.stage1, "rb").read()
@@ -301,8 +312,9 @@ def main(argv):
                          % (len(stage2), STAGE2_MAX * SECTOR))
 
     ksectors = (len(kernel) + SECTOR - 1) // SECTOR
-    esp_lba  = align_mib(KERNEL_LBA + ksectors)
-    esp_sect = a.esp_mb * MIB_SECTORS
+    esp_lba  = align_mib(KERNEL_LBA + (0 if a.shared_kernel else ksectors))
+    esp_mb   = max(a.esp_mb, len(kernel) // MIB + 16)
+    esp_sect = esp_mb * MIB_SECTORS
     fs_lba   = align_mib(esp_lba + esp_sect)
     fs_sect  = a.data_mb * MIB_SECTORS
     total    = fs_lba + fs_sect
@@ -311,9 +323,11 @@ def main(argv):
     # image; firmware only cares that it is not zero.
     disk_id = (0xB01D0000 ^ len(kernel)) & 0xFFFFFFFF
 
+    placed = {}
     esp = build_esp(esp_sect, esp_lba, "BOLTESP",
                     {"kernel.bin": kernel, "EFI/BOOT/BOOTX64.EFI": efi},
-                    volume_id=disk_id)
+                    volume_id=disk_id, placed=placed)
+    kernel_lba = esp_lba + placed["kernel.bin"] if a.shared_kernel else KERNEL_LBA
 
     parts = [part_entry(0x80, PART_ESP,    esp_lba, esp_sect),
              part_entry(0x00, PART_BOLTFS, fs_lba,  fs_sect)]
@@ -322,17 +336,18 @@ def main(argv):
         fh.truncate(total * SECTOR)
         fh.write(build_mbr(stage1, parts, disk_id))
         fh.seek(STAGE2_LBA * SECTOR); fh.write(stage2)
-        fh.seek(KERNEL_LBA * SECTOR); fh.write(kernel)
+        if not a.shared_kernel:
+            fh.seek(KERNEL_LBA * SECTOR); fh.write(kernel)
         fh.seek(esp_lba * SECTOR);    fh.write(esp)
 
     # The header goes in last, because it checksums the kernel as written.
-    ksum = mkboothdr.kernel_sum32(a.out, KERNEL_LBA, ksectors)
+    ksum = mkboothdr.kernel_sum32(a.out, kernel_lba, ksectors)
     with open(a.out, "r+b") as fh:
         fh.seek(mkboothdr.HDR_LBA * SECTOR)
-        fh.write(mkboothdr.build(KERNEL_LBA, len(kernel), ksum))
+        fh.write(mkboothdr.build(kernel_lba, len(kernel), ksum))
 
-    print("      MBR + stage2 + header, kernel @LBA %d (%d sectors, sum32 0x%08X)"
-          % (KERNEL_LBA, ksectors, ksum))
+    print("      MBR + stage2 + header, kernel @LBA %d (%d sectors, sum32 0x%08X)%s"
+          % (kernel_lba, ksectors, ksum, " = ESP kernel.bin" if a.shared_kernel else ""))
     print("      p1 ESP    FAT32 @LBA %-8d %4d MiB  (BOOTX64.EFI + kernel.bin)"
           % (esp_lba, esp_sect // MIB_SECTORS))
     print("      p2 BoltFS       @LBA %-8d %4d MiB  (empty)"

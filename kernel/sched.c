@@ -96,7 +96,13 @@ int sched_add(void (*entry)(void), const char *name) {
     f->rip    = (uint64_t)entry;
     f->cs     = 0x08;          /* kernel code */
     f->rflags = 0x202;         /* IF set */
-    f->rsp    = top;           /* thread's own stack when running */
+    /* The SysV ABI promises a function that RSP+8 is 16-aligned on entry --
+     * the call that got it there pushed a return address. iretq pushes
+     * nothing, so the thread starts 8 below `top` as though one had been.
+     * Starting at `top` itself left every frame 8 off, which is invisible
+     * until the compiler spills an SSE register with movdqa (BoltOS TV's
+     * network thread, in ip6_format) and the CPU raises #GP. */
+    f->rsp    = top - 8;       /* thread's own stack when running */
     f->ss     = 0x10;          /* kernel data */
 
     th[i].rsp        = (uint64_t)f;

@@ -56,7 +56,10 @@ typedef struct {
     UINTN FrameBufferSize;
 } EFI_GOP_MODE;
 typedef struct EFI_GRAPHICS_OUTPUT_PROTOCOL {
-    void *QueryMode, *SetMode, *Blt;
+    EFI_STATUS (EFIAPI *QueryMode)(struct EFI_GRAPHICS_OUTPUT_PROTOCOL *, uint32_t,
+                                   UINTN *, EFI_GOP_MODE_INFO **);
+    EFI_STATUS (EFIAPI *SetMode)(struct EFI_GRAPHICS_OUTPUT_PROTOCOL *, uint32_t);
+    void *Blt;
     EFI_GOP_MODE *Mode;
 } EFI_GRAPHICS_OUTPUT_PROTOCOL;
 
@@ -191,6 +194,7 @@ static void printhex(uint64_t v) {
  * ------------------------------------------------------------------------- */
 #define MENU_SECONDS 5
 
+#ifndef BOLT_TV
 static uint32_t boot_menu(void) {
     print("\n  ==== BoltOS boot menu ====\n"
           "   1) BoltOS            (normal)\n"
@@ -227,6 +231,7 @@ static uint32_t boot_menu(void) {
     print("\n  -> normal boot\n");
     return 0;
 }
+#endif
 
 /* Everything this loader allocates has to land below 4 GiB, and the reasons are
  * worth writing down because AllocateAnyPages does the exact opposite: EDK2
@@ -285,13 +290,34 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
     In  = st->ConIn;
     print("BoltOS UEFI loader\n");
 
+#ifdef BOLT_TV
+    /* No menu on a television: see stage2.asm. */
+    uint32_t bootsel = BOOT_UEFI;
+#else
     uint32_t bootsel = boot_menu() | BOOT_UEFI;
+#endif
 
     /* ---- 1. graphics output: pick the current GOP framebuffer ---- */
     EFI_GRAPHICS_OUTPUT_PROTOCOL *gop = 0;
     if (BS->LocateProtocol(&GOP_GUID, 0, (void **)&gop) != EFI_SUCCESS || !gop) {
         print("no GOP\n"); for (;;) {}
     }
+#ifdef BOLT_TV
+    /* 1920x1080 if the firmware offers it, whatever it booted in. On a 4K
+     * set the shell would otherwise composite 8 million pixels a frame and
+     * copy every one of them out, and the panel's own scaler does the same
+     * job for nothing. Firmware that has no 1080p mode keeps the one it has. */
+    for (uint32_t m = 0; m < gop->Mode->MaxMode; m++) {
+        EFI_GOP_MODE_INFO *qi = 0;
+        UINTN qsz = 0;
+        if (gop->QueryMode(gop, m, &qsz, &qi) != EFI_SUCCESS || !qi) continue;
+        if (qi->HorizontalResolution == 1920 && qi->VerticalResolution == 1080 &&
+            qi->PixelFormat < 2) {            /* RGBX or BGRX, 32 bpp */
+            if (m != gop->Mode->Mode) gop->SetMode(gop, m);
+            break;
+        }
+    }
+#endif
     EFI_GOP_MODE_INFO *gi = gop->Mode->Info;
     uint64_t fb   = gop->Mode->FrameBufferBase;
     uint32_t fw   = gi->HorizontalResolution;
@@ -320,7 +346,12 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st) {
     /* Read the kernel into a scratch buffer. We can't AllocateAddress at 1 MiB
      * (firmware occupies it during boot), so we stage it elsewhere and copy it
      * down to 0x100000 after ExitBootServices, when low RAM is free. */
+#ifdef BOLT_TV
+    /* The TV kernel carries its films: up to 160 MiB. */
+    uint64_t scratch = alloc_pages(40960);
+#else
     uint64_t scratch = alloc_pages(8192);      /* up to 32 MiB kernel */
+#endif
     if (!scratch) { print("scratch alloc failed\n"); for (;;) {} }
     uint8_t *dst = (uint8_t *)scratch;
     UINTN total = 0;

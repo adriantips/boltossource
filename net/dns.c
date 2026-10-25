@@ -6,6 +6,11 @@
 #include "pit.h"
 #include "string.h"
 
+/* Asked before a name is resolved at all. The desktop has nothing to refuse,
+ * so this answers no; BoltOS TV links a strong version (tv/stubs.c) that asks
+ * its ad blocker, which is how one list covers every lookup the set makes. */
+__attribute__((weak)) int dns_blocked(const char *host) { (void)host; return 0; }
+
 /* ===========================================================================
  *  Tiny DNS resolver: one query over UDP/53 to net_dns, blocking until the
  *  reply arrives or we time out. Handles name compression in the answer
@@ -235,6 +240,8 @@ int dns_resolve(const char *host, uint32_t *ip_out, uint32_t timeout_ms) {
     uint32_t lit = net_parse_ipv4(host, &ok);
     if (ok) { *ip_out = lit; return 1; }
 
+    if (dns_blocked(host)) return 0;
+
     /* /etc/hosts, then the cache -- both answer without touching the network,
      * which is also what makes them work when the network is down. */
     uint32_t hip = netcfg_hosts_lookup(host);
@@ -251,6 +258,7 @@ int dns_resolve(const char *host, uint32_t *ip_out, uint32_t timeout_ms) {
 int dns_resolve6(const char *host, ip6_addr *out, uint32_t timeout_ms) {
     if (!host || !host[0] || !out) return 0;
     if (ip6_parse(host, out)) return 1;
+    if (dns_blocked(host)) return 0;
 
     netaddr a;
     if (cache_get(host, NET_AF_INET6, &a) || dns_query(host, DNS_TYPE_AAAA, &a, timeout_ms)) {
@@ -264,6 +272,7 @@ int dns_resolve_addr(const char *host, netaddr *out, uint32_t timeout_ms) {
     if (!host || !host[0] || !out) return 0;
 
     if (netaddr_parse(host, out)) return 1;
+    if (dns_blocked(host)) return 0;
 
     uint32_t hip = netcfg_hosts_lookup(host);
     if (hip) { *out = netaddr_v4(hip); return 1; }

@@ -75,7 +75,12 @@ stage2_start:
     jmp     $
 .a20_done:
 
+%ifndef BOLT_TV
     call    boot_menu                ; normal / safe / recovery -> [boot_flags]
+%endif
+    ; BoltOS TV has no menu: a television is switched on with a remote that
+    ; has no number keys worth pressing, and five seconds of text before the
+    ; picture is five seconds of looking broken. [boot_flags] stays 0, normal.
     call    read_bhdr                ; kernel LBA + sector count from LBA 33
     call    grab_font                ; BIOS glyphs, while there is a BIOS
     call    do_vbe                   ; pick + set linear framebuffer
@@ -151,9 +156,21 @@ rm_print:
 ; rectangle.
 s2_print:
     call    ser_print
+%ifdef BOLT_TV
+    ; The TV build says everything on COM1 and nothing on the panel, until
+    ; something goes wrong: kernel_bad clears s2_quiet before it speaks.
+    cmp     byte [s2_quiet], 0
+    jne     .quiet
+%endif
     cmp     byte [fb_ready], 0
     jne     fb_print
     jmp     rm_print
+%ifdef BOLT_TV
+.quiet:
+    cmp     byte [fb_ready], 0
+    je      rm_print
+    ret
+%endif
 
 ; ---- COM1 ------------------------------------------------------------------
 ; 115200 8N1, written straight to the UART rather than through INT 14h, which
@@ -698,6 +715,24 @@ do_vbe:
     jne     .checkres
     mov     [pref_mode], cx
 .checkres:
+%ifdef BOLT_TV
+    ; A television wants 1920x1080. Failing that, the widest mode that is
+    ; not wider than it -- never the first one in the list, which on QEMU's
+    ; VGA BIOS is 320x200.
+    mov     ax, [es:MODE_INFO_OFF + 0x12]    ; XResolution
+    cmp     ax, 1920
+    ja      .next
+    cmp     ax, [best_w]
+    jb      .next
+    mov     [best_w], ax
+    mov     [pref_mode], cx
+    cmp     ax, 1920
+    jne     .next
+    mov     ax, [es:MODE_INFO_OFF + 0x14]    ; YResolution
+    cmp     ax, 1080
+    jne     .next
+    jmp     .choose                          ; exact 1920x1080 -> take it
+%else
     mov     ax, [es:MODE_INFO_OFF + 0x12]    ; XResolution
     cmp     ax, 1024
     jne     .next
@@ -706,6 +741,7 @@ do_vbe:
     jne     .next
     mov     [pref_mode], cx                  ; exact 1024x768 -> take it
     jmp     .choose
+%endif
 
 .choose:
     mov     cx, [pref_mode]
@@ -767,6 +803,9 @@ do_vbe:
     mov     word [fb_cx], 0
     mov     word [fb_cy], 0
     mov     byte [fb_ready], 1
+%ifdef BOLT_TV
+    mov     byte [s2_quiet], 1
+%endif
     call    fb_clear
     mov     si, msg_banner
     call    s2_print
@@ -1118,6 +1157,9 @@ verify_kernel:                       ; CF=1 if what is at 1 MiB is not it
 ; wanted, and stop -- jumping into this is the silent hang the checksum was
 ; added to replace.
 kernel_bad:
+%ifdef BOLT_TV
+    mov     byte [s2_quiet], 0
+%endif
     mov     si, msg_sumbad
     call    s2_print
     mov     eax, [kern_got]
@@ -1271,6 +1313,10 @@ remaining:    dd 0
 mode_seg:     dw 0
 mode_off:     dw 0
 pref_mode:    dw 0xFFFF
+%ifdef BOLT_TV
+best_w:       dw 0
+s2_quiet:     db 0
+%endif
 hdr_ver:      dd 0
 kern_sum:     dd 0
 have_sum:     db 0
