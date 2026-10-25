@@ -41,7 +41,7 @@ function Hero() {
       <Container className="relative">
         <Reveal>
           <p className="inline-flex items-center gap-3 rounded-full border border-white/15 bg-black/40 py-1.5 pr-4 pl-1.5 backdrop-blur">
-            <span className="aurora-chip rounded-full px-2.5 py-0.5 font-mono text-[10.5px] font-medium text-black">NEW</span>
+            <span className="rounded-full bg-white/90 px-2.5 py-0.5 font-mono text-[10.5px] font-medium text-black">OCTOBER</span>
             <span className="font-mono text-[11.5px] text-smoke">{revamp.dates} · {commits.length} commits</span>
           </p>
         </Reveal>

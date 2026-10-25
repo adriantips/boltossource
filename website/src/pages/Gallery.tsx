@@ -6,6 +6,7 @@ import { hasShot, thumbSrc, captionFor, shotSize } from '@/data/shots'
 import { cn } from '@/lib/utils'
 
 const sets: { name: string; keys: string[] }[] = [
+  { name: 'TV', keys: ['tv_home', 'tv_live', 'tv_guide', 'tv_appletv', 'tv_web_start', 'tv_web', 'tv_adblock', 'tv_settings', 'tv_ambient'] },
   { name: 'Desktop', keys: ['desktop', 'startmenu', 'quicksettings', 'notifications', 'tiled', 'startsearch', 'lock', 'login', 'terminal_sysinfo', 'terminal_net', 'terminal_ps', 'bootmenu'] },
   { name: 'Apps', keys: ['files_win', 'settings_win', 'taskmgr_win', 'clock_win', 'media_win', 'calc_win', 'mixer_win', 'stopwatch_win', 'software_win', 'sysinfo_win', 'browser_win', 'ide_win', 'photos_win', 'security_win', 'devmgr_win', 'network_win', 'logs_win', 'memory_win', 'installer_win', 'clipboard_win', 'music_win', 'paint_win', 'notepad_win', 'sheets_win', 'calendar_win', 'contacts_win', 'tasks_win', 'charmap_win', 'colorpick_win', 'snip_win', 'piano_win'] },
   { name: 'Games', keys: ['doom_play', 'strike_play', 'strike_max', 'doom_win', 'boltcraft_shot', 'gameboy_max', 'solitaire_max', 'mines', '2048', 'snake', 'ttt', 'life_max', 'matrix_max'] },
@@ -27,7 +28,7 @@ export default function Gallery() {
       <PageHero
         eyebrow={`${total} screenshots`}
         title={['Gallery.']}
-        intro="Every image here was captured from the current build — the glass desktop — booted in QEMU and driven over QMP at 1920×1080. No mock-ups, no retouching. Before the revamp is the desktop as it was in September; History is June 2026, before the project had a repository."
+        intro="Every image here was captured from the current build — BoltOS TV and the glass desktop — booted in QEMU and driven over QMP at 1920×1080. No mock-ups, no retouching. Before the revamp is the desktop as it was in September; History is June 2026, before the project had a repository."
       />
       <Container className="pb-32">
         <div className="sticky top-20 z-30 mb-10 flex flex-wrap items-center justify-between gap-3">

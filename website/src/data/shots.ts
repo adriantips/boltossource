@@ -18,6 +18,15 @@ export function pick(k: string, ...suffixes: string[]) {
 }
 
 const captions: Record<string, string> = {
+  tv_home: 'BoltOS TV at power-on: a film edge to edge, the apps in a slim pane of glass, the time in the corner.',
+  tv_live: 'Live TV: the channel banner, with what is on and what is next.',
+  tv_guide: 'The guide: every channel live, with a still of what it is showing, over the picture.',
+  tv_appletv: 'The Apple TV input, with the input switcher along the bottom.',
+  tv_web_start: 'The browser\'s start page: sites that read well from a sofa.',
+  tv_web: 'A Wikipedia page as BoltOS TV shows it: one column of large type, the picture between paragraphs.',
+  tv_adblock: 'The Ad Blocker: on for every app, its counters, and what it stopped.',
+  tv_settings: 'Settings, the way a television lays them out.',
+  tv_ambient: 'Ambient mode: leave the remote alone and only the film and a small clock remain.',
   desktop: 'The glass desktop at 1920×1080: the dock in the middle, the desktop switcher on the left, the tray on the right.',
   startmenu: 'Start: a pinned grid, All apps, and one box that searches apps, settings and files.',
   quicksettings: 'Quick Settings: network, Focus, dark mode, mute, recording and a screenshot, with brightness and volume underneath.',

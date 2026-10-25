@@ -10,19 +10,18 @@ import SpotlightCard from '@/components/bits/SpotlightCard'
 import { Container, SectionHead, Button, ArrowLink, CodeBlock } from '@/components/site/Blocks'
 import { MaskLines, Reveal } from '@/components/site/Reveal'
 import { Shot } from '@/components/site/Shot'
-import { Compare } from '@/components/site/Compare'
 import { Mark } from '@/components/site/Logo'
 import { systems } from '@/data/systems'
 import { stats, downloads } from '@/data/site'
 import { hasShot, thumbSrc } from '@/data/shots'
-import { revamp, numbers } from '@/data/revamp'
+import { tv, tvNumbers, tvDownloads } from '@/data/tv'
 
 export default function Home() {
   return (
     <>
       <Hero />
       <HeroShot />
-      <RevampBand />
+      <TvBand />
       <Marquee />
       <Stats />
       <Layers />
@@ -66,10 +65,10 @@ function Hero() {
             transition={{ duration: 1, delay: 0.2 }}
             className="mb-8"
           >
-            <Link to="/revamp" className="group inline-flex items-center gap-3 rounded-full border border-white/15 bg-black/40 py-1.5 pr-3 pl-1.5 backdrop-blur transition-colors hover:border-white/40">
+            <Link to="/tv" className="group inline-flex items-center gap-3 rounded-full border border-white/15 bg-black/40 py-1.5 pr-3 pl-1.5 backdrop-blur transition-colors hover:border-white/40">
               <span className="aurora-chip rounded-full px-2.5 py-0.5 font-mono text-[10.5px] font-medium text-black">NEW</span>
               <span className="font-mono text-[11.5px] text-smoke group-hover:text-white">
-                <DecryptedText text="The huge UI revamp is here" animateOn="view" sequential speed={28} />
+                <DecryptedText text="BoltOS TV is here" animateOn="view" sequential speed={28} />
               </span>
               <ArrowUpRight className="size-3.5 text-fog transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-white" />
             </Link>
@@ -142,8 +141,10 @@ function HeroShot() {
   )
 }
 
-// The October redesign, as loud as this site gets: the one band in colour.
-function RevampBand() {
+// The television edition, as loud as this site gets: the one band in colour.
+function TvBand() {
+  const usb = tvDownloads[0]
+  const minis = ['tv_guide', 'tv_web', 'tv_adblock', 'tv_appletv'].filter(hasShot)
   return (
     <section className="relative overflow-hidden border-y border-line py-28 sm:py-44">
       <div className="aurora-field pointer-events-none absolute -inset-x-32 inset-y-0 opacity-80" />
@@ -152,38 +153,46 @@ function RevampBand() {
         <Reveal>
           <p className="inline-flex items-center gap-3 rounded-full border border-white/15 bg-black/40 py-1.5 pr-4 pl-1.5 backdrop-blur">
             <span className="aurora-chip rounded-full px-2.5 py-0.5 font-mono text-[10.5px] font-medium text-black">NEW</span>
-            <span className="font-mono text-[11.5px] text-smoke">{revamp.dates}</span>
+            <span className="font-mono text-[11.5px] text-smoke">{tv.dates} · the television edition</span>
           </p>
         </Reveal>
         <h2 className="display mt-8 text-[clamp(4rem,15.5vw,16rem)] !leading-[0.86]">
-          <MaskLines lines={['The huge', <span className="aurora-text">UI revamp.</span>]} />
+          <MaskLines lines={['BoltOS', <span className="aurora-text">TV.</span>]} />
         </h2>
         <div className="mt-10 grid gap-10 lg:grid-cols-[1.3fr_1fr] lg:items-end">
           <Reveal>
             <p className="max-w-2xl text-[clamp(1.1rem,1.6vw,1.35rem)] leading-relaxed text-white/80">
-              The whole desktop, redrawn. Liquid glass, Inter rasterised from its outlines, icons drawn for the sizes they are
-              shown at, a dock, Quick Settings, a notification centre and nine rebuilt apps. Still no GPU, still not a line of
-              anybody else&apos;s kernel.
+              BoltOS, for the television. Switch it on and a 4K-shot film fills the screen, with a slim pane of liquid glass for
+              Live TV, Apple TV, HDMI, a browser made for the sofa and an ad blocker for the whole set. No login, no boot menu,
+              and the same kernel underneath.
             </p>
           </Reveal>
           <Reveal delay={0.1} className="flex flex-wrap gap-3 lg:justify-end">
-            <Button to="/revamp">Everything that changed <ArrowUpRight className="size-4" /></Button>
-            <Button to="/download" variant="ghost"><DownloadIcon className="size-4" /> Get it</Button>
+            <Button to="/tv">Meet BoltOS TV <ArrowUpRight className="size-4" /></Button>
+            <Button to={usb.href} variant="ghost"><DownloadIcon className="size-4" /> Get it</Button>
           </Reveal>
         </div>
 
         <Reveal className="relative mt-16 sm:mt-20">
-          <div className="glass rounded-2xl p-1.5 sm:rounded-[22px] sm:p-2">
-            <Compare before="v1_desktop" after="desktop" beforeLabel="September" afterLabel="October" start={50} className="rounded-xl border-0 sm:rounded-[16px]" />
+          <div className="relative overflow-hidden rounded-[16px] border-[8px] border-[#0b0b0d] bg-black shadow-[0_60px_160px_-40px_rgba(255,255,255,0.22)] ring-1 ring-white/10 sm:rounded-[24px] sm:border-[14px]">
+            {hasShot('tv_home') && <img src="/shots/tv_home.webp" alt="BoltOS TV: a film of the Lofoten Islands with the apps in a slim glass pane" width={1920} height={1080} className="block h-auto w-full" />}
           </div>
-          <p className="mt-4 text-center font-mono text-[11px] tracking-[0.14em] text-fog uppercase">Drag the line · same machine, one month apart</p>
+          <div className="mx-auto h-3 w-1/3 rounded-b-2xl bg-gradient-to-b from-[#16161a] to-transparent sm:h-5" />
+          <p className="mt-4 text-center font-mono text-[11px] tracking-[0.14em] text-fog uppercase">Home, as the set comes on · QEMU screendump</p>
         </Reveal>
 
-        {/* one Reveal for the whole grid: a translated cell inside an
-            overflow-hidden box makes the box scrollable, and scrollIntoView
-            will happily scroll it and leave it there */}
+        {minis.length > 0 && (
+          <Reveal className="mt-14 grid grid-cols-2 gap-4 lg:grid-cols-4">
+            {minis.map(k => (
+              <Link key={k} to="/tv" className="group overflow-hidden rounded-xl border border-white/10 bg-black">
+                <img src={thumbSrc(k)} alt="" width={960} height={540} loading="lazy" className="block h-auto w-full transition-transform duration-700 group-hover:scale-[1.03]" />
+              </Link>
+            ))}
+          </Reveal>
+        )}
+
         <Reveal className="mt-16 grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-white/10 bg-white/10 lg:grid-cols-4">
-          {numbers.map(n => (
+          {tvNumbers.map(n => (
             <div key={n.label} className="bg-black/75 p-6 sm:p-8">
               <div className="display text-[clamp(2rem,4vw,3.4rem)] tabular-nums">
                 {n.value}<span className="ml-1 text-[0.45em] text-fog">{n.unit}</span>
@@ -192,6 +201,9 @@ function RevampBand() {
             </div>
           ))}
         </Reveal>
+        <p className="mt-10 text-center text-[13px] text-fog">
+          Also this month: <Link to="/revamp" className="text-white underline decoration-white/30 underline-offset-4 hover:decoration-white">the huge UI revamp</Link> of the desktop.
+        </p>
       </Container>
     </section>
   )

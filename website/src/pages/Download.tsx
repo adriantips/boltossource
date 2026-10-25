@@ -1,9 +1,11 @@
-import { ArrowDownToLine, ArrowUpRight, Disc3, FileArchive, HardDrive, Usb } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpRight, Disc3, FileArchive, HardDrive, Tv, Usb } from 'lucide-react'
 import { Container, PageHero, SectionHead, CodeBlock, ArrowLink } from '@/components/site/Blocks'
 import { Reveal } from '@/components/site/Reveal'
 import { Shot } from '@/components/site/Shot'
 import { GitHubIcon } from '@/components/site/GitHubIcon'
 import { downloads, links } from '@/data/site'
+import { tvDownloads } from '@/data/tv'
+import { hasShot, thumbSrc } from '@/data/shots'
 
 const icons = { iso: Disc3, img: Usb, vdi: HardDrive, zip: FileArchive, tar: FileArchive } as const
 
@@ -108,6 +110,35 @@ export default function Download() {
               <a href={links.repo} target="_blank" rel="noreferrer" className="inline-flex h-12 items-center gap-2 rounded-full bg-white px-5 text-[14px] font-medium text-black">
                 Repository <ArrowUpRight className="size-4" />
               </a>
+            </div>
+          </div>
+        </Reveal>
+        <Reveal className="mt-4">
+          <div id="tv" className="relative scroll-mt-28 overflow-hidden rounded-3xl border border-white/15 p-7 sm:p-9">
+            <div className="aurora-field pointer-events-none absolute -inset-10 opacity-40" />
+            <div className="relative grid gap-8 lg:grid-cols-[1.1fr_1fr] lg:items-center">
+              <div>
+                <p className="inline-flex items-center gap-2 font-mono text-[11px] text-smoke">
+                  <span className="aurora-chip rounded-full px-2 py-0.5 text-[10px] text-black">NEW</span> BoltOS TV
+                </p>
+                <h3 className="mt-4 flex items-center gap-3 text-[28px] font-medium tracking-[-0.035em]"><Tv className="size-7" strokeWidth={1.4} /> For your television</h3>
+                <p className="mt-3 max-w-xl text-[15px] leading-relaxed text-white/75">
+                  The television edition: films, Live TV, inputs, a browser for the sofa and a built-in ad blocker. Write the USB
+                  image to a stick, plug it into a small PC on the TV, and boot. <a href="/tv#install" className="text-white underline decoration-white/30 underline-offset-4 hover:decoration-white">How to install it</a>.
+                </p>
+                <div className="mt-6 flex flex-wrap gap-2">
+                  {tvDownloads.map((d, i) => (
+                    <a key={d.id} href={d.href} className={'inline-flex h-12 items-center gap-2 rounded-full px-5 text-[14px] font-medium transition-colors ' + (i === 0 ? 'bg-white text-black hover:bg-white/85' : 'border border-line-strong hover:bg-white hover:text-black')}>
+                      <ArrowDownToLine className="size-4" /> {d.file} <span className={i === 0 ? 'text-black/50' : 'text-fog'}>{d.size}</span>
+                    </a>
+                  ))}
+                </div>
+              </div>
+              {hasShot('tv_home') && (
+                <a href="/tv" className="block overflow-hidden rounded-xl border-[6px] border-[#0b0b0d] ring-1 ring-white/10">
+                  <img src={thumbSrc('tv_home')} alt="BoltOS TV home screen" width={960} height={540} loading="lazy" className="block h-auto w-full" />
+                </a>
+              )}
             </div>
           </div>
         </Reveal>

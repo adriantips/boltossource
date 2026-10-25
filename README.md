@@ -10,6 +10,36 @@ honest account of what it cannot do yet.
 [SDK.md](SDK.md) for the syscall ABI and [SHELL.md](SHELL.md) for the shell.
 **What is left:** [ROADMAP.md](ROADMAP.md).
 
+## New: BoltOS TV
+
+![BoltOS TV](website/public/shots/tv_home.webp)
+
+**BoltOS TV** is the television edition of BoltOS, and it's new this month.
+When you switch it on, a 4K-shot film fills the screen. There's no login and
+no boot menu. A slim pane of liquid glass on the left holds the apps:
+
+- **Live TV**: six seamless film channels, with a channel banner and a guide.
+- **Apple TV** and **HDMI 1**: input screens.
+- **Browser**: a reader-view web browser built for the sofa, with HTTPS.
+- **Ad Blocker**: checks every lookup the set makes against 293 ad,
+  tracking and smart-TV telemetry networks.
+- **Settings.**
+
+It uses the same kernel, drivers and glass as the desktop, with the desktop
+removed. The whole system, films included, is a 37 MB USB image. You flash
+it to a stick, plug the stick into a small PC on the TV's HDMI, and boot.
+
+**Installing it:** [TV.md](TV.md). **Building it:** `bash build-tv.sh`, on
+macOS or Linux. **The code:** [`tv/`](tv). **The page:**
+[boltos.dev/tv](https://boltos.dev/tv).
+
+| | |
+| --- | --- |
+| ![Live TV guide](website/public/shots/tv_guide.webp) | ![Browser](website/public/shots/tv_web.webp) |
+| The guide: every channel live, over the picture. | Wikipedia as a reader view, in TV-sized type. |
+| ![Ad Blocker](website/public/shots/tv_adblock.webp) | ![Apple TV input](website/public/shots/tv_appletv.webp) |
+| The Ad Blocker, on for every app on the set. | The Apple TV input and the input switcher. |
+
 > Status: **active development.** Custom boot chain (stage1 → stage2 → long mode,
 > or UEFI → long mode) into a 64-bit C kernel. UEFI boot, ACPI, APIC, **SMP
 > (symmetric multiprocessing)**, HPET, a framebuffer compositor and windowed
