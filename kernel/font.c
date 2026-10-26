@@ -26,7 +26,11 @@
 #include "kprintf.h"
 #include "math.h"
 
+#if defined(__x86_64__)
 static inline float fsqrt(float x) { float r; __asm__("sqrtss %1, %0" : "=x"(r) : "x"(x)); return r; }
+#else
+static inline float fsqrt(float x) { return __builtin_sqrtf(x); }
+#endif
 
 /* ---- the blobs build.sh embeds -------------------------------------------- */
 #define BLOB(n) extern const uint8_t _binary_##n##_bfnt_start[], _binary_##n##_bfnt_end[];

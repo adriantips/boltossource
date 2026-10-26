@@ -24,7 +24,11 @@
 
 static inline int imin(int a, int b) { return a < b ? a : b; }
 static inline int imax(int a, int b) { return a > b ? a : b; }
+#if defined(__x86_64__)
 static inline float fsq(float x) { float r; __asm__("sqrtss %1, %0" : "=x"(r) : "x"(x)); return r; }
+#else
+static inline float fsq(float x) { return __builtin_sqrtf(x); }
+#endif
 static inline int ffloor(float v) { int i = (int)v; return (v < (float)i) ? i - 1 : i; }
 static inline int fceil(float v)  { int i = (int)v; return (v > (float)i) ? i + 1 : i; }
 static inline float fclamp1(float v) { return v < 0.0f ? 0.0f : v > 1.0f ? 1.0f : v; }
@@ -32,6 +36,7 @@ static inline float fclamp1(float v) { return v < 0.0f ? 0.0f : v > 1.0f ? 1.0f 
 /* ===========================================================================
  *  Bulk moves
  * ===========================================================================*/
+#if defined(__x86_64__)
 void gfx_memcpy32(uint32_t *d, const uint32_t *s, int n) {
     if (n <= 0) return;
     uint64_t c = (uint64_t)n;
@@ -42,6 +47,14 @@ void gfx_memset32(uint32_t *d, uint32_t v, int n) {
     uint64_t c = (uint64_t)n;
     __asm__ volatile("rep stosl" : "+D"(d), "+c"(c) : "a"(v) : "memory");
 }
+#else
+void gfx_memcpy32(uint32_t *d, const uint32_t *s, int n) {
+    if (n > 0) memcpy(d, s, (size_t)n * 4);
+}
+void gfx_memset32(uint32_t *d, uint32_t v, int n) {
+    for (int i = 0; i < n; i++) d[i] = v;
+}
+#endif
 
 /* ===========================================================================
  *  Target, origin, clip
@@ -132,7 +145,7 @@ int gfx_luma(uint32_t c) {
 static inline void px_a(int x, int y, uint32_t c, uint32_t a256) {
     if (x < cx0 || x >= cx1 || y < cy0 || y >= cy1 || !a256) return;
     uint32_t *p = PX(x, y);
-    *p = a256 >= 256 ? c : gfx_mix(*p, c, a256);
+    *p = a256 >= 256 ? GFX_OPAQUE(c) : gfx_mix(*p, c, a256);
 }
 /* coverage (0..255) times alpha (0..256) -> 0..256 */
 static inline uint32_t cova(int cov, uint32_t a256) { return (gfx_a256(cov) * a256) >> 8; }
@@ -144,7 +157,11 @@ static void span(int y, int x0, int x1, uint32_t c, uint32_t a256) {
     if (x1 <= x0 || !a256) return;
     uint32_t *p = PX(x0, y);
     int n = x1 - x0;
-    if (a256 >= 256) { gfx_memset32(p, c, n); return; }
+    if (a256 >= 256) { gfx_memset32(p, GFX_OPAQUE(c), n); return; }
+#ifdef GFX_ALPHA
+    for (int i = 0; i < n; i++) p[i] = gfx_mix(p[i], c, a256);
+    return;
+#endif
     uint32_t srb = (c & 0xFF00FFu) * a256, sg = (c & 0xFF00u) * a256, ia = 256 - a256;
     for (int i = 0; i < n; i++) {
         uint32_t d = p[i];
@@ -158,7 +175,7 @@ void gfx_fill(int x, int y, int w, int h, uint32_t c) {
     int y0 = imax(y, cy0), y1 = imin(y + h, cy1);
     int x0 = imax(x, cx0), x1 = imin(x + w, cx1);
     if (x1 <= x0) return;
-    for (int j = y0; j < y1; j++) gfx_memset32(PX(x0, j), c, x1 - x0);
+    for (int j = y0; j < y1; j++) gfx_memset32(PX(x0, j), GFX_OPAQUE(c), x1 - x0);
 }
 void gfx_fill_a(int x, int y, int w, int h, uint32_t c, int a) {
     if (a <= 0) return;
@@ -583,6 +600,10 @@ void gfx_shadow(int x, int y, int w, int h, int r, int blur, int dy, int spread,
             if (px >= sk0 && px < sk1) { px = sk1 - 1; continue; }
             uint32_t a = (shx[px - ex0] * fyo) >> 16; /* 0..256 */
             if (!a) continue;
+#ifdef GFX_ALPHA
+            row[px] = gfx_mix(row[px], 0x000000u, a);       /* black, at coverage a */
+            continue;
+#endif
             uint32_t ia = 256 - a;
             uint32_t d = row[px];
             row[px] = ((((d & 0xFF00FFu) * ia) >> 8) & 0xFF00FFu) | ((((d & 0x00FF00u) * ia) >> 8) & 0x00FF00u);
@@ -611,6 +632,11 @@ static inline void blend_pm(uint32_t *p, uint32_t s, uint32_t a256) {
     uint32_t o_rb = rb + (s & 0xFF00FFu), o_g = g + (s & 0x00FF00u);
     if (o_rb & 0x01000100u) { if (o_rb & 0x01000000u) o_rb |= 0xFF0000u; if (o_rb & 0x100u) o_rb |= 0xFFu; }
     if (o_g & 0x10000u) o_g = 0xFF00u;
+#ifdef GFX_ALPHA
+    uint32_t oa = sa + (((d >> 24) * ia) >> 8);
+    *p = (o_rb & 0xFF00FFu) | (o_g & 0x00FF00u) | ((oa > 255 ? 255 : oa) << 24);
+    return;
+#endif
     *p = (o_rb & 0xFF00FFu) | (o_g & 0x00FF00u);
 }
 
@@ -711,6 +737,10 @@ void gfx_mask(int x, int y, const uint8_t *m, int mw, int mh, int mstride, uint3
             int cv = mr[px - x];
             if (!cv) continue;
             uint32_t aa = (gfx_a256(cv) * a256) >> 8;
+#ifdef GFX_ALPHA
+            dp[px] = gfx_mix(dp[px], c, aa);
+            continue;
+#endif
             uint32_t d = dp[px], ia = 256 - aa;
             uint32_t rb = (crb * aa + (d & 0xFF00FFu) * ia) >> 8;
             uint32_t g  = (cg  * aa + (d & 0x00FF00u) * ia) >> 8;
@@ -722,8 +752,12 @@ void gfx_mask(int x, int y, const uint8_t *m, int mw, int mh, int mstride, uint3
 void gfx_copy(int dx, int dy, const surface_t *s, int sx, int sy, int w, int h) {
     int x0 = imax(dx, cx0), y0 = imax(dy, cy0), x1 = imin(dx + w, cx1), y1 = imin(dy + h, cy1);
     if (x1 <= x0 || y1 <= y0) return;
-    for (int py = y0; py < y1; py++)
+    for (int py = y0; py < y1; py++) {
         gfx_memcpy32(PX(x0, py), s->px + (sy + py - dy) * s->stride + sx + (x0 - dx), x1 - x0);
+#ifdef GFX_ALPHA
+        for (uint32_t *p = PX(x0, py), *e = p + (x1 - x0); p < e; p++) *p = GFX_OPAQUE(*p);
+#endif
+    }
 }
 
 void gfx_copy_rr(int dx, int dy, const surface_t *s, int r, int a) {
@@ -747,13 +781,18 @@ void gfx_copy_rr(int dx, int dy, const surface_t *s, int r, int a) {
                 int lx = dx + k, rx = dx + w - 1 - k;
                 uint32_t aa = cova(cv[k], a256);
                 if (!aa) continue;
-                if (lx >= x0 && lx < x1) dp[lx] = aa >= 256 ? sp[k] : gfx_mix(dp[lx], sp[k], aa);
-                if (rx >= x0 && rx < x1) dp[rx] = aa >= 256 ? sp[w - 1 - k] : gfx_mix(dp[rx], sp[w - 1 - k], aa);
+                if (lx >= x0 && lx < x1) dp[lx] = aa >= 256 ? GFX_OPAQUE(sp[k]) : gfx_mix(dp[lx], sp[k], aa);
+                if (rx >= x0 && rx < x1) dp[rx] = aa >= 256 ? GFX_OPAQUE(sp[w - 1 - k]) : gfx_mix(dp[rx], sp[w - 1 - k], aa);
             }
             sl = imax(x0, dx + r); sr = imin(x1, dx + w - r);
         }
         if (sr <= sl) continue;
-        if (a256 >= 256) gfx_memcpy32(dp + sl, sp + (sl - dx), sr - sl);
+        if (a256 >= 256) {
+            gfx_memcpy32(dp + sl, sp + (sl - dx), sr - sl);
+#ifdef GFX_ALPHA
+            for (int px = sl; px < sr; px++) dp[px] = GFX_OPAQUE(dp[px]);
+#endif
+        }
         else for (int px = sl; px < sr; px++) dp[px] = gfx_mix(dp[px], sp[px - dx], a256);
     }
 }
@@ -795,7 +834,7 @@ void gfx_surface_scaled(int x, int y, int w, int h, const surface_t *s, int r, i
                 else if (i >= w - r) aa = cova(cv[w - 1 - i], a256);
             }
             if (!aa) continue;
-            dp[px] = aa >= 256 ? c : gfx_mix(dp[px], c, aa);
+            dp[px] = aa >= 256 ? GFX_OPAQUE(c) : gfx_mix(dp[px], c, aa);
         }
     }
 }
@@ -815,7 +854,7 @@ void g_blit(int dx, int dy, int dw, int dh, const uint32_t *src, int sw, int sh)
             int n = x1 - x0, allop = 1;
             for (int i = 0; i < n; i++) if ((sp[i] >> 24) != 255) { allop = 0; break; }
             if (allop) {
-                for (int i = 0; i < n; i++) dp[x0 + i] = sp[i] & 0xFFFFFFu;
+                for (int i = 0; i < n; i++) dp[x0 + i] = GFX_OPAQUE(sp[i] & 0xFFFFFFu);
                 continue;
             }
         }
@@ -823,7 +862,7 @@ void g_blit(int dx, int dy, int dw, int dh, const uint32_t *src, int sw, int sh)
             int sx = (x - dx) * sw / dw; if (sx >= sw) sx = sw - 1;
             uint32_t c = srow[sx];
             uint32_t a = c >> 24;
-            if (a == 255)    dp[x] = c & 0xFFFFFFu;
+            if (a == 255)    dp[x] = GFX_OPAQUE(c & 0xFFFFFFu);
             else if (a)      dp[x] = gfx_mix(dp[x], c & 0xFFFFFFu, gfx_a256((int)a));
         }
     }
@@ -878,7 +917,7 @@ static uint32_t tone(uint32_t c, const glass_t *g) {
         r += g->lift; gg += g->lift; b += g->lift;
         r = r < 0 ? 0 : r > 255 ? 255 : r; gg = gg < 0 ? 0 : gg > 255 ? 255 : gg; b = b < 0 ? 0 : b > 255 ? 255 : b;
     }
-    return (uint32_t)(r << 16 | gg << 8 | b);
+    return GFX_OPAQUE((uint32_t)(r << 16 | gg << 8 | b));
 }
 
 static uint32_t *scratch;
@@ -939,6 +978,36 @@ static void build_full(backdrop_t *b, int x, int y, int w, int h) {
     #undef HROW
 }
 
+static const uint32_t *bd_src;
+static int bd_sw, bd_sh, bd_dim;
+
+void gfx_backdrop_source(const uint32_t *px, int sw, int sh, int dim) {
+    bd_src = (px && sw > 0 && sh > 0) ? px : 0;
+    bd_sw = sw; bd_sh = sh;
+    bd_dim = dim < 0 ? 0 : dim > 255 ? 255 : dim;
+}
+
+/* The small image, sampled from the handed-over source instead of the
+ * target: one nearest sample per cell, since the source is already about the
+ * size of the small image and the blur that follows erases the difference. */
+static void capture_from_source(backdrop_t *b) {
+    uint32_t keep = 256 - gfx_a256(bd_dim);
+    for (int j = 0; j < b->sh; j++) {
+        int dy = b->y + j * b->f + b->f / 2 - OY;
+        int sy = (int)((int64_t)dy * bd_sh / T->h);
+        sy = sy < 0 ? 0 : sy >= bd_sh ? bd_sh - 1 : sy;
+        const uint32_t *row = bd_src + (int64_t)sy * bd_sw;
+        uint32_t *out = b->small + j * b->sw;
+        for (int i = 0; i < b->sw; i++) {
+            int dx = b->x + i * b->f + b->f / 2 - OX;
+            int sx = (int)((int64_t)dx * bd_sw / T->w);
+            sx = sx < 0 ? 0 : sx >= bd_sw ? bd_sw - 1 : sx;
+            uint32_t c = row[sx];
+            out[i] = ((((c & 0xFF00FFu) * keep) >> 8) & 0xFF00FFu) | ((((c & 0x00FF00u) * keep) >> 8) & 0x00FF00u);
+        }
+    }
+}
+
 void gfx_backdrop_capture(backdrop_t *b, int x, int y, int w, int h, const glass_t *g) {
     if (!T || w <= 0 || h <= 0) { b->valid = 0; return; }
     int f = g->blur > 40 ? 8 : 4;
@@ -962,6 +1031,7 @@ void gfx_backdrop_capture(backdrop_t *b, int x, int y, int w, int h, const glass
     static int      xmap[4096 + 64];
     static uint32_t arb[1024 + 16], ag[1024 + 16];
     if (sw * f > (int)(sizeof xmap / sizeof xmap[0]) || sw > (int)(sizeof arb / sizeof arb[0])) { b->valid = 0; return; }
+    if (bd_src) { capture_from_source(b); goto blur; }
     for (int k = 0; k < sw * f; k++) {
         int xx = rx + k;
         xx = xx < ax0 ? ax0 : (xx > ax1 ? ax1 : xx);
@@ -989,6 +1059,7 @@ void gfx_backdrop_capture(backdrop_t *b, int x, int y, int w, int h, const glass
             out[i] = (r << 16) | (g << 8) | bb;
         }
     }
+blur:;
     int k = (g->blur + f / 2) / f;
     if (k < 1) k = 1;
     uint32_t *tmp = get_scratch(sw > sh ? sw : sh);
@@ -1038,7 +1109,7 @@ void gfx_backdrop_draw(const backdrop_t *b, int x, int y, int w, int h, int r, i
                 sl = imax(x0, x + r); sr = imin(x1, x + w - r);
             }
             if (sr <= sl) continue;
-            if (a256 >= 256) gfx_memcpy32(dp + sl, sp + sl, sr - sl);
+            if (a256 >= 256) gfx_memcpy32(dp + sl, sp + sl, sr - sl);   /* tone() made them opaque */
             else for (int px = sl; px < sr; px++) dp[px] = gfx_mix(dp[px], sp[px], a256);
         }
         return;

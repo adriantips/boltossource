@@ -41,12 +41,29 @@ void gfx_clip_get(int *x, int *y, int *w, int *h);
 int  gfx_clip_empty(void);
 int  gfx_clip_hits(int x, int y, int w, int h);     /* does the rect touch the clip */
 
-/* ---- colour ----------------------------------------------------------- */
+/* ---- colour ----------------------------------------------------------- *
+ * GFX_ALPHA is defined by the WebAssembly build of BoltOS TV, which draws its
+ * interface on a transparent canvas over a <video>, so the target carries an
+ * alpha channel: 0xAARRGGBB, premultiplied. Every colour drawn is opaque at
+ * whatever coverage it is drawn with, so mixing the alpha byte exactly as the
+ * colour bytes are mixed is premultiplied "over" -- one extra multiply. The
+ * kernel builds leave it undefined and never look at the top byte. */
+#ifdef GFX_ALPHA
+#define GFX_OPAQUE(c) ((uint32_t)(c) | 0xFF000000u)
+static inline uint32_t gfx_mix(uint32_t d, uint32_t s, uint32_t a256) {
+    s |= 0xFF000000u;
+    uint32_t rb = ((s & 0xFF00FFu) * a256 + (d & 0xFF00FFu) * (256u - a256)) >> 8;
+    uint32_t ag = ((s >> 8) & 0xFF00FFu) * a256 + ((d >> 8) & 0xFF00FFu) * (256u - a256);
+    return (rb & 0xFF00FFu) | (ag & 0xFF00FF00u);
+}
+#else
+#define GFX_OPAQUE(c) (c)
 static inline uint32_t gfx_mix(uint32_t d, uint32_t s, uint32_t a256) {
     uint32_t rb = ((s & 0xFF00FFu) * a256 + (d & 0xFF00FFu) * (256u - a256)) >> 8;
     uint32_t g  = ((s & 0x00FF00u) * a256 + (d & 0x00FF00u) * (256u - a256)) >> 8;
     return (rb & 0xFF00FFu) | (g & 0x00FF00u);
 }
+#endif
 static inline uint32_t gfx_a256(int a) { return (uint32_t)(a + (a >> 7)); }  /* 0..255 -> 0..256 */
 uint32_t gfx_lerp(uint32_t a, uint32_t b, int t, int tmax);
 uint32_t gfx_shade(uint32_t c, int pct);                /* 100 = same, <100 darker, >100 lighter */
@@ -141,6 +158,13 @@ typedef struct {
 void gfx_backdrop_capture(backdrop_t *b, int x, int y, int w, int h, const glass_t *g);
 void gfx_backdrop_draw(const backdrop_t *b, int x, int y, int w, int h, int r, int a);
 void gfx_backdrop_free(backdrop_t *b);
+/* Where glass looks for what is behind it. By default that is the target
+ * itself; a build whose background is not in the target (the TV's films, on
+ * a hardware video plane under a transparent canvas) hands over a small
+ * picture of it instead: sw x sh pixels standing for the target's whole
+ * extent, darkened by `dim` (0..255) as the screen over it is. NULL restores
+ * the default. */
+void gfx_backdrop_source(const uint32_t *px, int sw, int sh, int dim);
 /* Blur a whole surface into dst (same size) -- the lock screen's background.
  * dst may be the same buffer as src. */
 void gfx_blur_surface(const surface_t *src, surface_t *dst, const glass_t *g);

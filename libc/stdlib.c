@@ -11,6 +11,14 @@
 #include "errno.h"
 #include "kprintf.h"
 
+/* Where a dead end parks the CPU: hlt on the kernel's x86-64, a trap on
+ * WebAssembly (BoltOS TV for Samsung), where there is nothing to halt. */
+#if defined(__x86_64__)
+#define LIBC_HALT() __asm__ volatile("hlt")
+#else
+#define LIBC_HALT() __builtin_trap()
+#endif
+
 /* ----------------------------- string -> integer ----------------------------- */
 static int digit_val(int c) {
     if (c >= '0' && c <= '9') return c - '0';
@@ -178,10 +186,10 @@ void exit(int code) {
     for (int i = atexit_n - 1; i >= 0; i--) atexit_fns[i]();
     kprintf("\n[libc] exit(%d) inside kernel context\n", code);
     panic("libc exit()");
-    for (;;) __asm__ volatile("hlt");
+    for (;;) LIBC_HALT();
 }
-void _Exit(int code) { (void)code; panic("libc _Exit()"); for (;;) __asm__ volatile("hlt"); }
-void abort(void) { panic("libc abort()"); for (;;) __asm__ volatile("hlt"); }
+void _Exit(int code) { (void)code; panic("libc _Exit()"); for (;;) LIBC_HALT(); }
+void abort(void) { panic("libc abort()"); for (;;) LIBC_HALT(); }
 int  system(const char *cmd) { (void)cmd; errno = ENOSYS; return -1; }
 int  mkstemp(char *tmpl) { (void)tmpl; errno = ENOSYS; return -1; }
 
