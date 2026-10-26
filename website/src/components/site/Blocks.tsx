@@ -93,5 +93,7 @@ export function Button({ to, children, variant = 'solid', className, download }:
     className,
   )
   if (to.startsWith('http')) return <a href={to} className={cls} target={download ? undefined : '_blank'} rel="noreferrer">{children}</a>
+  // /dl/* is served by the Worker, not the client router
+  if (download || to.startsWith('/dl/')) return <a href={to} className={cls}>{children}</a>
   return <Link to={to} className={cls}>{children}</Link>
 }

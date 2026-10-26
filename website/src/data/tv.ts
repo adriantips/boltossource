@@ -2,7 +2,7 @@
 // the build in iso/ does today -- the screenshots are QEMU screendumps of it,
 // and the limits are written down as plainly as the features.
 
-import { RAW, links } from './site'
+import { links } from './site'
 
 export const tv = {
   dates: 'October 2026',
@@ -107,7 +107,7 @@ export const tvDownloads: TvDownload[] = [
     name: 'USB stick for your TV',
     file: 'boltostv-usb.img.gz',
     size: '≈ 37 MB',
-    href: `${RAW}/iso/boltostv-usb.img.gz`,
+    href: '/dl/boltostv-usb.img.gz',
     blurb: 'Write it to a USB stick, plug it into a small PC on your TV’s HDMI, and boot. Legacy BIOS and UEFI both work; one copy of the kernel serves both.',
     bestFor: 'A mini PC, NUC or laptop on the TV (balenaEtcher, Rufus in DD mode, dd)',
   },
@@ -116,7 +116,7 @@ export const tvDownloads: TvDownload[] = [
     name: 'CD image',
     file: 'boltos-tv.iso',
     size: '≈ 37 MB',
-    href: `${RAW}/iso/boltos-tv.iso`,
+    href: '/dl/boltos-tv.iso',
     blurb: 'The same system as a bootable CD image, for trying it in a virtual machine before it goes anywhere near a television.',
     bestFor: 'QEMU, VirtualBox, VMware',
   },

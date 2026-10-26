@@ -169,7 +169,7 @@ function TvBand() {
           </Reveal>
           <Reveal delay={0.1} className="flex flex-wrap gap-3 lg:justify-end">
             <Button to="/tv">Meet BoltOS TV <ArrowUpRight className="size-4" /></Button>
-            <Button to={usb.href} variant="ghost"><DownloadIcon className="size-4" /> Get it</Button>
+            <Button to={usb.href} variant="ghost" download><DownloadIcon className="size-4" /> Get it</Button>
           </Reveal>
         </div>
 

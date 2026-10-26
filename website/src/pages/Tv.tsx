@@ -1,12 +1,11 @@
 import { useRef } from 'react'
 import { motion, useScroll, useSpring, useTransform } from 'motion/react'
-import { ArrowDown, ArrowUpRight, Download as DownloadIcon, Tv as TvIcon, Usb, Disc3 } from 'lucide-react'
-import { Container, Button, ArrowLink, CodeBlock, SectionHead } from '@/components/site/Blocks'
+import { ArrowDown, Download as DownloadIcon, Tv as TvIcon, Usb, Disc3 } from 'lucide-react'
+import { Container, Button, CodeBlock, SectionHead } from '@/components/site/Blocks'
 import { MaskLines, Reveal } from '@/components/site/Reveal'
 import { Shot } from '@/components/site/Shot'
 import { hasShot } from '@/data/shots'
 import { tv, tvNumbers, tvFeatures, tvLimits, tvSteps, tvKeys, tvFilms, tvDownloads } from '@/data/tv'
-import { links } from '@/data/site'
 import { cn } from '@/lib/utils'
 
 export default function Tv() {
@@ -145,7 +144,7 @@ function Install() {
           n="02"
           eyebrow="Putting it on your TV"
           title={<>Four steps, <span className="serif-i text-smoke">one USB stick.</span></>}
-          intro={<>BoltOS TV runs on a small computer plugged into the television, which becomes the set’s smart part. The whole walk-through, with the commands for every platform, is in <ArrowLink to={tv.guide}>TV.md</ArrowLink>.</>}
+          intro="BoltOS TV runs on a small computer plugged into the television, which becomes the set’s smart part. Both images download straight from boltos.dev."
         />
         <div className="mt-16 grid gap-4 lg:grid-cols-2">
           {tvDownloads.map((d, i) => {
@@ -234,7 +233,7 @@ function Credits() {
           n="05"
           eyebrow="Credits"
           title={<>Made by <span className="serif-i text-smoke">Adrian Derakhshideh.</span></>}
-          intro={<>The films are from Pexels, filmed in 4K by the people below and cut into seamless loops by <ArrowLink to={links.blob('tv/mkmedia.py')}>tv/mkmedia.py</ArrowLink>. MPEG-1 decoding is pl_mpeg by Dominic Szablewski (MIT); the type is Inter; the icons are Lucide (ISC).</>}
+          intro="The films are from Pexels, filmed in 4K by the people below and cut into seamless loops. MPEG-1 decoding is pl_mpeg by Dominic Szablewski (MIT); the type is Inter; the icons are Lucide (ISC)."
         />
         <div className="mt-14 grid grid-cols-1 gap-px overflow-hidden rounded-2xl border border-line bg-line sm:grid-cols-2 lg:grid-cols-3">
           {tvFilms.map(([f, who]) => (
@@ -264,7 +263,7 @@ function Cta() {
         </p>
         <div className="mt-10 flex flex-wrap justify-center gap-3">
           <Button to={usb.href} download><DownloadIcon className="size-4" /> {usb.file} <span className="text-black/50">{usb.size}</span></Button>
-          <Button to={tv.tree} variant="ghost">The source <ArrowUpRight className="size-4" /></Button>
+          <a href="#install" className="inline-flex h-12 items-center gap-2 rounded-full border border-line-strong px-6 text-[14px] font-medium text-white transition-colors hover:border-white hover:bg-white/5">How to install <ArrowDown className="size-4" /></a>
         </div>
       </Container>
     </section>

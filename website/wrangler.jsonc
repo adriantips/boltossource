@@ -1,11 +1,16 @@
 {
-  // Static site on Workers: no script, just the built files. Unknown paths
-  // fall back to index.html so the client router can take /system/network.
+  // A static site on Workers. Unknown paths fall back to index.html so the
+  // client router can take /system/network. worker.js runs only for /dl/*:
+  // the BoltOS TV images, which are over the 25 MiB a single asset may be,
+  // so they are stored in parts and stitched back together there.
   "name": "boltos",
+  "main": "worker.js",
   "compatibility_date": "2026-09-21",
   "assets": {
     "directory": "./dist",
-    "not_found_handling": "single-page-application"
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/dl/*"]
   },
   "routes": [
     { "pattern": "boltos.dev", "custom_domain": true },
