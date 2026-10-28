@@ -18,3 +18,5 @@ test/out/
 __pycache__/
 *.pyc
 include/buildid.h
+.DS_Store
+website/.wrangler/

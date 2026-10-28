@@ -100,8 +100,9 @@ typedef struct {
     td_t *td[2]; int cur;           /* td[cur] in flight, td[cur^1] the dummy    */
     uint8_t *buf;
     uint8_t last[8];
+    int krid;                       /* keyboard: its report ID in report protocol, 0 for none */
     struct {                        /* mouse layout from the HID report descriptor */
-        int ok, rid, abs;
+        int ok, rid, abs, seen;
         int bo, bn;                 /* buttons: bit offset, count                  */
         int xo, xs, yo, ys, wo, ws; /* X, Y, wheel: bit offset, size in bits       */
         int xmin, xmax, ymin, ymax;
@@ -117,7 +118,18 @@ static int next_addr = 1;
 static int n_kbd, n_mouse;
 static int mouse_x = 200, mouse_y = 200;
 static uint8_t dbg_desc[256]; static int dbg_desc_n;
-static uint8_t dbg_rep[8][32]; static int dbg_rep_n[8], dbg_rep_i;
+static uint8_t dbg_kdesc[256]; static int dbg_kdesc_n;
+static struct { uint8_t kind, n, b[16]; } dbg_rep[32];     /* the last HID reports, for /debug */
+static int dbg_rep_i;
+
+static void dbg_report(int kind, const uint8_t *r, int n) {
+    int nz = 0;
+    for (int i = 0; i < n; i++) nz |= r[i];
+    if (!nz) return;                                                /* idle reports say nothing */
+    int k = dbg_rep_i++ & 31;
+    dbg_rep[k].kind = (uint8_t)kind; dbg_rep[k].n = (uint8_t)(n > 16 ? 16 : n);
+    memcpy(dbg_rep[k].b, r, dbg_rep[k].n);
+}
 
 int usbh_keyboards(void) { return n_kbd; }
 int usbh_mice(void) { return n_mouse; }
@@ -242,6 +254,11 @@ static int hid_mods(uint8_t m) {
 }
 
 static void kbd_report(intr_t *it, const uint8_t *r, int n) {
+    dbg_report(1, r, n);
+    if (it->krid) {
+        if (n < 1 || r[0] != it->krid) return;                     /* consumer keys and the like */
+        r++; n--;
+    }
     if (n < 3) return;
     int mods = hid_mods(r[0]);
     if (r[2] == 1) return;                                         /* rollover error */
@@ -320,17 +337,45 @@ static int hid_parse_mouse(const uint8_t *d, int len, intr_t *it) {
     return it->m.ok;
 }
 
+/* A keyboard in report protocol: Mini reads it as boot-format reports
+ * (modifier byte, reserved byte, six key codes), so the layout has to be
+ * that one, possibly behind a report ID. */
+static int hid_parse_kbd(const uint8_t *d, int len, intr_t *it) {
+    int page = 0, size = 0, count = 0, rid = 0, bitpos = 0, mods_rid = -1, keys = 0;
+    for (int i = 0; i < len; ) {
+        uint8_t b = d[i];
+        if (b == 0xFE) { i += 3 + (i + 1 < len ? d[i + 1] : 0); continue; }
+        int sz = b & 3; if (sz == 3) sz = 4;
+        int type = (b >> 2) & 3, tag = b >> 4, v = 0;
+        for (int k = 0; k < sz && i + 1 + k < len; k++) v |= d[i + 1 + k] << (8 * k);
+        i += 1 + sz;
+        if (type == 1) {
+            if (tag == 0) page = v;
+            else if (tag == 7) size = v;
+            else if (tag == 8) { rid = v; bitpos = 0; }
+            else if (tag == 9) count = v;
+        } else if (type == 0 && tag == 8) {
+            int cst = v & 1, var = v & 2;
+            if (!cst && page == 7 && var && size == 1 && count == 8 && bitpos == 0 && mods_rid < 0) mods_rid = rid;
+            else if (!cst && page == 7 && !var && size == 8 && bitpos == 16 && rid == mods_rid) keys = 1;
+            bitpos += count * size;
+        }
+    }
+    it->krid = mods_rid > 0 ? mods_rid : 0;
+    return mods_rid >= 0 && keys;
+}
+
 static void mouse_report(intr_t *it, const uint8_t *r, int n) {
     int dx, dy, wheel = 0, btn;
-    { int k = dbg_rep_i++ & 7; dbg_rep_n[k] = n > 32 ? 32 : n; memcpy(dbg_rep[k], r, (size_t)dbg_rep_n[k]); }
+    dbg_report(2, r, n);
     int parsed = it && it->m.ok;
     if (parsed && it->m.rid) {
         /* Some pads ignore SET_PROTOCOL and keep sending 3-4 byte boot reports with no report ID. */
         int end = it->m.xo + it->m.xs;
         if (it->m.yo + it->m.ys > end) end = it->m.yo + it->m.ys;
         if (it->m.ws && it->m.wo + it->m.ws > end) end = it->m.wo + it->m.ws;
-        if (n < 1 + (end + 7) / 8 || r[0] != it->m.rid) parsed = n >= 3 && n <= 4 ? 0 : -1;
-        else { r++; n--; }
+        if (n < 1 + (end + 7) / 8 || r[0] != it->m.rid) parsed = n >= 3 && n <= 4 && !it->m.seen ? 0 : -1;
+        else { r++; n--; it->m.seen = 1; }
         if (parsed < 0) return;
     }
     if (parsed) {
@@ -435,8 +480,6 @@ static int enumerate(int hc, int low, int parent, int port) {
             hid_kind = 0; hid_len = 0;
             if (cur_cls == 3 && (cur_proto == 1 || cur_proto == 2)) {
                 hid_kind = cur_proto;
-                req(d, 0x21, 0x0B, 0, (uint16_t)cur_if, 0, 0);        /* SET_PROTOCOL boot */
-                if (cur_proto == 1) req(d, 0x21, 0x0A, 0, (uint16_t)cur_if, 0, 0);   /* SET_IDLE */
             }
             if (cur_cls == 9) d->is_hub = 1;
         } else if (x[1] == 0x21 && x[0] >= 9) {
@@ -444,17 +487,23 @@ static int enumerate(int hc, int low, int parent, int port) {
         } else if (x[1] == 5 && hid_kind && (x[2] & 0x80) && (x[3] & 3) == 3) {
             int mps = x[4] | (x[5] & 7) << 8;
             int ii = intr_add(d, x[2] & 0x0F, mps, hid_kind);
-            if (ii >= 0 && hid_kind == 2 && hid_len > 0) {
-                /* Many touchpads ignore boot protocol and send 12/16-bit or report-ID reports:
-                 * read the real layout. */
+            if (ii >= 0) {
+                /* Stay in report protocol, as Linux and Windows do, and read the real layout.
+                 * The mini keyboard's receiver has one protocol for both its interfaces, and
+                 * in boot protocol its touchpad never sends Y. Boot protocol is only for a
+                 * device whose layout Mini can't read. */
                 static uint8_t rd[512];
-                int got = req(d, 0x81, 6, 0x2200, (uint16_t)cur_if, rd, hid_len > 512 ? 512 : hid_len);
-                if (got > 0) { dbg_desc_n = got > 256 ? 256 : got; memcpy(dbg_desc, rd, (size_t)dbg_desc_n); }
-                if (got > 0 && hid_parse_mouse(rd, got, &ints[ii])) {
-                    req(d, 0x21, 0x0B, 1, (uint16_t)cur_if, 0, 0);    /* SET_PROTOCOL report */
+                int got = hid_len > 0 ? req(d, 0x81, 6, 0x2200, (uint16_t)cur_if, rd, hid_len > 512 ? 512 : hid_len) : -1;
+                int ok = got > 0 && (hid_kind == 2 ? hid_parse_mouse(rd, got, &ints[ii]) : hid_parse_kbd(rd, got, &ints[ii]));
+                if (got > 0 && hid_kind == 2) { dbg_desc_n = got > 256 ? 256 : got; memcpy(dbg_desc, rd, (size_t)dbg_desc_n); }
+                if (got > 0 && hid_kind == 1) { dbg_kdesc_n = got > 256 ? 256 : got; memcpy(dbg_kdesc, rd, (size_t)dbg_kdesc_n); }
+                if (!ok) req(d, 0x21, 0x0B, 0, (uint16_t)cur_if, 0, 0);                 /* SET_PROTOCOL boot */
+                req(d, 0x21, 0x0A, 0, (uint16_t)cur_if, 0, 0);                          /* SET_IDLE 0 */
+                if (ok && hid_kind == 2)
                     kprintf("[usb] mouse report: x %d@%d y %d@%d id %d%s\n", ints[ii].m.xs, ints[ii].m.xo,
                             ints[ii].m.ys, ints[ii].m.yo, ints[ii].m.rid, ints[ii].m.abs ? " absolute" : "");
-                }
+                if (ok && hid_kind == 1) kprintf("[usb] keyboard report: id %d\n", ints[ii].krid);
+                if (!ok) kprintf("[usb] %s layout not readable: boot protocol\n", hid_kind == 1 ? "keyboard" : "mouse");
             }
             if (ii >= 0) {
                 if (hid_kind == 1) n_kbd++; else n_mouse++;
@@ -648,10 +697,14 @@ int usbh_debug(char *out, int cap) {
     }
     n += snprintf(out + n, (size_t)(cap - n), "hid desc (%d):", dbg_desc_n);
     for (int i = 0; i < dbg_desc_n; i++) n += snprintf(out + n, (size_t)(cap - n), " %02x", dbg_desc[i]);
+    n += snprintf(out + n, (size_t)(cap - n), "\nkbd desc (%d):", dbg_kdesc_n);
+    for (int i = 0; i < dbg_kdesc_n; i++) n += snprintf(out + n, (size_t)(cap - n), " %02x", dbg_kdesc[i]);
     n += snprintf(out + n, (size_t)(cap - n), "\n");
-    for (int k = 0; k < 8; k++) if (dbg_rep_n[k]) {
-        n += snprintf(out + n, (size_t)(cap - n), "rep:");
-        for (int i = 0; i < dbg_rep_n[k]; i++) n += snprintf(out + n, (size_t)(cap - n), " %02x", dbg_rep[k][i]);
+    for (int j = 0; j < 32; j++) {
+        int k = (dbg_rep_i + j) & 31;
+        if (!dbg_rep[k].n) continue;
+        n += snprintf(out + n, (size_t)(cap - n), "%s (%d):", dbg_rep[k].kind == 1 ? "kbd" : "mouse", dbg_rep[k].n);
+        for (int i = 0; i < dbg_rep[k].n; i++) n += snprintf(out + n, (size_t)(cap - n), " %02x", dbg_rep[k].b[i]);
         n += snprintf(out + n, (size_t)(cap - n), "\n");
     }
     if (g_plat == PLAT_H618) {
