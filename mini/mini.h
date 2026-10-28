@@ -162,6 +162,13 @@ int  usbh_device_list(char *out, int cap);       /* for `lsusb` and the Monitor 
 int  usbh_keyboards(void);
 int  usbh_mice(void);
 
+/* ---- Ethernet (mini/emac.c) ------------------------------------------------ */
+int  eth_init(void);                   /* the RJ45 socket: EMAC0 + YT8531 PHY  */
+void eth_poll(void);
+int  eth_link(void);                   /* Mbit/s, 0 while the cable is out      */
+struct netif *eth_netif(void);
+int  eth_debug(char *out, int cap);
+
 /* ---- QEMU's devices -------------------------------------------------------- */
 int  qemu_ramfb_init(uint32_t *fb, int w, int h);
 int  virtio_init(void);

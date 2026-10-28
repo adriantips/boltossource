@@ -15,7 +15,7 @@
 typedef struct netif {
     const char *name;                  /* "usb0", "eth0"                      */
     uint8_t  mac[6];
-    uint32_t ip, mask, gw;             /* host order                          */
+    uint32_t ip, mask, gw, dns;        /* host order                          */
     int      up;
     /* Hand a frame to the wire. 0 = taken, -1 = no room right now (the
      * caller drops it; TCP will send it again). */
@@ -60,3 +60,14 @@ void   tcp_close(tcb_t *c);            /* FIN after the queue drains; frees late
 void   tcp_abort(tcb_t *c);
 uint32_t tcp_peer(tcb_t *c, uint16_t *port);
 int    tcp_conn_count(void);
+tcb_t *tcp_connect(uint32_t ip, uint16_t port);   /* active open; NULL if no route */
+int    tcp_connecting(tcb_t *c);       /* SYN sent, no answer yet              */
+netif_t *net_route(uint32_t dst);      /* the link that reaches dst            */
+
+/* ---- the client side (mini/inet.c): DHCP on Ethernet, DNS, the clock --------- */
+void     inet_init(void);
+void     inet_poll(void);
+uint32_t inet_dns_server(void);
+/* Blocking, with the machine kept running underneath (mini_pump). 0 on failure. */
+uint32_t inet_resolve(const char *host, uint32_t timeout_ms);
+void     mini_pump(void);              /* one turn of the device and network loop */

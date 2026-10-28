@@ -34,7 +34,24 @@ int mini_uptime_str(char *out, int cap) {
     return n;
 }
 
-extern uint64_t g_idle_us;          /* shell.c: time spent asleep, for the load */
+extern uint64_t g_idle_us;
+
+/* Everything but the shell: what a blocking wait (a DNS lookup, a page
+ * load) keeps turning so the links, the keyboard and VNC carry on. */
+void mini_pump(void) {
+    static int depth;
+    if (depth > 2) return;
+    depth++;
+    musb_poll();
+    usbh_poll();
+    eth_poll();
+    if (g_plat == PLAT_QEMU) virtio_poll();
+    net_poll();
+    inet_poll();
+    netsvc_poll();
+    board_poll();
+    depth--;
+}          /* shell.c: time spent asleep, for the load */
 static uint64_t g_dtb;
 uint64_t mini_dtb(void) { return g_dtb; }
 
@@ -66,8 +83,10 @@ void kmain(uint64_t dtb) {
     usbh_init();
     kprintf("[%4lu ms] USB host\n", now_ms() - t0);
     if (g_plat == PLAT_QEMU) virtio_init();
+    if (eth_init() == 0) kprintf("[%4lu ms] Ethernet\n", now_ms() - t0);
     net_init();
     netsvc_init();
+    inet_init();
     shell_init();
     kprintf("[%4lu ms] shell (wallpaper)\n", now_ms() - t0);
     board_led(1, 1);
@@ -78,13 +97,8 @@ void kmain(uint64_t dtb) {
      * it would have rebooted a Pi that nobody is plugged into). To send a new
      * kernel, POST /reboot (pi.py does) while the Mac is connected. */
     for (;;) {
-        musb_poll();
-        usbh_poll();
-        if (g_plat == PLAT_QEMU) virtio_poll();
-        net_poll();
-        netsvc_poll();
+        mini_pump();
         shell_frame();
-        board_poll();
         if (musb_busy()) continue;
         uint64_t t = now_us();
         wfi();

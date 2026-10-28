@@ -15,8 +15,8 @@
  *                  from the Mac's; and the small endpoints pi.py uses:
  *                  /time, /reboot, /log, /screen.bmp.
  *
- *  Under QEMU the same services run on the virtio card at 10.0.2.15, which
- *  QEMU's port forwards make localhost:5901 and localhost:8080 on the Mac.
+ *  Under QEMU the same services run on the virtio card, which QEMU's DHCP
+ *  makes 10.0.2.15 and its port forwards localhost:5901 and :8080 on the Mac.
  * ===========================================================================*/
 #include <stdint.h>
 #include "mini.h"
@@ -339,7 +339,7 @@ static void http_handle(int i) {
     } else if (strcmp(path, "/debug") == 0) {
         int usbh_debug(char *out, int cap);
         char *buf = kmalloc(8192);
-        if (buf) { usbh_debug(buf, 8192); http_text(c, 200, buf); kfree(buf); }
+        if (buf) { int n = eth_debug(buf, 2048); usbh_debug(buf + n, 8192 - n); http_text(c, 200, buf); kfree(buf); }
     } else if (strcmp(path, "/screen.bmp") == 0) {
         http_shot(c);
         http[i].c = 0;                         /* the pump owns it now         */
@@ -372,8 +372,8 @@ static void http_poll(void) {
 void netsvc_init(void) {
     for (int i = 0; net_if(i); i++) {
         netif_t *nif = net_if(i);
-        if (strcmp(nif->name, "usb0") == 0) { nif->ip = PI_IP; nif->mask = MASK24; }
-        else { nif->ip = 0x0A00020Fu; nif->mask = MASK24; nif->gw = 0x0A000202u; }  /* QEMU: 10.0.2.15 */
+        if (strcmp(nif->name, "usb0") != 0) continue;            /* the others ask DHCP (inet.c) */
+        nif->ip = PI_IP; nif->mask = MASK24;
         char ip[16]; net_fmt_ip(nif->ip, ip);
         kprintf("[net] %s is %s\n", nif->name, ip);
     }

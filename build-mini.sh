@@ -57,7 +57,7 @@ SRCS=(
     mini/input.c mini/qemu.c
 )
 # Optional parts: compiled when present, so the kernel grows a file at a time.
-for f in mini/net.c mini/netsvc.c mini/vnc.c mini/virtio.c mini/musb.c mini/usbdev.c \
+for f in mini/emac.c mini/inet.c mini/net.c mini/netsvc.c mini/vnc.c mini/virtio.c mini/musb.c mini/usbdev.c \
          mini/ohci.c mini/usbhost.c mini/shell.c mini/ui.c \
          mini/app_terminal.c mini/app_monitor.c mini/app_notes.c mini/app_clock.c \
          mini/app_settings.c; do

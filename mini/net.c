@@ -10,11 +10,16 @@
  *    IPv4     no fragments, no options, no routing beyond "on link or gw".
  *    ICMP     echo, so `ping 10.77.0.1` works from the Mac.
  *    UDP      a port table; DHCP and mDNS live on it (netsvc.c).
- *    TCP      passive open only. Each connection has a 256 KiB send ring
- *             and sends as much of it as the peer's window allows, without
- *             waiting for each ACK; loss is repaired go-back-N from the
- *             oldest unacknowledged byte, on a timeout or three duplicate
- *             ACKs. The receive side takes in-order data and ACKs it at once.
+ *    TCP      passive and active open. A served connection has a 256 KiB
+ *             send ring (a client's has 32 KiB) and sends as much of it as
+ *             the peer's window allows, without waiting for each ACK; loss
+ *             is repaired go-back-N from the oldest unacknowledged byte, on
+ *             a timeout or three duplicate ACKs. The receive side takes
+ *             in-order data into a 64 KiB ring and ACKs it at once.
+ *
+ *  With Ethernet there are two links: the Mac's, 10.77.0.0/24 with no
+ *  router, and the LAN's, whose router DHCP names. net_route() picks the
+ *  link whose subnet holds the address, else the one with a router.
  *
  *  Everything is driven from net_poll() and net_rx(): there are no threads
  *  and no blocking calls, so a service checks its connections each loop.
@@ -47,6 +52,14 @@ static const uint8_t bcast_mac[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 #define MAX_IF 4
 static netif_t *ifs[MAX_IF];
 static int nifs;
+
+netif_t *net_route(uint32_t dst) {
+    for (int i = 0; i < nifs; i++)
+        if (ifs[i]->up && ifs[i]->ip && (dst & ifs[i]->mask) == (ifs[i]->ip & ifs[i]->mask)) return ifs[i];
+    for (int i = 0; i < nifs; i++)
+        if (ifs[i]->up && ifs[i]->ip && ifs[i]->gw) return ifs[i];
+    return 0;
+}
 
 void net_register(netif_t *nif) {
     if (nifs < MAX_IF) ifs[nifs++] = nif;
@@ -225,7 +238,7 @@ static void icmp_input(netif_t *nif, const uint8_t *eth, uint32_t src, const uin
 }
 
 /* ---- TCP -------------------------------------------------------------------- */
-enum { T_FREE = 0, T_SYN_RCVD, T_ESTAB, T_CLOSE_WAIT, T_FIN_WAIT1, T_FIN_WAIT2,
+enum { T_FREE = 0, T_SYN_RCVD, T_SYN_SENT, T_ESTAB, T_CLOSE_WAIT, T_FIN_WAIT1, T_FIN_WAIT2,
        T_CLOSING, T_LAST_ACK, T_TIME_WAIT,
        T_DEAD };   /* gone, but a service still holds the handle: freed on its tcp_close */
 #define TF_FIN 0x01
@@ -234,9 +247,10 @@ enum { T_FREE = 0, T_SYN_RCVD, T_ESTAB, T_CLOSE_WAIT, T_FIN_WAIT1, T_FIN_WAIT2,
 #define TF_PSH 0x08
 #define TF_ACK 0x10
 
-#define SBUF  (256 * 1024)
-#define RBUF  (32 * 1024)
-#define TCB_N 8
+#define SBUF  (256 * 1024)               /* a served connection's send ring  */
+#define CBUF  (32 * 1024)                /* a client's                       */
+#define RBUF  (64 * 1024)
+#define TCB_N 16
 #define RTO_MIN 200
 #define RTO_MAX 3000
 
@@ -248,9 +262,10 @@ struct tcb {
     uint8_t  rmac[6];
     uint32_t iss, snd_una, snd_nxt, snd_max, snd_wnd, rcv_nxt;
     uint16_t mss;
-    uint8_t *sbuf; uint32_t s_start, s_len;     /* ring: s_len bytes from snd_una */
+    uint8_t *sbuf; uint32_t s_start, s_len, scap;   /* ring: s_len bytes from snd_una */
     uint8_t *rbuf; uint32_t r_head, r_tail;
     int      accepted, user_closed, fin_sent, peer_fin;
+    int      client, refused;                   /* we opened it; the peer said no */
     uint32_t fin_seq;
     uint64_t rto_at;                            /* when the oldest unacked byte times out */
     uint32_t rto;
@@ -300,11 +315,11 @@ static int seg_send(struct tcb *c, uint8_t flags, uint32_t seq, uint32_t off, in
     put16(t + 14, (uint16_t)win);
     put16(t + 16, 0); put16(t + 18, 0);
     if (flags & TF_SYN) { t[20] = 2; t[21] = 4; put16(t + 22, 1460); }   /* MSS */
-    for (int i = 0; i < len; i++) t[hl + i] = c->sbuf[(c->s_start + off + (uint32_t)i) % SBUF];
+    for (int i = 0; i < len; i++) t[hl + i] = c->sbuf[(c->s_start + off + (uint32_t)i) % c->scap];
     uint8_t ph[12];
     put32(ph, c->lip); put32(ph + 4, c->rip); ph[8] = 0; ph[9] = PROTO_TCP; put16(ph + 10, (uint16_t)(hl + len));
     put16(t + 16, csum_fold(csum_add(csum_add(0, ph, 12), t, hl + len)));
-    return ip_send(c->nif, c->rmac, c->lip, c->rip, PROTO_TCP, f, hl + len);
+    return ip_send(c->nif, c->client ? 0 : c->rmac, c->lip, c->rip, PROTO_TCP, f, hl + len);
 }
 
 static void send_ack(struct tcb *c) { seg_send(c, TF_ACK, c->snd_nxt, 0, 0); }
@@ -384,6 +399,7 @@ static void tcp_input(netif_t *nif, const uint8_t *eth, uint32_t src, uint32_t d
         if (!c) return;                                /* full: let them retry */
         memset(c, 0, sizeof *c);
         c->sbuf = kmalloc(SBUF);
+        c->scap = SBUF;
         c->rbuf = kmalloc(RBUF);
         if (!c->sbuf || !c->rbuf) { tcb_free(c); return; }
         c->nif = nif; c->lip = dst; c->rip = src; c->lport = dport; c->rport = sport;
@@ -412,9 +428,34 @@ static void tcp_input(netif_t *nif, const uint8_t *eth, uint32_t src, uint32_t d
     }
 
     c->last_rx = now_ms();
-    if (fl & TF_RST) { c->state = T_FREE; tcb_free(c); return; }
+    if (fl & TF_RST) {
+        if (c->state == T_SYN_SENT && (!(fl & TF_ACK) || ack != c->iss + 1)) return;
+        if (c->state == T_SYN_SENT) c->refused = 1;
+        c->state = T_FREE; tcb_free(c); return;
+    }
 
     if (c->state == T_DEAD) return;
+    if (c->state == T_SYN_SENT) {
+        if ((fl & TF_ACK) && ack != c->iss + 1) return;
+        if (!(fl & TF_SYN) || !(fl & TF_ACK)) return;
+        for (int o = 20; o + 1 < hl; ) {               /* options: MSS          */
+            uint8_t kind = t[o];
+            if (kind == 0) break;
+            if (kind == 1) { o++; continue; }
+            uint8_t ol = t[o + 1];
+            if (ol < 2) break;
+            if (kind == 2 && ol == 4 && o + 4 <= hl) c->mss = be16(t + o + 2);
+            o += ol;
+        }
+        if (c->mss > 1460) c->mss = 1460;
+        c->rcv_nxt = seq + 1;
+        c->snd_una = ack;
+        c->snd_wnd = wnd;
+        c->state = T_ESTAB;
+        c->rto_at = 0;
+        send_ack(c);
+        return;
+    }
     if (c->state == T_SYN_RCVD) {
         if (fl & TF_SYN) { seg_send(c, TF_SYN | TF_ACK, c->iss, 0, 0); return; }   /* their retry */
         if (!(fl & TF_ACK) || ack != c->iss + 1) return;
@@ -431,7 +472,7 @@ static void tcp_input(netif_t *nif, const uint8_t *eth, uint32_t src, uint32_t d
             uint32_t data_acked = acked;
             if (c->fin_sent && ack == c->fin_seq + 1) data_acked--;     /* our FIN    */
             if (data_acked > c->s_len) data_acked = c->s_len;
-            c->s_start = (c->s_start + data_acked) % SBUF;
+            c->s_start = (c->s_start + data_acked) % c->scap;
             c->s_len -= data_acked;
             c->snd_una = ack;
             if ((int32_t)(ack - c->snd_nxt) > 0) c->snd_nxt = ack;   /* after a rewind */
@@ -471,6 +512,37 @@ static void tcp_input(netif_t *nif, const uint8_t *eth, uint32_t src, uint32_t d
     tcp_output(c);
 }
 
+/* Active open: a SYN to ip:port through whichever link reaches it. The
+ * handle is ESTAB once tcp_open() says so; if the peer refuses or never
+ * answers it ends up T_DEAD (tcp_connecting() and tcp_open() both 0). */
+tcb_t *tcp_connect(uint32_t ip, uint16_t port) {
+    static uint16_t next_port;
+    netif_t *nif = net_route(ip);
+    if (!nif) return 0;
+    struct tcb *c = 0;
+    for (int i = 0; i < TCB_N; i++) if (!tcbs[i].state) { c = &tcbs[i]; break; }
+    if (!c) return 0;
+    memset(c, 0, sizeof *c);
+    c->sbuf = kmalloc(CBUF); c->scap = CBUF;
+    c->rbuf = kmalloc(RBUF);
+    if (!c->sbuf || !c->rbuf) { if (c->sbuf) kfree(c->sbuf); if (c->rbuf) kfree(c->rbuf); memset(c, 0, sizeof *c); return 0; }
+    if (!next_port) next_port = (uint16_t)(49152 + mini_rand() % 8192);
+    if (++next_port < 49152) next_port = 49152;
+    c->nif = nif; c->lip = nif->ip; c->rip = ip; c->lport = next_port; c->rport = port;
+    c->client = 1; c->accepted = 1;
+    c->mss = 536;
+    c->iss = mini_rand() ^ (uint32_t)now_us();
+    c->snd_una = c->iss; c->snd_nxt = c->snd_max = c->iss + 1;
+    c->rto = 500;
+    c->state = T_SYN_SENT;
+    c->last_rx = now_ms();
+    seg_send(c, TF_SYN, c->iss, 0, 0);
+    c->rto_at = now_ms() + c->rto;
+    return c;
+}
+
+int tcp_connecting(tcb_t *c) { return c && c->state == T_SYN_SENT; }
+
 tcb_t *tcp_accept(uint16_t port) {
     for (int i = 0; i < TCB_N; i++) {
         struct tcb *c = &tcbs[i];
@@ -480,20 +552,20 @@ tcb_t *tcp_accept(uint16_t port) {
     return 0;
 }
 
-int tcp_space(tcb_t *c) { return (c && c->state && !c->user_closed) ? (int)(SBUF - c->s_len) : 0; }
+int tcp_space(tcb_t *c) { return (c && c->state && !c->user_closed) ? (int)(c->scap - c->s_len) : 0; }
 int tcp_unsent(tcb_t *c) { return c && c->state ? (int)c->s_len : 0; }
 
 int tcp_write(tcb_t *c, const void *data, int len) {
     if (!c || !(c->state == T_ESTAB || c->state == T_CLOSE_WAIT) || c->user_closed) return -1;
-    uint32_t room = SBUF - c->s_len;
+    uint32_t room = c->scap - c->s_len;
     if ((uint32_t)len > room) len = (int)room;
     const uint8_t *p = (const uint8_t *)data;
-    uint32_t at = (c->s_start + c->s_len) % SBUF;
+    uint32_t at = (c->s_start + c->s_len) % c->scap;
     for (int i = 0; i < len; ) {
-        uint32_t chunk = SBUF - at;
+        uint32_t chunk = c->scap - at;
         if (chunk > (uint32_t)(len - i)) chunk = (uint32_t)(len - i);
         memcpy(c->sbuf + at, p + i, chunk);
-        at = (at + chunk) % SBUF; i += (int)chunk;
+        at = (at + chunk) % c->scap; i += (int)chunk;
     }
     c->s_len += (uint32_t)len;
     tcp_output(c);
@@ -546,10 +618,12 @@ static void tcp_timers(void) {
         if (c->dead_at && now >= c->dead_at &&
             (c->state == T_TIME_WAIT || c->user_closed)) { tcb_free(c); continue; }
         if (c->state == T_SYN_RCVD && now - c->last_rx > 5000) { tcb_free(c); continue; }
+        if (c->state == T_SYN_SENT && now - c->last_rx > 10000) { tcb_free(c); continue; }
         /* A peer that vanished (the cable came out) is never going to ACK. */
         if (now - c->last_rx > 60000 && c->s_len) { tcb_free(c); continue; }
         if (c->rto_at && now >= c->rto_at) {
             if (c->state == T_SYN_RCVD) seg_send(c, TF_SYN | TF_ACK, c->iss, 0, 0);
+            else if (c->state == T_SYN_SENT) seg_send(c, TF_SYN, c->iss, 0, 0);
             else {
                 c->snd_nxt = c->snd_una;               /* go back N         */
                 if (c->fin_sent && c->s_len == 0) {
