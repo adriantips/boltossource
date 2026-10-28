@@ -28,7 +28,7 @@ static int page, in_page, item, confirm;
 static char pw_edit[9]; static int pw_editing, pw_len;
 
 /* Wi-Fi: the network being typed a password for, and work for the next tick. */
-static int wsel = -1, wtyping, wlen, wtop;
+static int wsel = -1, wtyping, wlen, wtop, btop;
 static char wpass[64];
 enum { DO_NONE, DO_WIFI_ON, DO_WIFI_OFF, DO_SCAN, DO_JOIN, DO_LEAVE, DO_BT_ON, DO_BT_SCAN, DO_BT_PAIR, DO_BT_FORGET };
 static int todo, todo_arg;
@@ -162,8 +162,9 @@ static void s_pointer(const input_ev_t *e, int x, int y, int w, int h) {
     if (page == P_WIFI || page == P_BT) {
         if (wtyping) return;
         for (int i = 0; i < items(); i++) {
-            int ry = i == 0 ? pane_y : pane_y + S(62) + (i - 1 - (page == P_WIFI ? wtop : 0)) * WROW;
-            if (i > 0 && (i - 1 < (page == P_WIFI ? wtop : 0))) continue;
+            int top = page == P_WIFI ? wtop : btop;
+            int ry = i == 0 ? pane_y : pane_y + S(62) + (i - 1 - top) * WROW;
+            if (i > 0 && i - 1 < top) continue;
             if (ui_hit(e->x, e->y, pane_x, ry, pane_w, S(38))) {
                 in_page = 1;
                 if (item == i) activate(); else { item = i; confirm = 0; }
@@ -258,9 +259,15 @@ static void draw_bt(int hy, int bottom, int sel) {
         return;
     }
     int ly = pane_y + S(62), rows = (bottom - S(60) - ly) / WROW, k = bt_device_count();
-    for (int i = 0; i < k && i < rows; i++) {
+    if (rows < 1) rows = 1;
+    if (sel > 0) {                                          /* keep the chosen one in view */
+        if (sel - 1 < btop) btop = sel - 1;
+        if (sel - 1 >= btop + rows) btop = sel - rows;
+    }
+    if (btop > k - rows) btop = k - rows > 0 ? k - rows : 0;
+    for (int i = btop; i < k && i < btop + rows; i++) {
         const bt_device_t *d = bt_device(i);
-        int ry = ly + i * WROW;
+        int ry = ly + (i - btop) * WROW;
         ui_row(pane_x, ry, pane_w, d->name[0] ? d->name : d->addr_str, 0, sel == i + 1);
         snprintf(b, sizeof b, "%s", d->state == BTD_CONNECTED ? "Connected" : d->state == BTD_PAIRED ? "Paired" :
                  d->state == BTD_PAIRING ? "Pairing" TXT_ELLIPSIS : d->kind);

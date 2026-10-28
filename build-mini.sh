@@ -72,7 +72,7 @@ SRCS+=(net/http.c net/tls.c net/crypto.c net/wpa.c net/x509.c net/rsa.c net/p256
        mini/netcompat.c mini/webutil.c mini/flow.c mini/app_browser.c mini/player.c
        mini/mp4.c mini/h264.c mini/h264mb.c mini/h264pred.c mini/h264dbk.c mini/h264tab.c)
 # Optional parts: compiled when present, so the kernel grows a file at a time.
-for f in mini/sdio.c mini/wcn.c mini/wifi.c mini/bt.c mini/emac.c mini/inet.c mini/net.c mini/netsvc.c mini/vnc.c mini/virtio.c mini/musb.c mini/usbdev.c \
+for f in mini/sdio.c mini/wcn.c mini/wifi.c mini/bt.c mini/hid.c mini/emac.c mini/inet.c mini/net.c mini/netsvc.c mini/vnc.c mini/virtio.c mini/musb.c mini/usbdev.c \
          mini/ohci.c mini/usbhost.c mini/shell.c mini/ui.c \
          mini/app_terminal.c mini/app_monitor.c mini/app_notes.c mini/app_clock.c \
          mini/app_settings.c; do
@@ -156,7 +156,10 @@ done
 if [ "$FW_OK" = 1 ]; then
     # The Wi-Fi calibration .ini, as the binary struct the firmware takes.
     "$PYTHON" mini/tools/mkwifiini.py "$FW_DIR/wifi_2355b001_1ant.ini" "$FW_DIR/wifi_ini.bin"
-    for f in wcnmodem.bin wifi_ini.bin bt_configure_pskey.ini bt_configure_rf.ini; do
+    # ...and the Bluetooth settings, as the payloads of two vendor HCI commands.
+    "$PYTHON" mini/tools/mkbtcfg.py "$FW_DIR/bt_configure_pskey.ini" "$FW_DIR/bt_configure_rf.ini" \
+        "$FW_DIR/bt_pskey.bin" "$FW_DIR/bt_rf.bin"
+    for f in wcnmodem.bin wifi_ini.bin bt_pskey.bin bt_rf.bin; do
         o="$(echo "$f" | tr '.-' '__')"
         ( cd "$FW_DIR" && llvm-objcopy -I binary -O elf64-littleaarch64 "$f" "$o.o" )
         OBJS+=("$FW_DIR/$o.o")
@@ -167,7 +170,7 @@ else
     # Every file's start and end at one address: zero bytes, so wcn.c sees none.
     clang "${CFLAGS[@]}" -x c - -o "$B/obj/nofw.o" <<'NOFW'
 #define EMPTY(n) __asm__(".globl _binary_" n "_start\n.globl _binary_" n "_end\n_binary_" n "_start:\n_binary_" n "_end:\n");
-EMPTY("wcnmodem_bin") EMPTY("wifi_ini_bin") EMPTY("bt_configure_pskey_ini") EMPTY("bt_configure_rf_ini")
+EMPTY("wcnmodem_bin") EMPTY("wifi_ini_bin") EMPTY("bt_pskey_bin") EMPTY("bt_rf_bin")
 NOFW
     OBJS+=("$B/obj/nofw.o")
 fi

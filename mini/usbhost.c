@@ -403,6 +403,16 @@ static void mouse_report(intr_t *it, const uint8_t *r, int n) {
     input_pointer(mouse_x, mouse_y, btn, wheel > 0 ? 1 : wheel < 0 ? -1 : 0, SRC_USB);
 }
 
+/* A pointer that moves by (dx, dy): Bluetooth mice share the one USB ones move (bt.c). */
+void hid_pointer_move(int dx, int dy, int btn, int wheel) {
+    mouse_x += dx; mouse_y += dy;
+    if (mouse_x < 0) mouse_x = 0;
+    if (mouse_y < 0) mouse_y = 0;
+    if (mouse_x >= scr_w) mouse_x = scr_w - 1;
+    if (mouse_y >= scr_h) mouse_y = scr_h - 1;
+    input_pointer(mouse_x, mouse_y, btn & 7, wheel > 0 ? 1 : wheel < 0 ? -1 : 0, SRC_USB);
+}
+
 static void intr_poll(void) {
     for (int i = 0; i < MAX_INT; i++) {
         intr_t *it = &ints[i];

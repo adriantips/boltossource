@@ -23,6 +23,7 @@
 #include "stdio.h"
 #include "wcn.h"
 #include "wlan.h"
+#include "bt.h"
 
 const char *mini_version(void) { return "1.0 (" BOLT_BUILD_ID ")"; }
 
@@ -106,6 +107,7 @@ void kmain(uint64_t dtb) {
         shell_frame();
         netsvc_jobs();
         wifi_poll();
+        bt_poll();
         if (musb_busy()) continue;
         uint64_t t = now_us();
         wfi();

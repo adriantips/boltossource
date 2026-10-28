@@ -148,7 +148,7 @@ typedef struct {
     int8_t   wheel;                    /* +1 up, -1 down                       */
     uint8_t  source;                   /* where it came from, for the Monitor  */
 } input_ev_t;
-enum { SRC_USB = 1, SRC_VNC, SRC_QEMU, SRC_SERIAL };
+enum { SRC_USB = 1, SRC_VNC, SRC_QEMU, SRC_SERIAL, SRC_BT };
 
 void input_key(int key, int ch, int mods, int source);
 void input_pointer(int x, int y, int buttons, int wheel, int source);

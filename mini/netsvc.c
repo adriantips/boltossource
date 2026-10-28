@@ -21,6 +21,7 @@
 #include <stdint.h>
 #include "mini.h"
 #include "wlan.h"
+#include "bt.h"
 #include "kprintf.h"
 #include "kheap.h"
 #include "string.h"
@@ -46,6 +47,9 @@ void netsvc_jobs(void) {
         job_wifi = 0;
         if (j == 1) wifi_start();
         else if (j == 2) wifi_scan();
+        else if (j == 3) bt_start();
+        else if (j == 4) bt_scan();
+        else if (j >= 100) bt_pair(j - 100);
     }
     if (!job_url[0]) return;
     char u[300];
@@ -389,6 +393,22 @@ static void http_handle(int i) {
          * and this handler is part of what keeps turning while it does. */
         snprintf(job_url, sizeof job_url, "%s", path + 7);
         http_text(c, 200, "queued: see /log\n");
+    } else if (strncmp(path, "/bt", 3) == 0) {
+        /* Development: Bluetooth. /bt?up, /bt?scan, /bt?pair=N; /bt lists what it found. */
+        if (!strcmp(path, "/bt?up")) job_wifi = 3;
+        else if (!strcmp(path, "/bt?scan")) job_wifi = 4;
+        else if (!strncmp(path, "/bt?pair=", 9)) job_wifi = 100 + atoi(path + 9);
+        char *buf = kmalloc(8192);
+        if (buf) {
+            int n = bt_debug(buf, 1024);
+            for (int i = 0; bt_device(i) && n < 7900; i++) {
+                const bt_device_t *d = bt_device(i);
+                n += snprintf(buf + n, (size_t)(8192 - n), "%2d %s %-30s %-20s %4d dBm state %d cod %06x\n", i, d->addr_str,
+                              d->name, d->kind, d->rssi, d->state, (unsigned)d->cod);
+            }
+            http_text(c, 200, buf);
+            kfree(buf);
+        }
     } else if (strncmp(path, "/wifi", 5) == 0) {
         /* Development: Wi-Fi. /wifi?up starts it, /wifi?scan scans (both from the main
          * loop, like /fetch); /wifi says where it is and what it found. */

@@ -4,7 +4,7 @@
 
 enum { BT_OFF, BT_STARTING, BT_FAILED, BT_READY };
 enum { BTD_FOUND, BTD_PAIRING, BTD_PAIRED, BTD_CONNECTED };
-#define BT_MAXDEV 24
+#define BT_MAXDEV 40
 
 typedef struct {
     uint8_t  addr[6];                    /* little-endian, as HCI has it          */
