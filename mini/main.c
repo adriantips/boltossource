@@ -99,6 +99,7 @@ void kmain(uint64_t dtb) {
     for (;;) {
         mini_pump();
         shell_frame();
+        netsvc_jobs();
         if (musb_busy()) continue;
         uint64_t t = now_us();
         wfi();

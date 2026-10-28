@@ -12,14 +12,14 @@
  *
  *  Everything is polled from the main loop. Nothing blocks.
  * ===========================================================================*/
-typedef struct netif {
+typedef struct mini_netif {     /* not the desktop's struct netif (netif.h) */
     const char *name;                  /* "usb0", "eth0"                      */
     uint8_t  mac[6];
     uint32_t ip, mask, gw, dns;        /* host order                          */
     int      up;
     /* Hand a frame to the wire. 0 = taken, -1 = no room right now (the
      * caller drops it; TCP will send it again). */
-    int    (*tx)(struct netif *nif, const void *frame, int len);
+    int    (*tx)(struct mini_netif *nif, const void *frame, int len);
     uint64_t rx_pkts, tx_pkts, rx_bytes, tx_bytes, tx_drops;
 } netif_t;
 

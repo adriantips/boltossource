@@ -584,6 +584,17 @@ static uint8_t  rnd_pool[32];
 static uint64_t rnd_ctr;
 static int      rnd_ready;
 
+#if defined(__aarch64__)
+/* BoltOS Mini: the generic timer instead of the TSC, and no instruction that
+ * hands out random words (the A53 has no RNDR), so the pool lives on timing
+ * and whatever crypto_rand_stir() is given. */
+static uint64_t rd_tsc(void) {
+    uint64_t v;
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(v));
+    return v;
+}
+static int hw_random(uint64_t *out) { (void)out; return 0; }
+#else
 static uint64_t rd_tsc(void) {
     uint32_t lo, hi;
     __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
@@ -618,6 +629,7 @@ static int hw_random(uint64_t *out) {
     }
     return 0;
 }
+#endif
 
 void crypto_rand_stir(const void *extra, uint32_t len) {
     sha256_ctx c;

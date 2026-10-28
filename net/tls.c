@@ -86,9 +86,15 @@ struct tls_conn {
 
 /* ----------------------------- RNG -------------------------------------- */
 static inline uint64_t rdtsc(void) {
+#if defined(__aarch64__)
+    uint64_t v;                                   /* BoltOS Mini: the generic timer */
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(v));
+    return v;
+#else
     uint32_t lo, hi;
     __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
     return ((uint64_t)hi << 32) | lo;
+#endif
 }
 static uint64_t rng_s;
 static void rng_mix(void) {

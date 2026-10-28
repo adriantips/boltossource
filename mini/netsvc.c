@@ -36,6 +36,16 @@ static void put32(uint8_t *p, uint32_t v) { put16(p, (uint16_t)(v >> 16)); put16
 
 /* ---- DHCP server --------------------------------------------------------------- */
 static int dhcp_leases;
+static char job_url[300];
+
+void netsvc_jobs(void) {
+    if (!job_url[0]) return;
+    char u[300];
+    snprintf(u, sizeof u, "%s", job_url);
+    job_url[0] = 0;
+    void web_fetch_test(const char *url);
+    web_fetch_test(u);
+}
 
 static void dhcp_rx(const udp_meta_t *m, const uint8_t *d, int len) {
     if (len < 240 || d[0] != 1 || d[1] != 1 || d[2] != 6) return;
@@ -333,6 +343,12 @@ static void http_handle(int i) {
     } else if (strcmp(path, "/reboot") == 0 && strcmp(method, "POST") == 0) {
         http_text(c, 200, "restarting\n");
         reboot_at = now_ms() + 300;
+    } else if (strncmp(path, "/fetch?", 7) == 0) {
+        /* Development: fetch a URL with the browser's HTTP stack and log what came
+         * back. Done from the main loop (netsvc_jobs), not in here: a fetch waits,
+         * and this handler is part of what keeps turning while it does. */
+        snprintf(job_url, sizeof job_url, "%s", path + 7);
+        http_text(c, 200, "queued: see /log\n");
     } else if (strcmp(path, "/log") == 0) {
         char *buf = kmalloc(256 * 1024);
         if (buf) { klog_snapshot(buf, 256 * 1024); http_text(c, 200, buf); kfree(buf); }

@@ -166,7 +166,7 @@ int  usbh_mice(void);
 int  eth_init(void);                   /* the RJ45 socket: EMAC0 + YT8531 PHY  */
 void eth_poll(void);
 int  eth_link(void);                   /* Mbit/s, 0 while the cable is out      */
-struct netif *eth_netif(void);
+struct mini_netif *eth_netif(void);
 int  eth_debug(char *out, int cap);
 
 /* ---- QEMU's devices -------------------------------------------------------- */
@@ -180,6 +180,7 @@ void virtio_poll(void);
 /* ---- services -------------------------------------------------------------- */
 void netsvc_init(void);
 void netsvc_poll(void);
+void netsvc_jobs(void);                /* work that waits, run from the main loop */
 int  vnc_clients(void);
 int  vnc_init(uint16_t port);
 void vnc_poll(void);

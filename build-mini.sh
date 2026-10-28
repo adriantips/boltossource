@@ -56,6 +56,11 @@ SRCS=(
     mini/main.c mini/board.c mini/fdt.c mini/klog.c mini/stubs.c mini/screen.c
     mini/input.c mini/qemu.c
 )
+# The web: the desktop's HTTP, TLS 1.2/1.3 and certificate code, and its page
+# engine (HTML, DOM, CSS layout, JS, images), on mini/netcompat.c.
+SRCS+=(net/http.c net/tls.c net/crypto.c net/x509.c net/rsa.c net/p256.c net/p384.c
+       net/inflate.c kernel/html.c kernel/dom.c kernel/layout.c kernel/js.c kernel/image.c
+       mini/netcompat.c)
 # Optional parts: compiled when present, so the kernel grows a file at a time.
 for f in mini/emac.c mini/inet.c mini/net.c mini/netsvc.c mini/vnc.c mini/virtio.c mini/musb.c mini/usbdev.c \
          mini/ohci.c mini/usbhost.c mini/shell.c mini/ui.c \
