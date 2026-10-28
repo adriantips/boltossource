@@ -73,6 +73,9 @@ struct tls_conn {
     uint8_t  client_random[32], server_random[32];
     uint8_t  master[48];
     uint8_t  kx_priv[32], kx_pub[32];
+    uint8_t  ec_priv[32], ec_pub[65];   /* a P-256 share too, for 1.3 servers that
+                                         * prefer it (Bing's image servers): without
+                                         * it they ask again, which we don't follow */
 
     sha256_ctx hs_hash;          /* running handshake transcript (SHA-256)   */
     sha512_ctx hs_hash384;       /* parallel SHA-384 transcript (suite TBD)  */
@@ -397,12 +400,15 @@ static uint32_t build_client_hello(struct tls_conn *c, const char *sni, uint8_t 
     put16(buf + p, 0x0304); p += 2;                     /* TLS 1.3            */
     put16(buf + p, 0x0303); p += 2;                     /* TLS 1.2            */
 
-    /* key_share: one x25519 entry (our ephemeral public key) */
-    put16(buf + p, 0x0033); p += 2; put16(buf + p, 38); p += 2;
-    put16(buf + p, 36); p += 2;                         /* client_shares len  */
+    /* key_share: an x25519 entry and a secp256r1 one */
+    put16(buf + p, 0x0033); p += 2; put16(buf + p, 2 + 36 + 69); p += 2;
+    put16(buf + p, 36 + 69); p += 2;                    /* client_shares len  */
     put16(buf + p, 0x001d); p += 2;                     /* group x25519       */
     put16(buf + p, 32); p += 2;                         /* key length         */
     memcpy(buf + p, c->kx_pub, 32); p += 32;
+    put16(buf + p, 0x0017); p += 2;                     /* group secp256r1    */
+    put16(buf + p, 65); p += 2;
+    memcpy(buf + p, c->ec_pub, 65); p += 65;
 
     put16(buf + ext_len_at, (uint16_t)(p - ext0));
     return p;
@@ -412,18 +418,14 @@ static uint32_t build_client_hello(struct tls_conn *c, const char *sni, uint8_t 
 
 /* Complete a TLS 1.3 handshake. On entry the transcript already holds the
  * ClientHello and ServerHello, the cipher suite is selected (c->key_len /
- * c->sha384), c->tls13 == 1, and server_pub holds the server's x25519 share.
+ * c->sha384), c->tls13 == 1, and shared is the ECDHE secret (x25519 or P-256).
  * Reads the encrypted server flight, verifies the server Finished, sends the
  * client Finished, and installs the application traffic keys. */
 static int tls13_finish(struct tls_conn *c, const char *sni, uint64_t t_end,
-                        const uint8_t server_pub[32]) {
+                        const uint8_t shared[32]) {
     int h384 = c->sha384;
     uint32_t H = h384 ? 48 : 32;
     uint8_t zeros[48]; memset(zeros, 0, sizeof zeros);
-
-    /* ---- ECDHE shared secret ---- */
-    uint8_t shared[32];
-    x25519(shared, c->kx_priv, server_pub);
 
     /* ---- key schedule (RFC 8446 §7.1) ---- */
     uint8_t eh[48]; hash_of(h384, (const uint8_t *)"", 0, eh);   /* Hash("") */
@@ -548,6 +550,9 @@ static int do_handshake(struct tls_conn *c, const char *sni, uint32_t timeout) {
     /* ephemeral X25519 keypair (its public key goes in the key_share ext) */
     rng_bytes(c->kx_priv, 32);
     x25519(c->kx_pub, c->kx_priv, x25519_basepoint);
+    rng_bytes(c->ec_priv, 32);
+    p256_clamp_priv(c->ec_priv);
+    p256_pub_from_priv(c->ec_priv, c->ec_pub);
 
     /* ClientHello */
     uint32_t blen = build_client_hello(c, sni, msg + 4);
@@ -584,7 +589,7 @@ static int do_handshake(struct tls_conn *c, const char *sni, uint32_t timeout) {
             else { DBG("tls: bad suite %x\n", suite); return -1; }
 
             /* scan extensions for supported_versions (0x2b) + key_share (0x33) */
-            uint8_t sv_pub[32]; int have_sv_pub = 0, is13 = 0;
+            uint8_t sv_pub[65]; int have_sv_pub = 0, is13 = 0;
             if (o + 2 <= bl) {
                 uint32_t et = ((uint32_t)b[o] << 8) | b[o+1]; o += 2;
                 uint32_t eend = o + et; if (eend > bl) eend = bl;
@@ -599,6 +604,8 @@ static int do_handshake(struct tls_conn *c, const char *sni, uint32_t timeout) {
                         uint16_t kl  = ((uint16_t)b[o+2] << 8) | b[o+3];
                         if (grp == 0x001d && kl == 32 && xl >= 4 + 32) {
                             memcpy(sv_pub, b + o + 4, 32); have_sv_pub = 1;
+                        } else if (grp == 0x0017 && kl == 65 && xl >= 4 + 65 && b[o + 4] == 4) {
+                            memcpy(sv_pub, b + o + 4, 65); have_sv_pub = 2;
                         }
                     }
                     o += xl;
@@ -607,9 +614,12 @@ static int do_handshake(struct tls_conn *c, const char *sni, uint32_t timeout) {
             DBG("tls: suite=%x keylen=%d sha384=%d tls13=%d\n", suite, c->key_len, c->sha384, is13);
             got_sh = 1;
             if (is13) {
-                if (!have_sv_pub) { DBG("tls13: no x25519 key_share\n"); return -1; }
+                if (!have_sv_pub) { DBG("tls13: no key_share we offered\n"); return -1; }
                 c->tls13 = 1;
-                return tls13_finish(c, sni, t_end, sv_pub);
+                uint8_t shared[32];
+                if (have_sv_pub == 2) { if (p256_ecdh(shared, c->ec_priv, sv_pub) != 0) return -1; }
+                else x25519(shared, c->kx_priv, sv_pub);
+                return tls13_finish(c, sni, t_end, shared);
             }
             if (suite == 0x1301 || suite == 0x1302) { DBG("tls: 1.3 suite, no 1.3\n"); return -1; }
             break;

@@ -250,21 +250,29 @@ static void ntp_rx(const udp_meta_t *m, const uint8_t *p, int len) {
 }
 
 static void ntp_poll(void) {
-    if (now_ms() < ntp_next || !inet_dns_server()) return;
-    ntp_next = now_ms() + (ntp_ok ? 3600000 : 5000);
-    if (!ntp_server || !ntp_ok) {
-        ntp_server = ntp_hint;
-        if (!ntp_server) {                                         /* resolving blocks: do it once */
-            static int asked;
-            if (asked++ % 4 == 0) ntp_server = inet_resolve("pool.ntp.org", 1500);
-        }
+    static int busy, tries;
+    if (busy || now_ms() < ntp_next || !inet_dns_server()) return;
+    busy = 1;
+    ntp_next = now_ms() + (ntp_ok ? 3600000 : 3000);
+    static const char *const pools[] = { "time.google.com", "pool.ntp.org", "time.cloudflare.com" };
+    static int which;
+    if (!ntp_server) ntp_server = ntp_hint ? ntp_hint : inet_resolve(pools[which++ % 3], 2000);
+    if (ntp_server) {
+        uint8_t q[48];
+        memset(q, 0, sizeof q);
+        q[0] = 0x23;                                              /* v4, client */
+        netif_t *nif = net_route(ntp_server);
+        if (nif && udp_send(nif, 0, ntp_server, 0, NTP_PORT, 123, q, 48) == 0) ntp_sent = now_ms();
+        if (!ntp_ok && ++tries % 3 == 0) { ntp_server = 0; ntp_hint = 0; }   /* try another server */
     }
-    if (!ntp_server) return;
-    uint8_t q[48];
-    memset(q, 0, sizeof q);
-    q[0] = 0x23;                                                  /* v4, client */
-    netif_t *nif = net_route(ntp_server);
-    if (nif && udp_send(nif, 0, ntp_server, 0, NTP_PORT, 123, q, 48) == 0) ntp_sent = now_ms();
+    busy = 0;
+}
+
+/* HTTPS needs the date (certificates are only valid between two). Right
+ * after boot, give the first SNTP answer a few seconds to arrive. */
+void inet_wait_clock(uint32_t ms) {
+    uint64_t end = now_ms() + ms;
+    while (!clock_known() && now_ms() < end) { if (ntp_next > now_ms() + 500 && !ntp_ok) ntp_next = now_ms(); mini_pump(); }
 }
 
 /* ---- together --------------------------------------------------------------------------- */

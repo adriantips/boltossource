@@ -343,12 +343,47 @@ static void http_handle(int i) {
     } else if (strcmp(path, "/reboot") == 0 && strcmp(method, "POST") == 0) {
         http_text(c, 200, "restarting\n");
         reboot_at = now_ms() + 300;
+    } else if (strncmp(path, "/keys?", 6) == 0) {
+        /* Development: type at the shell. Text as it is, and {enter} {tab} {esc}
+         * {bs} {up} {down} {left} {right} {pgdn} {pgup} {home} {end} {s-tab}
+         * {s-left} {s-right} {c-l} {f1}..{f6}, %XX and + as in a URL. */
+        char t[300]; int n = 0;
+        for (const char *p = path + 6; *p && n < (int)sizeof t - 1; p++) {
+            if (*p == '%' && p[1] && p[2]) { char h[3] = { p[1], p[2], 0 }; t[n++] = (char)strtol(h, 0, 16); p += 2; }
+            else t[n++] = *p == '+' ? ' ' : *p;
+        }
+        t[n] = 0;
+        static const struct { const char *name; int key, mods; } named[] = {
+            { "enter", KEY_ENTER, 0 }, { "tab", KEY_TAB, 0 }, { "s-tab", KEY_TAB, MOD_SHIFT }, { "esc", KEY_ESC, 0 },
+            { "bs", KEY_BACKSPACE, 0 }, { "up", KEY_UP, 0 }, { "down", KEY_DOWN, 0 }, { "left", KEY_LEFT, 0 },
+            { "right", KEY_RIGHT, 0 }, { "s-left", KEY_LEFT, MOD_SHIFT }, { "s-right", KEY_RIGHT, MOD_SHIFT },
+            { "pgdn", KEY_PGDN, 0 }, { "pgup", KEY_PGUP, 0 }, { "home", KEY_HOME, 0 }, { "end", KEY_END, 0 },
+            { "f1", KEY_F1, 0 }, { "f2", KEY_F2, 0 }, { "f3", KEY_F3, 0 }, { "f4", KEY_F4, 0 }, { "f5", KEY_F5, 0 }, { "f6", KEY_F6, 0 },
+        };
+        for (char *p = t; *p; p++) {
+            if (*p == '{') {
+                char *e = strchr(p, '}');
+                if (e) {
+                    *e = 0;
+                    if (!strcmp(p + 1, "c-l")) input_key(KEY_CHAR, 'l', MOD_CTRL, SRC_SERIAL);
+                    for (unsigned k = 0; k < sizeof named / sizeof named[0]; k++)
+                        if (!strcmp(p + 1, named[k].name)) input_key(named[k].key, 0, named[k].mods, SRC_SERIAL);
+                    p = e;
+                    continue;
+                }
+            }
+            input_key(KEY_CHAR, (unsigned char)*p, 0, SRC_SERIAL);
+        }
+        http_text(c, 200, "ok\n");
     } else if (strncmp(path, "/fetch?", 7) == 0) {
         /* Development: fetch a URL with the browser's HTTP stack and log what came
          * back. Done from the main loop (netsvc_jobs), not in here: a fetch waits,
          * and this handler is part of what keeps turning while it does. */
         snprintf(job_url, sizeof job_url, "%s", path + 7);
         http_text(c, 200, "queued: see /log\n");
+    } else if (strcmp(path, "/log?prev") == 0) {
+        char *buf = kmalloc(256 * 1024);
+        if (buf) { klog_previous(buf, 256 * 1024); http_text(c, 200, buf); kfree(buf); }
     } else if (strcmp(path, "/log") == 0) {
         char *buf = kmalloc(256 * 1024);
         if (buf) { klog_snapshot(buf, 256 * 1024); http_text(c, 200, buf); kfree(buf); }

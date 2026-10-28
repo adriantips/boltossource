@@ -16,6 +16,13 @@
 int http_get(const char *url, char *out, uint32_t cap,
              int *status, char *location, uint32_t loc_cap);
 
+/* The same with a method, extra header lines ("Name: value\r\n" each, or
+ * NULL) and a body (NULL for none; it gets a Content-Length). A User-Agent
+ * among the headers replaces BoltOS's own. */
+int http_request(const char *method, const char *url, const char *headers,
+                 const void *body, uint32_t body_len, char *out, uint32_t cap,
+                 int *status, char *location, uint32_t loc_cap);
+
 /* ---- keep-alive session: reuse one connection for many same-host fetches --
  * http_open() connects (status: 0 ok, -3 DNS, -4 TCP, -5 TLS). http_fetch()
  * sends one keep-alive GET and reads exactly one length-delimited response

@@ -110,7 +110,10 @@ void board_init(void) {
 }
 
 void board_poll(void) {
-    if (g_plat == PLAT_H618) h6_wdt_feed();
+    /* Fed while the main loop comes round at least every 30 s: a wait that
+     * keeps the network turning but never ends still gets the Pi restarted. */
+    extern volatile uint64_t g_loop_ms;
+    if (g_plat == PLAT_H618 && now_ms() - g_loop_ms < 30000) h6_wdt_feed();
 }
 
 void board_led(int green, int on) {

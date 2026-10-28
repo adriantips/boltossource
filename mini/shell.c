@@ -1,7 +1,7 @@
 /* ===========================================================================
  *  BoltOS Mini  -  mini/shell.c
  *
- *  Home, and the frame of every app. Home is a clock and a row of five apps
+ *  Home, and the frame of every app. Home is a clock and a row of six apps
  *  on a soft wallpaper: arrows and Return, the number keys, or a click open
  *  one; Esc or the Windows/Command key comes back. An open app gets the whole
  *  screen with a slim title above it.
@@ -19,8 +19,8 @@
 #include "stdio.h"
 #include "math.h"
 
-static const app_t *const apps[] = { &app_terminal, &app_monitor, &app_notes, &app_clock, &app_settings };
-#define NAPPS 5
+static const app_t *const apps[] = { &app_browser, &app_terminal, &app_monitor, &app_notes, &app_clock, &app_settings };
+#define NAPPS 6
 
 theme_t th;
 const char *const wallpaper_names[3] = { "Dusk", "Dawn", "Midnight" };
@@ -202,6 +202,14 @@ void ui_glyph(int id, int cx, int cy, int sz, uint32_t c) {
         break;
     case G_DOT:
         gfx_circle(x, y, s * .5f, c, 255);
+        break;
+    case G_GLOBE:
+        gfx_ring(x, y, s * .32f, t, c, 255);
+        gfx_arc(x + s * .13f, y, s * .34f, t * .85f, 112, 248, c, 255);     /* a meridian, each side */
+        gfx_arc(x - s * .13f, y, s * .34f, t * .85f, -68, 68, c, 255);
+        gfx_line(x - s * .32f, y, x + s * .32f, y, t * .85f, c, 255);
+        gfx_line(x - s * .26f, y - s * .16f, x + s * .26f, y - s * .16f, t * .7f, c, 255);
+        gfx_line(x - s * .26f, y + s * .16f, x + s * .26f, y + s * .16f, t * .7f, c, 255);
         break;
     }
 }
@@ -426,6 +434,7 @@ static void handle(const input_ev_t *e) {
      * it clears the line first (the Terminal says so by returning 1). */
     int term_ate = 0;
     if (e->key == KEY_ESC && cur == &app_terminal) { int terminal_esc(void); term_ate = terminal_esc(); }
+    if (e->key == KEY_ESC && cur == &app_browser) { int browser_esc(void); term_ate = browser_esc(); }
     if (term_ate) { dirty = 1; return; }
     if (e->key == KEY_SUPER || (e->key == KEY_ESC && cur)) {
         if (cur) shell_go_home();

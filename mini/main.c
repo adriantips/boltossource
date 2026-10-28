@@ -96,7 +96,9 @@ void kmain(uint64_t dtb) {
      * carries on (the old 90 s "restart into U-Boot's DFU window" rule is gone,
      * it would have rebooted a Pi that nobody is plugged into). To send a new
      * kernel, POST /reboot (pi.py does) while the Mac is connected. */
+    extern volatile uint64_t g_loop_ms;
     for (;;) {
+        g_loop_ms = now_ms();
         mini_pump();
         shell_frame();
         netsvc_jobs();

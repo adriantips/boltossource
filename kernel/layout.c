@@ -45,6 +45,10 @@ static void hsl2rgb(int h, int s, int l, int *R, int *G, int *B) {
  * happens next (n*16 for an em, v*255/100 for a percentage, -num for an fr)
  * cannot overflow either. -1 means there were no digits at all. */
 #define CSS_NUM_MAX 100000
+static int strncmp_ci(const char *a, const char *b, int n) {
+    for (int i = 0; i < n; i++) { char x = lc(a[i]), y = lc(b[i]); if (x != y) return x < y ? -1 : 1; if (!x) return 0; }
+    return 0;
+}
 static int dec(const char **pp) {
     const char *p = *pp; int v = 0, any = 0;
     for (; *p >= '0' && *p <= '9'; p++) { any = 1; if (v <= CSS_NUM_MAX) v = v*10 + (*p - '0'); }
@@ -93,16 +97,31 @@ uint32_t css_color(const char *v) {
 /* ----------------------------- length parsing -------------------------- */
 /* px length; em/rem*16; % returns -1 here (resolved against parent later via
  * a sentinel); "auto" -> -1. Returns px or -1. */
+/* A length in px. em and rem are 16 px (with their fraction: 1.5rem is 24),
+ * and a percentage, which needs the containing block's width to mean
+ * anything, is 0 here -- not the bare number taken for pixels, which made
+ * `width: 100%` a 100-pixel column. Widths keep percentages: css_w. */
 static int css_px(const char *v) {
     while(*v==' ')v++;
     if(lc(v[0])=='a') return -1;                       /* auto */
     int neg=0; if(*v=='-'){neg=1;v++;}
-    int n=dec(&v);
-    if(*v=='.'){v++;while(*v>='0'&&*v<='9')v++;}
-    if(n<0) return -1;
-    if((v[0]|32)=='e'&&(v[1]|32)=='m') n*=16;
+    int n=dec(&v), frac=0;
+    if(*v=='.'){v++; if(*v>='0'&&*v<='9') frac=*v-'0'; while(*v>='0'&&*v<='9')v++;}
+    if(n<0) { if(!frac) return -1; n=0; }
+    if(*v=='%') return 0;
+    if((v[0]|32)=='e'&&(v[1]|32)=='m') n=n*16+frac*16/10;
+    else if((v[0]|32)=='r'&&(v[1]|32)=='e'&&(v[2]|32)=='m') n=n*16+frac*16/10;
     if(neg)n=-n;
     return n;
+}
+/* width/height: px as css_px, but a percentage comes back as -(1000 + pct),
+ * which every layout that only knows px reads as auto (any negative is). */
+static int css_w(const char *v) {
+    const char *p=v; while(*p==' ')p++;
+    int n=dec(&p);
+    if(n>=0 && *p=='.'){p++;while(*p>='0'&&*p<='9')p++;}
+    if(n>=0 && *p=='%') return -(1000 + (n > 1000 ? 1000 : n));
+    return css_px(v);
 }
 static uint8_t fs_scale(const char *v) {
     while(*v==' ')v++;
@@ -204,9 +223,16 @@ static void parse_decls(const char *d, uint32_t n, decls *o) {
         else if(ieq(prop,"padding-right")){o->pad[1]=css_px(v)<0?0:css_px(v);o->set|=SET_PAD;}
         else if(ieq(prop,"padding-bottom")){o->pad[2]=css_px(v)<0?0:css_px(v);o->set|=SET_PAD;}
         else if(ieq(prop,"padding-left")){o->pad[3]=css_px(v)<0?0:css_px(v);o->set|=SET_PAD;}
-        else if(ieq(prop,"border")||ieq(prop,"border-width")){int w=first_px(v);for(int k=0;k<4;k++)o->border[k]=(int16_t)w;o->set|=SET_BORDER;}
-        else if(ieq(prop,"width")){o->w=css_px(v);o->set|=SET_W;}
-        else if(ieq(prop,"height")){o->h=css_px(v);o->set|=SET_H;}
+        else if(ieq(prop,"border")||ieq(prop,"border-width")){int w=(lc(v[0])=='n'||v[0]=='0')?0:first_px(v);for(int k=0;k<4;k++)o->border[k]=(int16_t)w;o->set|=SET_BORDER;}
+        /* What pages hide without display:none: visibility, a clip to
+         * nothing, or a shove off the left of the page. Drawn, they are
+         * menus and labels meant for nobody to see. */
+        else if((ieq(prop,"visibility")&&lc(v[0])=='h') ||
+                (ieq(prop,"clip")&&lc(v[0])=='r'&&(v[5]=='0'||v[5]=='1')) ||
+                (ieq(prop,"clip-path")&&lc(v[0])=='i'&&v[6]=='5') ||
+                ((ieq(prop,"left")||ieq(prop,"top"))&&v[0]=='-'&&v[1]=='9'&&v[2]=='9'&&v[3]=='9')){o->set|=SET_DISP;o->disp=DISP_NONE;}
+        else if(ieq(prop,"width")){o->w=css_w(v);o->set|=SET_W;}
+        else if(ieq(prop,"height")){o->h=css_w(v);o->set|=SET_H;}
         else if(ieq(prop,"flex-direction")){o->fdir=(lc(v[0])=='c')?FLEX_COLUMN:FLEX_ROW;o->set|=SET_FDIR;}
         else if(ieq(prop,"justify-content")){o->set|=SET_JUST;
             o->just = ieq(v,"center")?JUST_CENTER : (lc(v[0])=='f'&&ieq(v,"flex-end"))?JUST_END :
@@ -223,15 +249,97 @@ static void parse_decls(const char *d, uint32_t n, decls *o) {
 }
 
 /* ----------------------------- stylesheet ------------------------------ */
-#define LRULE_MAX 1024
+#define LRULE_MAX 2048
 typedef struct { char sel[128]; int spec, order; decls d; } lrule;
 
+/* The width @media queries are asked about: 0 skips every @media block, as
+ * the desktop always has. BoltOS Mini sets its page width. */
+static int g_media_w;
+void layout_set_media_width(int w) { g_media_w = w; }
+
+static int media_num(const char *p, const char *e) {
+    while (p < e && (*p == ' ' || *p == ':')) p++;
+    const char *q = p; int n = dec(&q);
+    if (n < 0) return -1;
+    if (q < e && *q == '.') { q++; while (q < e && *q >= '0' && *q <= '9') q++; }
+    if (q + 1 < e && lc(q[0]) == 'e' && lc(q[1]) == 'm') n *= 16;
+    else if (q + 2 < e && lc(q[0]) == 'r' && lc(q[1]) == 'e' && lc(q[2]) == 'm') n *= 16;
+    return n;
+}
+
+/* One query of a list: "only screen and (min-width: 600px)". Unknown
+ * features are false, so nothing aimed at a printer or a dark theme lands. */
+static int media_one(const char *s, const char *e) {
+    int neg = 0, ok = 1;
+    while (s < e) {
+        while (s < e && (*s == ' ' || *s == '\n' || *s == '\t')) s++;
+        if (s >= e) break;
+        if (*s == '(') {
+            const char *c = s + 1; while (c < e && *c != ')') c++;
+            const char *f = s + 1; while (f < c && *f == ' ') f++;
+            int r = 0;
+            #define FEAT(n) (c - f >= (int)sizeof(n) - 1 && !strncmp_ci(f, n, sizeof(n) - 1))
+            if (FEAT("min-width")) { int v = media_num(f + 9, c); r = v >= 0 && g_media_w >= v; }
+            else if (FEAT("max-width")) { int v = media_num(f + 9, c); r = v >= 0 && g_media_w <= v; }
+            else if (FEAT("width>=")) { int v = media_num(f + 7, c); r = v >= 0 && g_media_w >= v; }
+            else if (FEAT("width<=")) { int v = media_num(f + 7, c); r = v >= 0 && g_media_w <= v; }
+            else if (FEAT("orientation")) r = strncmp_ci(f + 11, ":landscape", 10) == 0 || strncmp_ci(f + 11, ": landscape", 11) == 0;
+            else if (FEAT("prefers-reduced-motion")) r = 1;
+            else if (FEAT("pointer") || FEAT("any-pointer")) r = 1;
+            else if (FEAT("min-resolution") || FEAT("-webkit-min-device-pixel-ratio") || FEAT("min-device-pixel-ratio")) r = 0;
+            else r = 0;
+            #undef FEAT
+            ok = ok && r;
+            s = c < e ? c + 1 : c;
+            continue;
+        }
+        const char *w = s; while (s < e && *s != ' ' && *s != '(' && *s != '\n') s++;
+        int n = (int)(s - w);
+        if (n == 3 && !strncmp_ci(w, "not", 3)) neg = 1;
+        else if ((n == 5 && !strncmp_ci(w, "print", 5)) || (n == 6 && !strncmp_ci(w, "speech", 6))) ok = 0;
+    }
+    return neg ? !ok : ok;
+}
+
+static int media_true(const char *s, const char *e) {
+    if (!g_media_w) return 0;
+    while (s < e) {
+        const char *q = s; int d = 0;
+        while (q < e && (*q != ',' || d)) { if (*q == '(') d++; if (*q == ')') d--; q++; }
+        if (media_one(s, q)) return 1;
+        s = q < e ? q + 1 : q;
+    }
+    return 0;
+}
+
+static int parse_sheet_at(const char *css, uint32_t len, lrule *rules, int cap, int nr, int *order);
+
 static int parse_sheet(const char *css, uint32_t len, lrule *rules, int cap) {
-    int nr = 0; uint32_t i = 0; int order = 0;
+    int order = 0;
+    return parse_sheet_at(css, len, rules, cap, 0, &order);
+}
+
+static int parse_sheet_at(const char *css, uint32_t len, lrule *rules, int cap, int nr, int *orderp) {
+    uint32_t i = 0;
     while (i < len && nr < cap) {
         while(i<len&&(css[i]==' '||css[i]=='\n'||css[i]=='\t'||css[i]=='\r'))i++;
         if(i>=len)break;
-        if(css[i]=='@'){int depth=0; while(i<len){char c=css[i++]; if(c==';'&&depth==0)break; if(c=='{')depth++; if(c=='}'){if(--depth<=0)break;}} continue;}
+        if(css[i]=='@'){
+            /* @media whose query holds, and @supports / @layer, are read for
+             * their rules; every other at-rule is stepped over. */
+            uint32_t a0=i; while(i<len&&css[i]!='{'&&css[i]!=';')i++;
+            if(i>=len)break;
+            if(css[i]==';'){i++;continue;}
+            uint32_t a1=i, b0=i+1; int depth=0;
+            while(i<len){char c=css[i++]; if(c=='{')depth++; if(c=='}'){if(--depth<=0)break;}}
+            uint32_t b1=i>0?i-1:i;
+            int take=0;
+            if(a1-a0>=6&&!strncmp_ci(css+a0,"@media",6)) take=media_true(css+a0+6,css+a1);
+            else if(a1-a0>=9&&!strncmp_ci(css+a0,"@supports",9)) take=!(a1-a0>=14&&!strncmp_ci(css+a0+10,"not",3));
+            else if(a1-a0>=6&&!strncmp_ci(css+a0,"@layer",6)) take=1;
+            if(take&&b1>b0) nr=parse_sheet_at(css+b0,b1-b0,rules,cap,nr,orderp);
+            continue;
+        }
         uint32_t s0=i; while(i<len&&css[i]!='{'&&css[i]!='}')i++; if(i>=len||css[i]=='}')break;
         uint32_t s1=i; i++;
         uint32_t b0=i; while(i<len&&css[i]!='}')i++; uint32_t b1=i; if(i<len)i++;
@@ -245,10 +353,10 @@ static int parse_sheet(const char *css, uint32_t len, lrule *rules, int cap) {
             uint32_t a=p,b=q; while(a<b&&(css[a]==' '||css[a]=='\n'||css[a]=='\t'||css[a]=='\r'))a++;
             while(b>a&&(css[b-1]==' '||css[b-1]=='\n'||css[b-1]=='\t'||css[b-1]=='\r'))b--;
             if(b>a){ lrule*r=&rules[nr]; uint32_t o=0; for(uint32_t k=a;k<b&&o<sizeof(r->sel)-1;k++)r->sel[o++]=css[k]; r->sel[o]=0;
-                r->spec=dom_specificity(r->sel); r->order=order; r->d=d; nr++; }
+                r->spec=dom_specificity(r->sel); r->order=*orderp; r->d=d; nr++; }
             p=q+1;
         }
-        order++;
+        (*orderp)++;
     }
     return nr;
 }
@@ -599,6 +707,25 @@ layout_tree *layout_build(dom_document *doc, const char *css, uint32_t csslen, i
     im->t.doc_w=viewport_w; im->t.doc_h=total;
     return &im->t;
 }
+/* The cascade alone: styled boxes for every element and text node, with
+ * display:none left out and no geometry. BoltOS Mini lays them out itself
+ * (mini/flow.c). Free with layout_free. */
+layout_tree *layout_styles(dom_document *doc, const char *css, uint32_t csslen) {
+    if(!doc) return 0;
+    LImpl *im=(LImpl*)kmalloc(sizeof(LImpl)); if(!im)return 0;
+    im->ar.head=0; im->ar.total=0; im->ar.oom=0;
+    LAr *a=&im->ar;
+    lrule *rules=(lrule*)kmalloc(sizeof(lrule)*LRULE_MAX);
+    int nr = (rules&&css&&csslen)? parse_sheet(css,csslen,rules,LRULE_MAX):0;
+    layout_box *root=build_box(a, doc->root, 0, rules, nr);
+    if(rules) kfree(rules);
+    if(!root || a->oom){ la_free(a); kfree(im); return 0; }
+    im->t.root=root; im->t.arena=a;
+    root->st.display=DISP_BLOCK; root->st.width=-1;
+    im->t.doc_w=0; im->t.doc_h=0;
+    return &im->t;
+}
+
 void layout_free(layout_tree *t) {
     if(!t) return; LImpl*im=(LImpl*)t; la_free(&im->ar); kfree(im);
 }

@@ -16,6 +16,8 @@
 #include "string.h"
 #include "kprintf.h"
 #include "http.h"
+#include "web.h"
+#include "stdio.h"
 
 struct tcp_conn { tcb_t *t; };
 
@@ -112,6 +114,7 @@ void web_fetch_test(const char *url) {
     char loc[256] = "";
     int code = 0;
     uint64_t t0 = now_ms();
+    if (!strncmp(url, "https:", 6)) inet_wait_clock(6000);
     int n = http_get(url, buf, 512 * 1024, &code, loc, sizeof loc);
     kprintf("[web] GET %s -> %d, %d bytes in %lu ms%s%s\n", url, code, n, now_ms() - t0,
             loc[0] ? ", Location: " : "", loc);
@@ -123,4 +126,25 @@ void web_fetch_test(const char *url) {
         kprintf("[web]   %s\n", head);
     }
     kfree(buf);
+}
+
+int web_request(const char *method, const char *url, const char *headers, const void *body, int body_len,
+                char *out, int cap, int *status, char *final, int final_cap) {
+    char cur[1024], loc[1024];
+    snprintf(cur, sizeof cur, "%s", url);
+    if (!strncmp(url, "https:", 6)) inet_wait_clock(6000);
+    int code = 0, n = -1;
+    for (int hop = 0; hop < 6; hop++) {
+        loc[0] = 0;
+        n = http_request(method, cur, headers, body, (uint32_t)(body ? body_len : 0), out, (uint32_t)cap,
+                         &code, loc, sizeof loc);
+        if (n < 0 || code < 300 || code >= 400 || !loc[0]) break;
+        char next[1024];
+        url_resolve(cur, loc, next, sizeof next);
+        snprintf(cur, sizeof cur, "%s", next);
+        if (code != 307 && code != 308) { method = "GET"; body = 0; body_len = 0; }
+    }
+    if (status) *status = code;
+    if (final) snprintf(final, (size_t)final_cap, "%s", cur);
+    return n;
 }

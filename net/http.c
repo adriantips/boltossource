@@ -434,6 +434,12 @@ done:;
 
 int http_get(const char *url, char *out, uint32_t cap,
              int *status, char *location, uint32_t loc_cap) {
+    return http_request("GET", url, 0, 0, 0, out, cap, status, location, loc_cap);
+}
+
+int http_request(const char *method, const char *url, const char *headers,
+                 const void *req_body, uint32_t body_len, char *out, uint32_t cap,
+                 int *status, char *location, uint32_t loc_cap) {
     char host[128], path[512];
     uint16_t port; int secure;
     int pr = parse_url(url, host, sizeof(host), &port, path, sizeof(path), &secure);
@@ -450,16 +456,31 @@ int http_get(const char *url, char *out, uint32_t cap,
                   if (!tc) { if (status) *status = -4; return -1; } }   /* connect fail */
 
     /* build and send the request */
-    char req[1600];
+    char req[2400];
     int n = 0;
     char hh[136]; host_hdr(host, hh, sizeof hh);
-    const char *parts[] = { "GET ", path, " HTTP/1.1\r\nHost: ", hh,
-                            "\r\nUser-Agent: BoltOS/1.0\r\nAccept-Encoding: gzip, deflate\r\nConnection: close\r\n" };
+    char blen_s[24] = "";
+    if (req_body) {                                /* Content-Length: n\r\n */
+        char d[12]; int k = 0; uint32_t v = body_len;
+        do { d[k++] = (char)('0' + v % 10); v /= 10; } while (v && k < 11);
+        const char *cl = "Content-Length: "; int j = 0;
+        while (*cl) blen_s[j++] = *cl++;
+        while (k) blen_s[j++] = d[--k];
+        blen_s[j++] = '\r'; blen_s[j++] = '\n'; blen_s[j] = 0;
+    }
+    /* A caller's own User-Agent replaces ours. */
+    int own_ua = headers && strcasestr(headers, "User-Agent:") != 0;
+    const char *parts[] = { method, " ", path, " HTTP/1.1\r\nHost: ", hh,
+                            own_ua ? "\r\n" : "\r\nUser-Agent: BoltOS/1.0\r\n",
+                            "Accept-Encoding: gzip, deflate\r\nConnection: close\r\n",
+                            headers ? headers : "", blen_s };
     for (uint32_t i = 0; i < sizeof(parts) / sizeof(parts[0]); i++)
         for (const char *q = parts[i]; *q && n < (int)sizeof(req) - 1; ) req[n++] = *q++;
     n += (int)ck_header(host, req + n, (uint32_t)sizeof(req) - (uint32_t)n - 3);
     req[n++] = '\r'; req[n++] = '\n';
     int sret = secure ? tls_send(sc, req, (uint32_t)n) : tcp_send(tc, req, (uint32_t)n);
+    if (sret >= 0 && req_body && body_len)
+        sret = secure ? tls_send(sc, req_body, body_len) : tcp_send(tc, req_body, body_len);
     if (sret < 0) {
         if (secure) tls_close(sc); else tcp_close(tc);
         if (status) *status = secure ? -5 : -4;

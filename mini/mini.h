@@ -95,6 +95,7 @@ uint32_t board_cpu_mhz(void);
 /* ---- log ------------------------------------------------------------------ */
 void     klog_init(void);
 uint32_t klog_snapshot(char *out, uint32_t cap);  /* the tail, NUL-terminated */
+uint32_t klog_previous(char *out, uint32_t cap);  /* the boot before's tail      */
 uint32_t klog_boot_count(void);
 
 /* ---- the device tree U-Boot or QEMU handed over --------------------------- */

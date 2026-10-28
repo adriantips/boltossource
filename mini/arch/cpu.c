@@ -104,8 +104,22 @@ static const char *ec_name(uint32_t ec) {
     }
 }
 
+/* The main loop says it came round (main.c); if it hasn't for six seconds,
+ * the timer interrupt says where the CPU is, every six seconds after. */
+volatile uint64_t g_loop_ms;
+
 void trap(struct frame *f, uint64_t kind) {
-    if (kind == 1) { irq_dispatch(); return; }
+    if (kind == 1) {
+        irq_dispatch();
+        static uint64_t told;
+        uint64_t t = now_ms();
+        if (g_loop_ms && t - g_loop_ms > 6000 && t - told > 6000) {
+            told = t;
+            kprintf("[stall] the main loop hasn't run for %lu ms: pc %lx lr %lx\n",
+                    (unsigned long)(t - g_loop_ms), f->elr, f->x[30]);
+        }
+        return;
+    }
     uint64_t esr, far;
     __asm__ volatile("mrs %0, esr_el1" : "=r"(esr));
     __asm__ volatile("mrs %0, far_el1" : "=r"(far));

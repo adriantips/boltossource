@@ -70,4 +70,5 @@ void     inet_poll(void);
 uint32_t inet_dns_server(void);
 /* Blocking, with the machine kept running underneath (mini_pump). 0 on failure. */
 uint32_t inet_resolve(const char *host, uint32_t timeout_ms);
-void     mini_pump(void);              /* one turn of the device and network loop */
+void     mini_pump(void);
+void     inet_wait_clock(uint32_t ms);  /* until SNTP has set the clock, at most ms */              /* one turn of the device and network loop */

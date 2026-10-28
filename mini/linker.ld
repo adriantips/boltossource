@@ -18,7 +18,7 @@ SECTIONS
         *(.bss .bss.*)
         *(COMMON)
         . = ALIGN(16);
-        . += 0x40000;                   /* 256 KiB stack                   */
+        . += 0x100000;                  /* 1 MiB stack: TLS and the page engine use big frames */
         __stack_top = .;
         __bss_end = .;
     }

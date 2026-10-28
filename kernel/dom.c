@@ -21,7 +21,19 @@ typedef struct { DBlk *head; uint32_t total; int oom; } DArena;
 
 static void *da_alloc(DArena *a, uint32_t n) {
     n = (n + 7) & ~7u;
-    if (n > DBLK) { a->oom = 1; return 0; }
+    if (n > DBLK / 2) {
+        /* One big string -- a 200 KB inline script is ordinary now -- gets a
+         * block of its own, behind the one being filled, instead of failing
+         * the whole page. */
+        if (a->total + n > DMAX) { a->oom = 1; return 0; }
+        DBlk *b = (DBlk *)kmalloc(sizeof(DBlk) - DBLK + n);
+        if (!b) { a->oom = 1; return 0; }
+        b->used = n;
+        if (a->head) { b->next = a->head->next; a->head->next = b; }
+        else { b->next = 0; a->head = b; }
+        a->total += n;
+        return b->mem;
+    }
     if (!a->head || a->head->used + n > DBLK) {
         if (a->total + DBLK > DMAX) { a->oom = 1; return 0; }
         DBlk *b = (DBlk *)kmalloc(sizeof(DBlk));
@@ -239,12 +251,64 @@ void dom_free(dom_document *d) {
 }
 
 /* ----------------------------- selectors ------------------------------- */
-typedef struct { char tag[24]; char id[48]; char cls[4][32]; int ncls; } scomp;
+typedef struct {
+    char tag[24]; char id[48]; char cls[4][32]; int ncls;
+    char attr[2][24], aval[2][48]; uint8_t aop[2]; int nattr;   /* [a] [a=v] [a~=v] [a^=v] ... */
+    uint8_t never, link, first, last;     /* pseudo-classes we can answer (see parse_pseudo) */
+} scomp;
 typedef struct { scomp parts[6]; char comb[6]; int n; } ssel;   /* comb[k]: combinator before parts[k] */
+
+/* A pseudo-class or pseudo-element at p (just past the ':'). A page that is
+ * never hovered, focused or visited can say so: those never match, nor do
+ * pseudo-elements (whose properties would otherwise land on the element
+ * itself -- `a:visited { color: grey }` greyed every link). :link is a link
+ * with an href, the -child ones are worked out; the rest (:not(), :nth-...,
+ * :is()) are ignored, the selector matching as if they weren't there. */
+static const char *parse_pseudo(const char *p, const char *e, scomp *c) {
+    int elem = 0;
+    if (p < e && *p == ':') { elem = 1; p++; }
+    char nm[24]; uint32_t o = 0;
+    while (p < e && *p!='.'&&*p!='#'&&*p!=':'&&*p!='['&&*p!='(' && o < 23) nm[o++] = lc(*p++);
+    nm[o] = 0;
+    if (p < e && *p == '(') { int d = 0; while (p < e) { if (*p=='(') d++; if (*p==')' && --d == 0) { p++; break; } p++; } }
+    if (elem || ieq(nm,"before") || ieq(nm,"after") || ieq(nm,"first-line") || ieq(nm,"first-letter") ||
+        ieq(nm,"hover") || ieq(nm,"focus") || ieq(nm,"active") || ieq(nm,"visited") || ieq(nm,"focus-within") ||
+        ieq(nm,"focus-visible") || ieq(nm,"checked") || ieq(nm,"disabled") || ieq(nm,"target") ||
+        ieq(nm,"placeholder-shown") || ieq(nm,"invalid") || ieq(nm,"empty")) c->never = 1;
+    else if (ieq(nm,"link") || ieq(nm,"any-link")) c->link = 1;
+    else if (ieq(nm,"first-child") || ieq(nm,"first-of-type")) c->first = 1;
+    else if (ieq(nm,"last-child") || ieq(nm,"last-of-type")) c->last = 1;
+    else if (ieq(nm,"only-child")) c->first = c->last = 1;
+    return p;
+}
+
+static const char *parse_attr(const char *p, const char *e, scomp *c) {      /* just past '[' */
+    char a[24]; char v[48]; uint32_t o = 0; uint8_t op = 0;
+    while (p < e && *p!=']'&&*p!='='&&*p!='~'&&*p!='^'&&*p!='$'&&*p!='*'&&*p!='|' && o < 23) { if (*p!=' ') a[o++] = lc(*p); p++; }
+    a[o] = 0; v[0] = 0;
+    if (p < e && *p != ']') {
+        op = *p == '=' ? '=' : (uint8_t)*p;
+        if (*p != '=') p++;
+        if (p < e && *p == '=') p++;
+        while (p < e && (*p==' '||*p=='"'||*p=='\'')) p++;
+        o = 0;
+        while (p < e && *p!=']'&&*p!='"'&&*p!='\'' && o < 47) v[o++] = *p++;
+        v[o] = 0;
+    }
+    while (p < e && *p != ']') p++;
+    if (p < e) p++;
+    if (c->nattr < 2 && a[0]) {
+        for (uint32_t i = 0; i < sizeof c->attr[0]; i++) { c->attr[c->nattr][i] = a[i]; if (!a[i]) break; }
+        for (uint32_t i = 0; i < sizeof c->aval[0]; i++) { c->aval[c->nattr][i] = v[i]; if (!v[i]) break; }
+        c->aop[c->nattr++] = op;
+    }
+    return p;
+}
 
 /* parse one compound (no spaces) like "div.a.b#id" */
 static void parse_compound(const char *s, const char *e, scomp *c) {
     c->tag[0] = 0; c->id[0] = 0; c->ncls = 0;
+    c->nattr = 0; c->never = c->link = c->first = c->last = 0;
     const char *p = s;
     /* leading type / universal */
     if (p < e && *p != '.' && *p != '#' && *p != ':' && *p != '[') {
@@ -255,7 +319,8 @@ static void parse_compound(const char *s, const char *e, scomp *c) {
         char k = *p++;
         if (k == '.') { uint32_t o = 0; if (c->ncls < 4) { while (p<e && *p!='.'&&*p!='#'&&*p!=':'&&*p!='[' && o<31) c->cls[c->ncls][o++]=lc(*p++); c->cls[c->ncls][o]=0; c->ncls++; } else while (p<e&&*p!='.'&&*p!='#'&&*p!=':'&&*p!='[') p++; }
         else if (k == '#') { uint32_t o = 0; while (p<e && *p!='.'&&*p!='#'&&*p!=':'&&*p!='[' && o<47) c->id[o++]=*p++; c->id[o]=0; }
-        else if (k == ':' || k == '[') { while (p<e && *p!='.'&&*p!='#') p++; }  /* skip pseudo / attr selectors */
+        else if (k == ':') p = parse_pseudo(p, e, c);
+        else if (k == '[') p = parse_attr(p, e, c);
     }
 }
 
@@ -275,11 +340,34 @@ static int parse_selector(const char *s, const char *e, ssel *out) {
     return out->n;
 }
 
+static int str_has(const char *h, const char *n) {
+    for (; *h; h++) { const char *a = h, *b = n; while (*a && *b && *a == *b) { a++; b++; } if (!*b) return 1; }
+    return !*n;
+}
+
 static int match_compound(dom_node *n, scomp *c) {
     if (!n || n->type != DOM_ELEMENT) return 0;
+    if (c->never) return 0;
     if (c->tag[0] && c->tag[0] != '*' && !ieq(n->tag, c->tag)) return 0;
     if (c->id[0]) { const char *id = dom_attr_get(n, "id"); if (!id || !ieq(id, c->id)) return 0; }
     for (int i = 0; i < c->ncls; i++) if (!dom_has_class(n, c->cls[i])) return 0;
+    if (c->link && !(ieq(n->tag, "a") && dom_attr_get(n, "href"))) return 0;
+    if (c->first) { for (dom_node *p = n->prev; p; p = p->prev) if (p->type == DOM_ELEMENT) return 0; }
+    if (c->last)  { for (dom_node *p = n->next; p; p = p->next) if (p->type == DOM_ELEMENT) return 0; }
+    for (int i = 0; i < c->nattr; i++) {
+        const char *v = dom_attr_get(n, c->attr[i]);
+        if (!v) return 0;
+        const char *w = c->aval[i];
+        uint32_t vl = (uint32_t)strlen(v), wl = (uint32_t)strlen(w);
+        switch (c->aop[i]) {
+        case '=': if (!ieq(v, w)) return 0; break;
+        case '^': if (strncmp(v, w, wl)) return 0; break;
+        case '$': if (vl < wl || strcmp(v + vl - wl, w)) return 0; break;
+        case '*': if (!str_has(v, w)) return 0; break;
+        case '~': if (!str_has(v, w)) return 0; break;
+        case '|': if (strncmp(v, w, wl) || (v[wl] && v[wl] != '-')) return 0; break;
+        }
+    }
     return 1;
 }
 static int match_ssel(dom_node *n, ssel *s) {
@@ -317,7 +405,7 @@ int dom_specificity(const char *selector) {
             int a = 0, b = 0, c = 0;
             for (int i = 0; i < s.n; i++) {
                 if (s.parts[i].id[0]) a++;
-                b += s.parts[i].ncls;
+                b += s.parts[i].ncls + s.parts[i].nattr + s.parts[i].link + s.parts[i].first + s.parts[i].last;
                 if (s.parts[i].tag[0] && s.parts[i].tag[0] != '*') c++;
             }
             int spec = a*10000 + b*100 + c;

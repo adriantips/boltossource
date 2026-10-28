@@ -7,7 +7,7 @@
 /* ===========================================================================
  *  BoltOS Mini  -  mini/ui.h
  *
- *  The shell and its five apps. Every dimension is written for a 600-line
+ *  The shell and its six apps. Every dimension is written for a 600-line
  *  screen and goes through S(), so a 480-line LCD and a 720-line VNC window
  *  get the same layout, smaller or larger.
  *
@@ -30,10 +30,10 @@ typedef struct app {
     int  (*tick)(void);
 } app_t;
 
-extern const app_t app_terminal, app_monitor, app_notes, app_clock, app_settings;
+extern const app_t app_browser, app_terminal, app_monitor, app_notes, app_clock, app_settings;
 
 enum { G_TERMINAL, G_MONITOR, G_NOTES, G_CLOCK, G_SETTINGS, G_MAC, G_KEYBOARD,
-       G_POWER, G_CHECK, G_CHEVRON, G_CLOSE, G_DOT };
+       G_POWER, G_CHECK, G_CHEVRON, G_CLOSE, G_DOT, G_GLOBE };
 
 /* ---- the theme ---------------------------------------------------------------- */
 typedef struct {

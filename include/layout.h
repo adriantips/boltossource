@@ -31,7 +31,7 @@ typedef struct {
     uint8_t  fscale;         /* 1..3 */
     uint8_t  bold, italic;
     int16_t  margin[4], padding[4], border[4];   /* px, TRBL */
-    int32_t  width, height;  /* px, -1 = auto */
+    int32_t  width, height;  /* px, -1 = auto; -(1000 + n) is n% (BoltOS Mini's flow uses it) */
     uint8_t  flex_dir;       /* FLEX_ROW / FLEX_COLUMN (display:flex containers) */
     uint8_t  justify;        /* JUST_*  (justify-content, main axis)  */
     uint8_t  align;          /* ALIGN_* (align-items, cross axis)     */
@@ -63,6 +63,11 @@ typedef struct {
  * `css` is the concatenated author stylesheet(s) (may be NULL). */
 layout_tree *layout_build(dom_document *doc, const char *css, uint32_t csslen, int viewport_w);
 void         layout_free(layout_tree *t);
+/* The page width @media queries are evaluated at (0, the default: every
+ * @media block is skipped). */
+void layout_set_media_width(int w);
+/* The cascade without the layout: styled boxes, no geometry (BoltOS Mini). */
+layout_tree *layout_styles(dom_document *doc, const char *css, uint32_t csslen);
 
 /* Parse a CSS colour token (#hex, rgb()/rgba(), hsl()/hsla(), named,
  * transparent) -> 0x1RRGGBB or 0. Exposed for reuse/tests. */
