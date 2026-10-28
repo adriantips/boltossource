@@ -68,6 +68,19 @@ macOS or Linux. **The code:** [`tv/`](tv). **The page:**
 > **freestanding libc**, **BSD-style sockets** reaching ring 3, an **SSH server**,
 > and image decoding.
 
+## New: BoltOS Mini
+
+**BoltOS Mini** is BoltOS for small ARM boards, starting with the Orange Pi
+Zero3 (Allwinner H618). It's a 600 KB AArch64 kernel written from scratch,
+with five apps: Terminal, Monitor, Notes, Clock and Settings. It's up about
+a quarter of a second after the firmware hands over. Until a panel is attached, the Mac it's plugged
+into is its screen: the Pi's USB-C port shows up on the Mac as a network
+adapter, and macOS's own Screen Sharing app shows and drives the desktop.
+The same kernel also runs in QEMU on the Mac.
+
+**Installing and using it:** [MINI.md](MINI.md). **Building it:**
+`bash build-mini.sh`. **The code:** [`mini/`](mini).
+
 ## Image Preview
 
 ![BoltOS Desktop](imageshowcase.png)

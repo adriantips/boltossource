@@ -7,6 +7,8 @@
 # test/t_fuzz.py: without them a fix that gets undone is rediscovered rather
 # than reported.
 !test/corpus/**/*.bin
+# ...and the Orange Pi firmware BoltOS Mini ships prebuilt (mini/firmware/build-uboot.sh).
+!mini/firmware/u-boot-sunxi-with-spl.bin
 *.img
 *.ppm
 *.fd
