@@ -33,7 +33,7 @@ typedef struct app {
 extern const app_t app_browser, app_terminal, app_monitor, app_notes, app_clock, app_settings;
 
 enum { G_TERMINAL, G_MONITOR, G_NOTES, G_CLOCK, G_SETTINGS, G_MAC, G_KEYBOARD,
-       G_POWER, G_CHECK, G_CHEVRON, G_CLOSE, G_DOT, G_GLOBE };
+       G_POWER, G_CHECK, G_CHEVRON, G_CLOSE, G_DOT, G_GLOBE, G_WIFI, G_BLUETOOTH, G_LOCK };
 
 /* ---- the theme ---------------------------------------------------------------- */
 typedef struct {

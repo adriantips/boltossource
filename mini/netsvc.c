@@ -20,6 +20,7 @@
  * ===========================================================================*/
 #include <stdint.h>
 #include "mini.h"
+#include "wlan.h"
 #include "kprintf.h"
 #include "kheap.h"
 #include "string.h"
@@ -38,7 +39,14 @@ static void put32(uint8_t *p, uint32_t v) { put16(p, (uint16_t)(v >> 16)); put16
 static int dhcp_leases;
 static char job_url[300];
 
+static int job_wifi;                     /* 1 start, 2 scan */
 void netsvc_jobs(void) {
+    if (job_wifi) {
+        int j = job_wifi;
+        job_wifi = 0;
+        if (j == 1) wifi_start();
+        else if (j == 2) wifi_scan();
+    }
     if (!job_url[0]) return;
     char u[300];
     snprintf(u, sizeof u, "%s", job_url);
@@ -381,6 +389,24 @@ static void http_handle(int i) {
          * and this handler is part of what keeps turning while it does. */
         snprintf(job_url, sizeof job_url, "%s", path + 7);
         http_text(c, 200, "queued: see /log\n");
+    } else if (strncmp(path, "/wifi", 5) == 0) {
+        /* Development: Wi-Fi. /wifi?up starts it, /wifi?scan scans (both from the main
+         * loop, like /fetch); /wifi says where it is and what it found. */
+        if (!strcmp(path, "/wifi?up")) job_wifi = 1;
+        else if (!strcmp(path, "/wifi?scan")) job_wifi = 2;
+        char *buf = kmalloc(8192);
+        if (buf) {
+            int n = wifi_debug(buf, 1024);
+            const wifi_net_t *nets;
+            int k = wifi_nets(&nets);
+            static const char *sec[] = { "open", "WPA2", "other" };
+            for (int i = 0; i < k && n < 7900; i++)
+                n += snprintf(buf + n, (size_t)(8192 - n), "%-32s %02x:%02x:%02x:%02x:%02x:%02x ch %3d %4d dBm %s\n", nets[i].ssid,
+                              nets[i].bssid[0], nets[i].bssid[1], nets[i].bssid[2], nets[i].bssid[3], nets[i].bssid[4],
+                              nets[i].bssid[5], nets[i].channel, nets[i].rssi, sec[nets[i].security % 3]);
+            http_text(c, 200, buf);
+            kfree(buf);
+        }
     } else if (strcmp(path, "/log?prev") == 0) {
         char *buf = kmalloc(256 * 1024);
         if (buf) { klog_previous(buf, 256 * 1024); http_text(c, 200, buf); kfree(buf); }
@@ -390,7 +416,15 @@ static void http_handle(int i) {
     } else if (strcmp(path, "/debug") == 0) {
         int usbh_debug(char *out, int cap);
         char *buf = kmalloc(8192);
-        if (buf) { int n = eth_debug(buf, 2048); usbh_debug(buf + n, 8192 - n); http_text(c, 200, buf); kfree(buf); }
+        int wcn_debug(char *out, int cap);
+        if (buf) {
+            int n = eth_debug(buf, 2048);
+            n += wcn_debug(buf + n, 1024);
+            n += wifi_debug(buf + n, 1024);
+            usbh_debug(buf + n, 8192 - n);
+            http_text(c, 200, buf);
+            kfree(buf);
+        }
     } else if (strcmp(path, "/screen.bmp") == 0) {
         http_shot(c);
         http[i].c = 0;                         /* the pump owns it now         */

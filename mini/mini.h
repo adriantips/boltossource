@@ -101,6 +101,9 @@ void     klog_init(void);
 uint32_t klog_snapshot(char *out, uint32_t cap);  /* the tail, NUL-terminated */
 uint32_t klog_previous(char *out, uint32_t cap);  /* the boot before's tail      */
 uint32_t klog_boot_count(void);
+/* A few records that outlive a restart, not a power cut (klog.c). */
+int      keep_get(const char *tag, void *out, int cap);   /* its length, or -1 */
+void     keep_put(const char *tag, const void *data, int len);  /* len < 0 removes */
 
 /* ---- the device tree U-Boot or QEMU handed over --------------------------- */
 int         fdt_valid(const void *fdt);

@@ -1,9 +1,11 @@
 /* ===========================================================================
  *  BoltOS Mini  -  mini/app_settings.c
  *
- *  Five pages: Appearance, Screen Sharing, Date & Time, About, Power. Up and
- *  down move through the list on the left; Right or Return goes into a page,
- *  where Left and Right change a value and Return does a thing.
+ *  Seven pages: Wi-Fi, Bluetooth, Appearance, Screen Sharing, Date & Time,
+ *  About, Power. Up and down move through the list on the left; Right or
+ *  Return goes into a page, where Left and Right change a value and Return
+ *  does a thing. What takes a moment (starting the radio, joining) waits for
+ *  the next frame, so the page says what it's doing first.
  * ===========================================================================*/
 #include <stdint.h>
 #include "ui.h"
@@ -11,20 +13,37 @@
 #include "string.h"
 #include "stdio.h"
 #include "stdlib.h"
+#include "wlan.h"
+#include "bt.h"
 
-enum { P_LOOK, P_SHARE, P_TIME, P_ABOUT, P_POWER, NPAGES };
+enum { P_WIFI, P_BT, P_LOOK, P_SHARE, P_TIME, P_ABOUT, P_POWER, NPAGES };
 #ifdef MINI_RELEASE
-static const char *const pages[NPAGES] = { "Appearance", "Network", "Date & Time", "About", "Power" };
-static const int page_glyph[NPAGES] = { G_DOT, G_GLOBE, G_CLOCK, G_CHECK, G_POWER };
+static const char *const pages[NPAGES] = { "Wi-Fi", "Bluetooth", "Appearance", "Network", "Date & Time", "About", "Power" };
+static const int page_glyph[NPAGES] = { G_WIFI, G_BLUETOOTH, G_DOT, G_GLOBE, G_CLOCK, G_CHECK, G_POWER };
 #else
-static const char *const pages[NPAGES] = { "Appearance", "Screen Sharing", "Date & Time", "About", "Power" };
-static const int page_glyph[NPAGES] = { G_DOT, G_MAC, G_CLOCK, G_CHECK, G_POWER };
+static const char *const pages[NPAGES] = { "Wi-Fi", "Bluetooth", "Appearance", "Screen Sharing", "Date & Time", "About", "Power" };
+static const int page_glyph[NPAGES] = { G_WIFI, G_BLUETOOTH, G_DOT, G_MAC, G_CLOCK, G_CHECK, G_POWER };
 #endif
 static int page, in_page, item, confirm;
 static char pw_edit[9]; static int pw_editing, pw_len;
 
+/* Wi-Fi: the network being typed a password for, and work for the next tick. */
+static int wsel = -1, wtyping, wlen, wtop;
+static char wpass[64];
+enum { DO_NONE, DO_WIFI_ON, DO_WIFI_OFF, DO_SCAN, DO_JOIN, DO_LEAVE, DO_BT_ON, DO_BT_SCAN, DO_BT_PAIR, DO_BT_FORGET };
+static int todo, todo_arg;
+static uint64_t last_scan, bt_last_scan;
+#define WROW S(42)
+
+static int wifi_rows(void) {
+    const wifi_net_t *n;
+    return wifi_state() >= WIFI_READY ? wifi_nets(&n) : 0;
+}
+
 static int items(void) {
     switch (page) {
+    case P_WIFI: return 1 + wifi_rows();
+    case P_BT:   return 1 + (bt_state() >= BT_READY ? bt_device_count() : 0);
     case P_LOOK: return 2;
 #ifdef MINI_RELEASE
     case P_SHARE: return 0;
@@ -55,7 +74,29 @@ static void change(int dir) {
     }
 }
 
+static void wifi_activate(void) {
+    if (item == 0) { todo = wifi_state() >= WIFI_READY ? DO_WIFI_OFF : DO_WIFI_ON; return; }
+    const wifi_net_t *n;
+    int k = wifi_nets(&n);
+    if (item - 1 >= k) return;
+    const wifi_net_t *w = &n[item - 1];
+    if (wifi_state() >= WIFI_CONNECTING && !strcmp(wifi_ssid(), w->ssid)) {
+        if (confirm == item + 1) { todo = DO_LEAVE; confirm = 0; } else confirm = item + 1;
+        return;
+    }
+    wsel = item - 1;
+    if (w->security == WIFI_SEC_WPA2) { wtyping = 1; wlen = 0; wpass[0] = 0; }
+    else todo = DO_JOIN;
+}
+
+static void bt_activate(void) {
+    if (item == 0) { todo = bt_state() >= BT_READY ? DO_BT_SCAN : DO_BT_ON; return; }
+    todo = DO_BT_PAIR; todo_arg = item - 1;
+}
+
 static void activate(void) {
+    if (page == P_WIFI) { wifi_activate(); return; }
+    if (page == P_BT) { bt_activate(); return; }
     if (page == P_SHARE && item == 0) { pw_editing = 1; pw_len = 0; pw_edit[0] = 0; }
     else if (page == P_POWER) {
         if (confirm == item + 1) { if (item == 0) board_reboot(); else board_poweroff(); }
@@ -63,9 +104,22 @@ static void activate(void) {
     } else change(1);
 }
 
-static void s_open(void) { in_page = 0; confirm = 0; pw_editing = 0; }
+static void s_open(void) { in_page = 0; confirm = 0; pw_editing = 0; wtyping = 0; }
+
+/* Esc: leave the password being typed (the shell asks this first). */
+int settings_esc(void) {
+    if (wtyping) { wtyping = 0; wsel = -1; return 1; }
+    if (pw_editing) { pw_editing = 0; return 1; }
+    return 0;
+}
 
 static void s_key(const input_ev_t *e) {
+    if (wtyping) {
+        if (e->key == KEY_CHAR && wlen < 63 && e->ch >= 32 && e->ch < 127 && !(e->mods & MOD_CTRL)) { wpass[wlen++] = (char)e->ch; wpass[wlen] = 0; }
+        else if (e->key == KEY_BACKSPACE && wlen) wpass[--wlen] = 0;
+        else if (e->key == KEY_ENTER && wlen >= 8) { wtyping = 0; todo = DO_JOIN; }
+        return;
+    }
     if (pw_editing) {
         if (e->key == KEY_CHAR && pw_len < 8 && e->ch > 32 && e->ch < 127) { pw_edit[pw_len++] = (char)e->ch; pw_edit[pw_len] = 0; }
         else if (e->key == KEY_BACKSPACE && pw_len) pw_edit[--pw_len] = 0;
@@ -81,6 +135,7 @@ static void s_key(const input_ev_t *e) {
         else if ((e->key == KEY_RIGHT || e->key == KEY_ENTER) && items()) { in_page = 1; item = 0; confirm = 0; }
         return;
     }
+    if (page == P_BT && e->key == KEY_DELETE && item > 0) { todo = DO_BT_FORGET; todo_arg = item - 1; return; }
     switch (e->key) {
     case KEY_UP:    if (item > 0) item--; confirm = 0; break;
     case KEY_DOWN:  if (item < items() - 1) item++; confirm = 0; break;
@@ -104,6 +159,19 @@ static void s_pointer(const input_ev_t *e, int x, int y, int w, int h) {
     if (!click) return;
     for (int i = 0; i < NPAGES; i++)
         if (ui_hit(e->x, e->y, list_x, list_y + i * row_h, list_w, row_h)) { page = i; in_page = 0; confirm = 0; return; }
+    if (page == P_WIFI || page == P_BT) {
+        if (wtyping) return;
+        for (int i = 0; i < items(); i++) {
+            int ry = i == 0 ? pane_y : pane_y + S(62) + (i - 1 - (page == P_WIFI ? wtop : 0)) * WROW;
+            if (i > 0 && (i - 1 < (page == P_WIFI ? wtop : 0))) continue;
+            if (ui_hit(e->x, e->y, pane_x, ry, pane_w, S(38))) {
+                in_page = 1;
+                if (item == i) activate(); else { item = i; confirm = 0; }
+                return;
+            }
+        }
+        return;
+    }
     for (int i = 0; i < items(); i++)
         if (ui_hit(e->x, e->y, pane_x, pane_y + i * S(46), pane_w, S(40))) {
             in_page = 1;
@@ -115,6 +183,130 @@ static void s_pointer(const input_ev_t *e, int x, int y, int w, int h) {
 static void heading(int x, int y, const char *t, const char *sub) {
     text_l(x, y, t, FONT_SEMIBOLD, S(22), th.text);
     if (sub) text_l(x, y + S(28), sub, FONT_REGULAR, S(13), th.sub);
+}
+
+static void bars(int x, int cy, int rssi, uint32_t c) {
+    int n = rssi >= -55 ? 4 : rssi >= -67 ? 3 : rssi >= -75 ? 2 : 1;
+    for (int i = 0; i < 4; i++) {
+        int bh = S(4) + i * S(3);
+        gfx_rrect(x + i * S(5), cy + S(7) - bh, S(3), bh, S(1), c, i < n ? 255 : 60);
+    }
+}
+
+static void draw_wifi(int hy, int bottom, int sel) {
+    char b[120], ip[16] = "";
+    int st = wifi_state();
+    netif_t *wl = wifi_netif();
+    if (wl && wl->ip) net_fmt_ip(wl->ip, ip);
+    const char *sub = st == WIFI_OFF ? "Off." : st == WIFI_STARTING ? "Starting the radio" TXT_ELLIPSIS : b;
+    if (st == WIFI_CONNECTED) snprintf(b, sizeof b, "Connected to %s%s%s", wifi_ssid(), ip[0] ? "  " "\xB7" "  " : "", ip);
+    else if (st == WIFI_READY && wifi_scanning() && !wifi_rows()) snprintf(b, sizeof b, "Looking for networks" TXT_ELLIPSIS);
+    else snprintf(b, sizeof b, "%s", wifi_why());
+    if (todo == DO_JOIN) snprintf(b, sizeof b, "Joining" TXT_ELLIPSIS);
+    if (todo == DO_WIFI_ON) sub = "Starting the radio" TXT_ELLIPSIS;
+    const wifi_net_t *n;
+    int k = wifi_nets(&n);
+    if (wtyping && wsel >= 0 && wsel < k) {
+        snprintf(b, sizeof b, "The password for %s", n[wsel].ssid);
+        heading(pane_x, hy, "Wi-Fi", b);
+        char dots[70];
+        int d = 0;
+        for (int i = 0; i < wlen && d < 60; i++) { dots[d++] = '\x95'; }
+        dots[d++] = '_'; dots[d] = 0;
+        ui_row(pane_x, pane_y, pane_w, "Password", dots, 1);
+        text_l(pane_x + S(14), pane_y + S(64), wlen < 8 ? "At least 8 characters.  Esc goes back." :
+               "Return joins.  Esc goes back.", FONT_REGULAR, S(12), th.faint);
+        return;
+    }
+    heading(pane_x, hy, "Wi-Fi", sub);
+    ui_row(pane_x, pane_y, pane_w, "Wi-Fi", st >= WIFI_READY ? "On" : st == WIFI_STARTING ? TXT_ELLIPSIS : "Off", sel == 0);
+    if (st < WIFI_READY) {
+        text_l(pane_x + S(14), pane_y + S(64), "Return turns it on.", FONT_REGULAR, S(12), th.faint);
+        return;
+    }
+    int ly = pane_y + S(62), rows = (bottom - S(40) - ly) / WROW;
+    if (rows < 1) rows = 1;
+    if (sel > 0) {                                          /* keep the chosen one in view */
+        if (sel - 1 < wtop) wtop = sel - 1;
+        if (sel - 1 >= wtop + rows) wtop = sel - rows;
+    }
+    if (wtop > k - rows) wtop = k - rows > 0 ? k - rows : 0;
+    for (int i = wtop; i < k && i < wtop + rows; i++) {
+        int ry = ly + (i - wtop) * WROW;
+        int here = st >= WIFI_CONNECTING && !strcmp(wifi_ssid(), n[i].ssid);
+        ui_row(pane_x, ry, pane_w, n[i].ssid, 0, sel == i + 1);
+        int rx = pane_x + pane_w - S(36), cy = ry + S(19);
+        bars(rx, cy, n[i].rssi, th.text);
+        if (n[i].security != WIFI_SEC_OPEN) ui_glyph(G_LOCK, rx - S(16), cy - S(1), S(18), th.sub);
+        const char *note = here ? (st == WIFI_CONNECTED ? (confirm == i + 2 ? "Return again to leave" : "Connected") : "Joining" TXT_ELLIPSIS)
+                         : n[i].security == WIFI_SEC_OTHER ? "Not supported" : 0;
+        if (note) text_r(rx - S(32), cy, note, FONT_REGULAR, S(13), here ? th.accent : th.faint);
+    }
+    if (!k && !wifi_scanning()) text_l(pane_x + S(14), ly + S(10), "No networks in range.", FONT_REGULAR, S(13), th.sub);
+}
+
+static void draw_bt(int hy, int bottom, int sel) {
+    char b[120];
+    int st = bt_state();
+    const char *sub = st == BT_OFF ? "Off." : st == BT_STARTING ? "Starting the radio" TXT_ELLIPSIS : bt_why();
+    if (todo == DO_BT_ON) sub = "Starting the radio" TXT_ELLIPSIS;
+    heading(pane_x, hy, "Bluetooth", sub);
+    ui_row(pane_x, pane_y, pane_w, st >= BT_READY ? (bt_scanning() ? "Looking for devices" TXT_ELLIPSIS : "Look for devices") : "Bluetooth",
+           st >= BT_READY ? 0 : st == BT_STARTING ? TXT_ELLIPSIS : "Off", sel == 0);
+    if (st < BT_READY) {
+        text_l(pane_x + S(14), pane_y + S(64), "Return turns it on.", FONT_REGULAR, S(12), th.faint);
+        return;
+    }
+    int ly = pane_y + S(62), rows = (bottom - S(60) - ly) / WROW, k = bt_device_count();
+    for (int i = 0; i < k && i < rows; i++) {
+        const bt_device_t *d = bt_device(i);
+        int ry = ly + i * WROW;
+        ui_row(pane_x, ry, pane_w, d->name[0] ? d->name : d->addr_str, 0, sel == i + 1);
+        snprintf(b, sizeof b, "%s", d->state == BTD_CONNECTED ? "Connected" : d->state == BTD_PAIRED ? "Paired" :
+                 d->state == BTD_PAIRING ? "Pairing" TXT_ELLIPSIS : d->kind);
+        text_r(pane_x + pane_w - S(14), ry + S(19), b, FONT_REGULAR, S(13), d->state >= BTD_PAIRED ? th.accent : th.faint);
+    }
+    if (!k) text_l(pane_x + S(14), ly + S(10), bt_scanning() ? "" : "Nothing found yet. Put the device in pairing mode, then look.",
+                   FONT_REGULAR, S(13), th.sub);
+    else text_l(pane_x + S(14), bottom - S(46), "Return pairs or connects.  Delete forgets a device.", FONT_REGULAR, S(12), th.faint);
+}
+
+/* Work that takes a while: after the frame that says it's happening. */
+static int s_tick(void) {
+    static int shown, last_sig;
+    if (todo && !shown) { shown = 1; return 1; }
+    if (todo) {
+        int t = todo, a = todo_arg;
+        todo = DO_NONE; shown = 0;
+        const wifi_net_t *n;
+        int k = wifi_nets(&n);
+        switch (t) {
+        case DO_WIFI_ON:  if (wifi_start() == 0) { wifi_scan(); last_scan = now_ms(); } break;
+        case DO_WIFI_OFF: wifi_stop(); break;
+        case DO_SCAN:     wifi_scan(); last_scan = now_ms(); break;
+        case DO_JOIN:     if (wsel >= 0 && wsel < k) wifi_connect(n[wsel].ssid, wpass); memset(wpass, 0, sizeof wpass); wlen = 0; wsel = -1; break;
+        case DO_LEAVE:    wifi_leave(); break;
+        case DO_BT_ON:    if (bt_start() == 0) { bt_scan(); bt_last_scan = now_ms(); } break;
+        case DO_BT_SCAN:  bt_scan(); bt_last_scan = now_ms(); break;
+        case DO_BT_PAIR:  bt_pair(a); break;
+        case DO_BT_FORGET: bt_forget(a); break;
+        }
+        return 1;
+    }
+    /* While the Wi-Fi page is up: look again now and then. */
+    if (page == P_WIFI && wifi_state() >= WIFI_READY && !wifi_scanning() && !wtyping && now_ms() - last_scan > 20000) {
+        last_scan = now_ms();
+        wifi_scan();
+    }
+    if (page == P_BT && bt_state() >= BT_READY && !bt_scanning() && now_ms() - bt_last_scan > 30000 && !bt_device_count()) {
+        bt_last_scan = now_ms();
+        bt_scan();
+    }
+    const wifi_net_t *n;
+    int sig = wifi_state() * 1000 + wifi_nets(&n) * 10 + wifi_scanning() + bt_state() * 100000 + bt_device_count() * 7 +
+              bt_scanning() * 3 + bt_changes() * 13;
+    if (sig != last_sig) { last_sig = sig; return 1; }
+    return 0;
 }
 
 static void s_draw(int x, int y, int w, int h) {
@@ -137,6 +329,8 @@ static void s_draw(int x, int y, int w, int h) {
     pane_y = hy + S(64);
     int sel = in_page ? item : -1;
     switch (page) {
+    case P_WIFI: draw_wifi(hy, y + h, sel); break;
+    case P_BT:   draw_bt(hy, y + h, sel); break;
     case P_LOOK:
         heading(pane_x, hy, "Appearance", "The wallpaper and the colour that marks what is chosen.");
         ui_row(pane_x, pane_y, pane_w, "Wallpaper", wallpaper_names[th.wallpaper], sel == 0);
@@ -245,4 +439,4 @@ static void s_draw(int x, int y, int w, int h) {
     }
 }
 
-const app_t app_settings = { "Settings", 0x6B7280, G_SETTINGS, s_open, s_key, s_pointer, s_draw, 0 };
+const app_t app_settings = { "Settings", 0x6B7280, G_SETTINGS, s_open, s_key, s_pointer, s_draw, s_tick };

@@ -21,6 +21,8 @@
 #include "buildid.h"
 #include "font.h"
 #include "stdio.h"
+#include "wcn.h"
+#include "wlan.h"
 
 const char *mini_version(void) { return "1.0 (" BOLT_BUILD_ID ")"; }
 
@@ -45,6 +47,7 @@ void mini_pump(void) {
     musb_poll();
     usbh_poll();
     eth_poll();
+    wcn_poll();
     if (g_plat == PLAT_QEMU) virtio_poll();
     net_poll();
     inet_poll();
@@ -102,6 +105,7 @@ void kmain(uint64_t dtb) {
         mini_pump();
         shell_frame();
         netsvc_jobs();
+        wifi_poll();
         if (musb_busy()) continue;
         uint64_t t = now_us();
         wfi();

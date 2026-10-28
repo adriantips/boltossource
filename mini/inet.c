@@ -35,7 +35,7 @@ typedef struct {
     uint32_t xid, offer, server, lease;
     uint64_t next, renew_at;
 } dhcpc_t;
-static dhcpc_t dc[3];
+static dhcpc_t dc[4];
 static int ndc;
 
 static void dhcp_send(dhcpc_t *d, int type) {
@@ -103,6 +103,8 @@ static void dhcp_rx(const udp_meta_t *m, const uint8_t *p, int len) {
             net_fmt_ip(yi, a); net_fmt_ip(router, g); net_fmt_ip(n->dns, s);
             kprintf("[dhcp] %s is %s, router %s, DNS %s (lease %us)\n", n->name, a, g, s, d->lease);
             shell_toast("Online", a);
+            void wifi_got_ip(netif_t *nif);
+            wifi_got_ip(n);
         }
     } else if (type == 6) {                                       /* NAK: start over */
         d->state = DC_DISCOVER; d->tries = 0; d->next = now_ms();
@@ -276,20 +278,30 @@ void inet_wait_clock(uint32_t ms) {
 }
 
 /* ---- together --------------------------------------------------------------------------- */
-void inet_init(void) {
-    for (int i = 0; net_if(i) && ndc < 3; i++) {
+/* A DHCP client for every link but the Mac's, including ones that appear later (Wi-Fi). */
+static void dhcp_adopt(void) {
+    for (int i = 0; net_if(i) && ndc < 4; i++) {
         netif_t *n = net_if(i);
         if (strcmp(n->name, "usb0") == 0) continue;               /* we are that link's server */
+        int have = 0;
+        for (int j = 0; j < ndc; j++) if (dc[j].nif == n) have = 1;
+        if (have) continue;
         dc[ndc].nif = n;
         dc[ndc].state = DC_IDLE;
         ndc++;
     }
+}
+
+void inet_init(void) {
+    dhcp_adopt();
     udp_bind(68, dhcp_rx);
     udp_bind(DNS_PORT, dns_rx);
     udp_bind(NTP_PORT, ntp_rx);
 }
 
 void inet_poll(void) {
+    static netif_t *last;
+    for (int i = 0; net_if(i); i++) if (!net_if(i + 1) && net_if(i) != last) { last = net_if(i); dhcp_adopt(); }
     dhcp_poll();
     ntp_poll();
 }

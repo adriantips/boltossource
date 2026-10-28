@@ -211,6 +211,23 @@ void ui_glyph(int id, int cx, int cy, int sz, uint32_t c) {
         gfx_line(x - s * .26f, y - s * .16f, x + s * .26f, y - s * .16f, t * .7f, c, 255);
         gfx_line(x - s * .26f, y + s * .16f, x + s * .26f, y + s * .16f, t * .7f, c, 255);
         break;
+    case G_WIFI:                                            /* three arcs over a dot */
+        for (int i = 0; i < 3; i++) gfx_arc(x, y + s * .22f, s * (.14f + .13f * (float)i), t, -45, 45, c, 255);
+        gfx_circle(x, y + s * .20f, t * 1.1f, c, 255);
+        break;
+    case G_BLUETOOTH:                                       /* the rune: a line and two loops */
+        gfx_line(x - s * .02f, y - s * .34f, x - s * .02f, y + s * .34f, t, c, 255);
+        gfx_line(x - s * .02f, y - s * .34f, x + s * .18f, y - s * .16f, t, c, 255);
+        gfx_line(x + s * .18f, y - s * .16f, x - s * .22f, y + s * .18f, t, c, 255);
+        gfx_line(x - s * .02f, y + s * .34f, x + s * .18f, y + s * .16f, t, c, 255);
+        gfx_line(x + s * .18f, y + s * .16f, x - s * .22f, y - s * .18f, t, c, 255);
+        break;
+    case G_LOCK:
+        gfx_arc(x, y - s * .06f, s * .16f, t, -90, 90, c, 255);
+        gfx_line(x - s * .16f, y - s * .06f, x - s * .16f, y + s * .02f, t, c, 255);
+        gfx_line(x + s * .16f, y - s * .06f, x + s * .16f, y + s * .02f, t, c, 255);
+        gfx_rrect((int)(x - s * .26f), (int)(y + s * .0f), (int)(s * .52f), (int)(s * .34f), (int)(s * .06f), c, 255);
+        break;
     }
 }
 
@@ -449,6 +466,7 @@ static void handle(const input_ev_t *e) {
     int term_ate = 0;
     if (e->key == KEY_ESC && cur == &app_terminal) { int terminal_esc(void); term_ate = terminal_esc(); }
     if (e->key == KEY_ESC && cur == &app_browser) { int browser_esc(void); term_ate = browser_esc(); }
+    if (e->key == KEY_ESC && cur == &app_settings) { int settings_esc(void); term_ate = settings_esc(); }
     if (term_ate) { dirty = 1; return; }
     if (e->key == KEY_SUPER || (e->key == KEY_ESC && cur)) {
         if (cur) shell_go_home();

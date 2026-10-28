@@ -67,12 +67,12 @@ SRCS=(
 )
 # The web: the desktop's HTTP, TLS 1.2/1.3 and certificate code, and its page
 # engine (HTML, DOM, CSS layout, JS, images), on mini/netcompat.c.
-SRCS+=(net/http.c net/tls.c net/crypto.c net/x509.c net/rsa.c net/p256.c net/p384.c
+SRCS+=(net/http.c net/tls.c net/crypto.c net/wpa.c net/x509.c net/rsa.c net/p256.c net/p384.c
        net/inflate.c kernel/html.c kernel/dom.c kernel/layout.c kernel/js.c kernel/image.c
        mini/netcompat.c mini/webutil.c mini/flow.c mini/app_browser.c mini/player.c
        mini/mp4.c mini/h264.c mini/h264mb.c mini/h264pred.c mini/h264dbk.c mini/h264tab.c)
 # Optional parts: compiled when present, so the kernel grows a file at a time.
-for f in mini/emac.c mini/inet.c mini/net.c mini/netsvc.c mini/vnc.c mini/virtio.c mini/musb.c mini/usbdev.c \
+for f in mini/sdio.c mini/wcn.c mini/wifi.c mini/bt.c mini/emac.c mini/inet.c mini/net.c mini/netsvc.c mini/vnc.c mini/virtio.c mini/musb.c mini/usbdev.c \
          mini/ohci.c mini/usbhost.c mini/shell.c mini/ui.c \
          mini/app_terminal.c mini/app_monitor.c mini/app_notes.c mini/app_clock.c \
          mini/app_settings.c; do
@@ -127,6 +127,50 @@ for spec in "${UIFONTS[@]}"; do
     ( cd "$B" && llvm-objcopy -I binary -O elf64-littleaarch64 "$fname.bfnt" "${fname}_bfnt.o" )
     OBJS+=("$B/${fname}_bfnt.o")
 done
+
+# The Wi-Fi/Bluetooth module's firmware (mini/wcn.c): Unisoc's UWE5622 runs its own
+# Cortex-M code, which the Pi loads into it at every start. It's not ours to put in
+# the tree, so it comes from Orange Pi's firmware repository at a fixed commit, is
+# checked against these hashes, and goes into the kernel the way the fonts do.
+# Without it (offline, say) the kernel builds with no Wi-Fi or Bluetooth.
+FW_COMMIT=dc163b0ed2e0272d9ee31977a0e0a04884f0ae61
+FW_DIR=build/mini-fw/uwe5622
+FW_FILES=(
+    "wcnmodem.bin:119b87ce30875734a67462f7293fb8fe85acf3270fe8b78c978ae24be7715a80"
+    "wifi_2355b001_1ant.ini:1f3c40ec245a8d0b99ad1c23706597d6dd5008ab80cefb7bcc1956efc4e938f7"
+    "bt_configure_pskey.ini:5a7a1f63fd68916201031d4b24a11dc67ae45f6cd695950bc325fb6a487ad0ac"
+    "bt_configure_rf.ini:4044252baefdfa0e884b61d4c42f4d07f74a8f3121ba1923e782968d013d617d"
+)
+mkdir -p "$FW_DIR"
+FW_OK=1
+for spec in "${FW_FILES[@]}"; do
+    f="${spec%%:*}"; want="${spec#*:}"
+    if [ ! -f "$FW_DIR/$f" ]; then
+        curl -fsSL --max-time 60 -o "$FW_DIR/$f.tmp" \
+            "https://raw.githubusercontent.com/orangepi-xunlong/firmware/$FW_COMMIT/$f" 2>/dev/null \
+            && mv "$FW_DIR/$f.tmp" "$FW_DIR/$f" || rm -f "$FW_DIR/$f.tmp"
+    fi
+    got=$(shasum -a 256 "$FW_DIR/$f" 2>/dev/null | cut -d' ' -f1 || true)
+    if [ "$got" != "$want" ]; then FW_OK=0; rm -f "$FW_DIR/$f"; fi
+done
+if [ "$FW_OK" = 1 ]; then
+    # The Wi-Fi calibration .ini, as the binary struct the firmware takes.
+    "$PYTHON" mini/tools/mkwifiini.py "$FW_DIR/wifi_2355b001_1ant.ini" "$FW_DIR/wifi_ini.bin"
+    for f in wcnmodem.bin wifi_ini.bin bt_configure_pskey.ini bt_configure_rf.ini; do
+        o="$(echo "$f" | tr '.-' '__')"
+        ( cd "$FW_DIR" && llvm-objcopy -I binary -O elf64-littleaarch64 "$f" "$o.o" )
+        OBJS+=("$FW_DIR/$o.o")
+    done
+    echo "      Wi-Fi/Bluetooth firmware: UWE5622, $(( $(wc -c < "$FW_DIR/wcnmodem.bin") / 1024 )) KiB"
+else
+    echo "      Wi-Fi/Bluetooth firmware: not available (offline?): building without it"
+    # Every file's start and end at one address: zero bytes, so wcn.c sees none.
+    clang "${CFLAGS[@]}" -x c - -o "$B/obj/nofw.o" <<'NOFW'
+#define EMPTY(n) __asm__(".globl _binary_" n "_start\n.globl _binary_" n "_end\n_binary_" n "_start:\n_binary_" n "_end:\n");
+EMPTY("wcnmodem_bin") EMPTY("wifi_ini_bin") EMPTY("bt_configure_pskey_ini") EMPTY("bt_configure_rf_ini")
+NOFW
+    OBJS+=("$B/obj/nofw.o")
+fi
 
 echo "[3/4] link"
 ld.lld -T mini/linker.ld -o "$B/boltos.elf" "${OBJS[@]}"
