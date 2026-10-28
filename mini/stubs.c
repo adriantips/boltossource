@@ -53,6 +53,7 @@ __attribute__((weak)) void netsvc_init(void) { }
 __attribute__((weak)) void netsvc_poll(void) { }
 __attribute__((weak)) void netsvc_jobs(void) { }
 __attribute__((weak)) int  vnc_clients(void) { return 0; }
+__attribute__((weak)) char g_vnc_password[9] = "boltos";
 __attribute__((weak)) void shell_request_frame(void) { }
 __attribute__((weak)) void shell_toast(const char *t, const char *d) { (void)t; (void)d; }
 __attribute__((weak)) int  shell_frame(void) { return 0; }

@@ -232,7 +232,11 @@ void clock_text(char *hm, int hm_cap, char *date, int date_cap) {
     clock_local(&y, &mo, &d, &h, &mi, &s, &wd);
     snprintf(hm, (size_t)hm_cap, "%d:%02d", h, mi);
     if (clock_known()) snprintf(date, (size_t)date_cap, "%s, %d %s", days[wd], d, months[mo - 1]);
+#ifdef MINI_RELEASE
+    else snprintf(date, (size_t)date_cap, "Clock not set " TXT_ENDASH " plug in the network cable");
+#else
     else snprintf(date, (size_t)date_cap, "Clock not set " TXT_ENDASH " open 10.77.0.1 on your Mac");
+#endif
 }
 
 /* ---- CPU load ------------------------------------------------------------------------------ */
@@ -303,10 +307,20 @@ static void tile_pos(int i, int *x, int *y) {
 static void draw_status(void) {
     const char *s; uint32_t dot;
     netif_t *n = net_if(0);
+#ifdef MINI_RELEASE
+    netif_t *e = eth_netif();
+    char ipb[48];
+    if (e && e->up && e->ip) { char ip[16]; net_fmt_ip(e->ip, ip); snprintf(ipb, sizeof ipb, "Online " TXT_ENDASH " %s", ip); s = ipb; dot = 0x4CC27A; }
+    else if (e && e->up) { s = "Connecting" TXT_ELLIPSIS; dot = 0xF2B24A; }
+    else if (g_plat == PLAT_QEMU) { s = "Running in QEMU"; dot = th.accent; }
+    else { s = "No network " TXT_ENDASH " plug in the Ethernet cable"; dot = 0xF2B24A; }
+    (void)n;
+#else
     if (vnc_clients() > 0) { s = "Screen shared with your Mac"; dot = 0x4CC27A; }
     else if (n && n->up && !strcmp(n->name, "usb0")) { s = "Mac connected " TXT_ENDASH " 10.77.0.1"; dot = 0x4CC27A; }
     else if (g_plat == PLAT_QEMU) { s = "Running in QEMU on your Mac"; dot = th.accent; }
     else { s = "Waiting for the Mac"; dot = 0xF2B24A; }
+#endif
     int w = font_width(FONT_MEDIUM, S(12), s, -1);
     int x = scr_w - S(48) - w;
     gfx_circle((float)(x - S(10)), (float)S(58), (float)S(3), dot, 255);

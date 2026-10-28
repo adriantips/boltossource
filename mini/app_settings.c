@@ -13,15 +13,24 @@
 #include "stdlib.h"
 
 enum { P_LOOK, P_SHARE, P_TIME, P_ABOUT, P_POWER, NPAGES };
+#ifdef MINI_RELEASE
+static const char *const pages[NPAGES] = { "Appearance", "Network", "Date & Time", "About", "Power" };
+static const int page_glyph[NPAGES] = { G_DOT, G_GLOBE, G_CLOCK, G_CHECK, G_POWER };
+#else
 static const char *const pages[NPAGES] = { "Appearance", "Screen Sharing", "Date & Time", "About", "Power" };
 static const int page_glyph[NPAGES] = { G_DOT, G_MAC, G_CLOCK, G_CHECK, G_POWER };
+#endif
 static int page, in_page, item, confirm;
 static char pw_edit[9]; static int pw_editing, pw_len;
 
 static int items(void) {
     switch (page) {
     case P_LOOK: return 2;
+#ifdef MINI_RELEASE
+    case P_SHARE: return 0;
+#else
     case P_SHARE: return 1;
+#endif
     case P_TIME: return 3;
     case P_POWER: return 2;
     }
@@ -141,6 +150,27 @@ static void s_draw(int x, int y, int w, int h) {
         }
         text_l(pane_x, pane_y + S(214), "Left and right change the chosen row.", FONT_REGULAR, S(12), th.faint);
         break;
+#ifdef MINI_RELEASE
+    case P_SHARE: {                                        /* the release build's Network page */
+        netif_t *e = eth_netif();
+        heading(pane_x, hy, "Network", e && e->up ? "The Ethernet socket is connected." : "Plug a network cable into the Ethernet socket.");
+        char ip[16] = "", gw[16] = "", dns[16] = "";
+        if (e && e->ip) { net_fmt_ip(e->ip, ip); net_fmt_ip(e->gw, gw); net_fmt_ip(e->dns, dns); }
+        const char *k[] = { "Ethernet", "Address", "Router", "DNS", "Clock" };
+        char v[5][48];
+        int sp = eth_link();
+        snprintf(v[0], 48, "%s", sp ? (sp == 1000 ? "1 Gbit/s" : sp == 100 ? "100 Mbit/s" : "10 Mbit/s") : "No cable");
+        snprintf(v[1], 48, "%s", ip[0] ? ip : TXT_ENDASH);
+        snprintf(v[2], 48, "%s", gw[0] ? gw : TXT_ENDASH);
+        snprintf(v[3], 48, "%s", dns[0] ? dns : TXT_ENDASH);
+        snprintf(v[4], 48, "%s", clock_known() ? "Set from the network" : "Not set yet");
+        for (int i = 0; i < 5; i++) {
+            text_l(pane_x + S(14), pane_y + i * S(30), k[i], FONT_MEDIUM, S(14), th.sub);
+            text_l(pane_x + S(130), pane_y + i * S(30), v[i], FONT_REGULAR, S(14), th.text);
+        }
+        break;
+    }
+#else
     case P_SHARE: {
         heading(pane_x, hy, "Screen Sharing", "Your Mac sees and drives this screen over the USB-C cable.");
         if (pw_editing) snprintf(b, sizeof b, "%s_", pw_edit);
@@ -157,9 +187,15 @@ static void s_draw(int x, int y, int w, int h) {
         text_l(pane_x + S(14), ty + S(88), b, FONT_REGULAR, S(13), th.sub);
         break;
     }
+#endif
     case P_TIME: {
-        heading(pane_x, hy, "Date & Time", clock_known() ? "Set from your Mac, or by hand here." :
+#ifdef MINI_RELEASE
+        heading(pane_x, hy, "Date & Time", clock_known() ? "Set from the network, or by hand here." :
+                "Not set yet. It sets itself once the Pi is online.");
+#else
+        heading(pane_x, hy, "Date & Time", clock_known() ? "Set from your Mac or the network, or by hand here." :
                 "Not set yet. Open http://10.77.0.1 on your Mac to copy its time.");
+#endif
         int yy, mo, d, hh, mi, s, wd;
         clock_local(&yy, &mo, &d, &hh, &mi, &s, &wd);
         snprintf(b, sizeof b, "%d", hh); ui_row(pane_x, pane_y, pane_w, "Hour", b, sel == 0);
@@ -179,7 +215,11 @@ static void s_draw(int x, int y, int w, int h) {
         if (board_cpu_mhz()) snprintf(v[1], 64, "4 x Cortex-A53 at %u MHz", board_cpu_mhz());
         else snprintf(v[1], 64, "Cortex-A53, emulated");
         snprintf(v[2], 64, "%lu MiB", (unsigned long)(g_ram_size >> 20));
+#ifdef MINI_RELEASE
+        snprintf(v[3], 64, "%d x %d", scr_w, scr_h);
+#else
         snprintf(v[3], 64, "%d x %d, %s", scr_w, scr_h, g_plat == PLAT_QEMU ? "QEMU window and VNC" : "over VNC");
+#endif
         snprintf(v[4], 64, "%s, boot #%u", up, klog_boot_count());
         snprintf(v[5], 64, "Inter, DejaVu Sans Mono");
         for (int i = 0; i < 6; i++) {
@@ -191,7 +231,11 @@ static void s_draw(int x, int y, int w, int h) {
         break;
     }
     case P_POWER:
+#ifdef MINI_RELEASE
+        heading(pane_x, hy, "Power", "The Pi runs from its USB-C power.");
+#else
         heading(pane_x, hy, "Power", "The Pi takes its power from the Mac's USB port.");
+#endif
         ui_row(pane_x, pane_y, pane_w, "Restart", confirm == 1 ? "Return again to restart" : 0, sel == 0);
         ui_row(pane_x, pane_y + S(46), pane_w, "Power off", confirm == 2 ? "Return again to stop" : 0, sel == 1);
         text_l(pane_x + S(14), pane_y + S(110), "Power off stops BoltOS and leaves only the red light on.",
