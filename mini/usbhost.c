@@ -116,6 +116,8 @@ static intr_t ints[MAX_INT];
 static int next_addr = 1;
 static int n_kbd, n_mouse;
 static int mouse_x = 200, mouse_y = 200;
+static uint8_t dbg_desc[256]; static int dbg_desc_n;
+static uint8_t dbg_rep[8][32]; static int dbg_rep_n[8], dbg_rep_i;
 
 int usbh_keyboards(void) { return n_kbd; }
 int usbh_mice(void) { return n_mouse; }
@@ -320,8 +322,18 @@ static int hid_parse_mouse(const uint8_t *d, int len, intr_t *it) {
 
 static void mouse_report(intr_t *it, const uint8_t *r, int n) {
     int dx, dy, wheel = 0, btn;
-    if (it && it->m.ok) {
-        if (it->m.rid) { if (n < 1 || r[0] != it->m.rid) return; r++; n--; }
+    { int k = dbg_rep_i++ & 7; dbg_rep_n[k] = n > 32 ? 32 : n; memcpy(dbg_rep[k], r, (size_t)dbg_rep_n[k]); }
+    int parsed = it && it->m.ok;
+    if (parsed && it->m.rid) {
+        /* Some pads ignore SET_PROTOCOL and keep sending 3-4 byte boot reports with no report ID. */
+        int end = it->m.xo + it->m.xs;
+        if (it->m.yo + it->m.ys > end) end = it->m.yo + it->m.ys;
+        if (it->m.ws && it->m.wo + it->m.ws > end) end = it->m.wo + it->m.ws;
+        if (n < 1 + (end + 7) / 8 || r[0] != it->m.rid) parsed = n >= 3 && n <= 4 ? 0 : -1;
+        else { r++; n--; }
+        if (parsed < 0) return;
+    }
+    if (parsed) {
         btn = it->m.bn ? hid_bits(r, n, it->m.bo, it->m.bn, 0) : (n ? r[0] & 7 : 0);
         dx = hid_bits(r, n, it->m.xo, it->m.xs, it->m.xmin < 0);
         dy = hid_bits(r, n, it->m.yo, it->m.ys, it->m.ymin < 0);
@@ -437,6 +449,7 @@ static int enumerate(int hc, int low, int parent, int port) {
                  * read the real layout. */
                 static uint8_t rd[512];
                 int got = req(d, 0x81, 6, 0x2200, (uint16_t)cur_if, rd, hid_len > 512 ? 512 : hid_len);
+                if (got > 0) { dbg_desc_n = got > 256 ? 256 : got; memcpy(dbg_desc, rd, (size_t)dbg_desc_n); }
                 if (got > 0 && hid_parse_mouse(rd, got, &ints[ii])) {
                     req(d, 0x21, 0x0B, 1, (uint16_t)cur_if, 0, 0);    /* SET_PROTOCOL report */
                     kprintf("[usb] mouse report: x %d@%d y %d@%d id %d%s\n", ints[ii].m.xs, ints[ii].m.xo,
@@ -632,6 +645,14 @@ int usbh_debug(char *out, int cap) {
                       hr(h, HC_RHDESCA), hr(h, 0x4C), hr(h, HC_RHSTATUS), hr(h, 0x3C));
         for (int p = 0; p < h->nports; p++)
             n += snprintf(out + n, (size_t)(cap - n), "   port %d: %08x (dev %d)\n", p + 1, hr(h, HC_RHPORT(p)), h->port_dev[p]);
+    }
+    n += snprintf(out + n, (size_t)(cap - n), "hid desc (%d):", dbg_desc_n);
+    for (int i = 0; i < dbg_desc_n; i++) n += snprintf(out + n, (size_t)(cap - n), " %02x", dbg_desc[i]);
+    n += snprintf(out + n, (size_t)(cap - n), "\n");
+    for (int k = 0; k < 8; k++) if (dbg_rep_n[k]) {
+        n += snprintf(out + n, (size_t)(cap - n), "rep:");
+        for (int i = 0; i < dbg_rep_n[k]; i++) n += snprintf(out + n, (size_t)(cap - n), " %02x", dbg_rep[k][i]);
+        n += snprintf(out + n, (size_t)(cap - n), "\n");
     }
     if (g_plat == PLAT_H618) {
         for (int k = 1; k <= 3; k++) {
