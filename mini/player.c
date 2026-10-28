@@ -75,7 +75,12 @@ static struct {
 static struct {
     volatile int run, solo, started, flushed, eos, err, buffering;
     volatile int next;                   /* the next sample to decode                 */
-    volatile uint32_t req, ack;          /* pause handshake: ack catches up to req    */
+    /* The pause handshake: ack catches up to req. Each on its own cache line: the
+     * decoding core writing ack beside req kept breaking this core's exclusive
+     * access to req, and an atomic increment of it never finished. */
+    volatile uint32_t req __attribute__((aligned(64)));
+    volatile uint32_t ack __attribute__((aligned(64)));
+    uint8_t pad_ __attribute__((aligned(64)));
     volatile uint32_t wr, rd;            /* the ring: [rd, wr) decoded, not yet shown */
     surface_t ring[RING];
     volatile int ring_ms[RING];
@@ -207,6 +212,25 @@ static int dl_tick(int ms) {
             int status = 0;
             const char *sp = strchr(P.hdr, ' ');
             if (sp) status = (int)(sp[1] - '0') * 100 + (sp[2] - '0') * 10 + (sp[3] - '0');
+            if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
+                /* The CDN sends us to another of its servers: go there, same range. */
+                const char *loc = strcasestr(P.hdr, "\r\nLocation: ");
+                char u[2048] = "";
+                if (loc) {
+                    loc += 12;
+                    int k = 0;
+                    while (loc[k] && loc[k] != '\r' && k < (int)sizeof u - 1) { u[k] = loc[k]; k++; }
+                    u[k] = 0;
+                }
+                drop_conn();
+                if (!u[0] || strncmp(u, "https://", 8) || ++P.failures > 4) { fail("The video's server sent it somewhere this can't follow"); return got; }
+                url_host(u, P.host, sizeof P.host);
+                const char *path = strchr(u + 8, '/');
+                snprintf(P.path, sizeof P.path, "%s", path ? path : "/");
+                kprintf("[yt] the video moved to %s\n", P.host);
+                P.body_at = P.req_end;                      /* ask again from the same place */
+                return got;
+            }
             if (status != 206 && status != 200) {
                 char w[80]; snprintf(w, sizeof w, "The video's server said %d", status);
                 drop_conn(); fail(w); return got;
@@ -316,8 +340,9 @@ static void worker(void *arg) {
     (void)arg;
     for (;;) {
         while (!__atomic_load_n(&W.run, __ATOMIC_ACQUIRE)) {
-            __atomic_store_n(&W.ack, __atomic_load_n(&W.req, __ATOMIC_ACQUIRE), __ATOMIC_RELEASE);
-            __asm__ volatile("yield");
+            uint32_t q = __atomic_load_n(&W.req, __ATOMIC_ACQUIRE);
+            if (__atomic_load_n(&W.ack, __ATOMIC_RELAXED) != q) __atomic_store_n(&W.ack, q, __ATOMIC_RELEASE);
+            for (int i = 0; i < 64; i++) __asm__ volatile("yield");
         }
         if (!decode_step()) for (int i = 0; i < 2000; i++) __asm__ volatile("yield");
     }
@@ -327,7 +352,8 @@ static void worker(void *arg) {
 static void pause_worker(void) {
     if (!W.started || W.solo) { W.run = 0; return; }
     __atomic_store_n(&W.run, 0, __ATOMIC_RELEASE);
-    uint32_t r = __atomic_add_fetch(&W.req, 1, __ATOMIC_SEQ_CST);
+    uint32_t r = W.req + 1;                                 /* only this core writes it */
+    __atomic_store_n(&W.req, r, __ATOMIC_SEQ_CST);
     uint64_t end = now_ms() + 2000;
     while (__atomic_load_n(&W.ack, __ATOMIC_ACQUIRE) != r && now_ms() < end) __asm__ volatile("yield");
 }

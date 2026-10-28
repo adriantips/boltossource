@@ -79,7 +79,7 @@ void mmu_enable(void) {
 /* ---- the other cores ------------------------------------------------------------ *
  *  A core started with cpu_start() runs fn(arg) and nothing else: no
  *  interrupts, no timer of its own, no shell. The video decoder is one.    */
-volatile uint32_t mini_heap_lock;
+volatile uint32_t mini_heap_lock[16] __attribute__((aligned(64)));   /* word 0; a cache line of its own */
 extern uint8_t secondary_stacks[];
 uint8_t secondary_stacks[4 * 0x40000] __attribute__((aligned(16)));
 static void (*volatile sec_fn[4])(void *);

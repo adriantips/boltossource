@@ -118,6 +118,8 @@ typedef struct {
     int      nrep;
 } link_t;
 
+static void give_up(int i, const char *why);
+
 static struct {
     int state;
     char why[120];
@@ -136,7 +138,7 @@ static struct {
     bt_device_t dev[BT_MAXDEV];
     link_t lk[BT_MAXDEV];
     int ndev, scanning, inquiring, le_scanning, naming, changes, pairing;
-    uint64_t scan_end;
+    uint64_t scan_end, pair_deadline;
     uint32_t evts, acls, cmds;
 } B;
 
@@ -515,7 +517,7 @@ static void hid_ready(int i) {
         if (l->sdp_buf) l2_connect(l, PSM_SDP);
     }
     B.dev[i].state = BTD_CONNECTED;
-    B.pairing = 0;
+    B.pairing = 0; B.pair_deadline = 0;
     say("%s is connected", B.dev[i].name[0] ? B.dev[i].name : B.dev[i].addr_str);
 }
 
@@ -552,7 +554,7 @@ static void signaling(int i, const uint8_t *p, int len) {
         case 0x03: {                                        /* Connection Response to ours */
             uint16_t dcid = g16(d), scid = g16(d + 2), res = g16(d + 4);
             if (res == 1) break;                            /* pending */
-            if (res) { say("The device refused the HID connection (%d)", res); break; }
+            if (res) { give_up(i, "isn't a keyboard, mouse or controller."); break; }
             if (scid == l->ctl_l) l->ctl_r = dcid;
             else if (scid == l->int_l) l->int_r = dcid;
             else if (scid == l->sdp_l) l->sdp_r = dcid;
@@ -822,6 +824,7 @@ static void event_in(const uint8_t *p, int len) {
         if (n >= 10 && (i = find(d)) >= 0) {
             uint32_t pk = (uint32_t)(d[6] | d[7] << 8 | d[8] << 16 | (uint32_t)d[9] << 24);
             say("Type %06u on %s, then press Enter", (unsigned)pk, B.dev[i].name[0] ? B.dev[i].name : "the keyboard");
+            B.pair_deadline = now_ms() + 60000;
         }
         break;
     case 0x18:                                              /* Link Key Notification: paired */
@@ -947,6 +950,7 @@ static void smp_in(int i, const uint8_t *p, int n) {
             pk %= 1000000;
             l->tk[0] = (uint8_t)pk; l->tk[1] = (uint8_t)(pk >> 8); l->tk[2] = (uint8_t)(pk >> 16);
             say("Type %06u on %s, then press Enter", (unsigned)pk, B.dev[i].name[0] ? B.dev[i].name : "the keyboard");
+            B.pair_deadline = now_ms() + 60000;
         }
         crypto_rand_bytes(l->mrand, 16);
         m[0] = 0x03;
@@ -967,8 +971,7 @@ static void smp_in(int i, const uint8_t *p, int n) {
         if (memcmp(want, l->sconf, 16)) {
             uint8_t f[2] = { 0x05, 0x04 };                  /* failed: confirm value */
             smp_send(l, f, 2);
-            say("Pairing with %s failed: the passkey didn't match", B.dev[i].name[0] ? B.dev[i].name : B.dev[i].addr_str);
-            B.pairing = 0;
+            give_up(i, "didn't take the passkey. Try again.");
             return;
         }
         memcpy(r, l->mrand, 8);                             /* s1: r1' = Srand's low half, r2' = Mrand's */
@@ -978,10 +981,12 @@ static void smp_in(int i, const uint8_t *p, int n) {
         le_start_enc(i, zero, 0, stk);
         break;
     }
-    case 0x05:                                              /* Pairing Failed */
-        say("%s refused pairing (reason %d)", B.dev[i].name[0] ? B.dev[i].name : B.dev[i].addr_str, n > 1 ? p[1] : 0);
-        B.pairing = 0;
+    case 0x05: {                                            /* Pairing Failed */
+        char w[48];
+        snprintf(w, sizeof w, "refused to pair (reason %d).", n > 1 ? p[1] : 0);
+        give_up(i, w);
         break;
+    }
     case 0x06: if (n >= 17) { memcpy(l->ltk, p + 1, 16); } break;               /* Encryption Information */
     case 0x07: if (n >= 11) { l->ediv = g16(p + 1); memcpy(l->rnd, p + 3, 8); l->have_ltk = 1; l->have_key = 1; save_keys(); } break;
     case 0x08: if (n >= 17) { memcpy(l->irk, p + 1, 16); l->have_irk = 1; } break; /* Identity Information */
@@ -1043,7 +1048,7 @@ static void gatt_step(int i) {
         if (l->g_rep >= l->nrep) {
             l->g_step = G_DONE;
             B.dev[i].state = BTD_CONNECTED;
-            B.pairing = 0;
+            B.pairing = 0; B.pair_deadline = 0;
             say("%s is connected", B.dev[i].name[0] ? B.dev[i].name : B.dev[i].addr_str);
             return;
         }
@@ -1073,7 +1078,11 @@ static void att_in(int i, const uint8_t *p, int n) {
         l->g_step = G_SERVICES; l->g_next = 1;
         break;
     case G_SERVICES:
-        if (err) { if (!l->g_start) { say("%s has no HID service", B.dev[i].name); return; } l->g_step = G_CHARS; l->g_next = l->g_start; break; }
+        if (err) {
+            if (!l->g_start) { l->g_step = 0; give_up(i, "isn't a keyboard, mouse or controller."); return; }
+            l->g_step = G_CHARS; l->g_next = l->g_start;
+            break;
+        }
         if (op == 0x11 && n >= 2) {
             int len = p[1];
             for (int o = 2; len >= 6 && o + len <= n; o += len) {
@@ -1082,7 +1091,8 @@ static void att_in(int i, const uint8_t *p, int n) {
                 l->g_next = (uint16_t)(en + 1);
                 if (en == 0xFFFF) { l->g_next = 0; }
             }
-            if (!l->g_next) { l->g_step = l->g_start ? G_CHARS : G_DONE; l->g_next = l->g_start; }
+            if (!l->g_next && !l->g_start) { l->g_step = 0; give_up(i, "isn't a keyboard, mouse or controller."); return; }
+            if (!l->g_next) { l->g_step = G_CHARS; l->g_next = l->g_start; }
         }
         break;
     case G_CHARS:
@@ -1252,11 +1262,38 @@ static void rx(int chn, const uint8_t *p, int len) {
     }
 }
 
+/* ---- giving up on a device ------------------------------------------------------------------------ */
+#define OP_CREATE_CONN_CANCEL OP(1, 0x08)
+static void le_cancel_wait(void);
+
+static void drop_link(int i, int reason) {
+    link_t *l = &B.lk[i];
+    if (l->handle >= 0) { uint8_t dc[3]; p16(dc, (uint16_t)l->handle); dc[2] = (uint8_t)reason; cmd(OP_DISCONNECT, dc, 3); }
+    else if (B.dev[i].state == BTD_PAIRING) {
+        if (B.dev[i].le) cmd(OP(8, 0x0E), 0, 0);            /* LE Create Connection Cancel */
+        else cmd(OP_CREATE_CONN_CANCEL, B.dev[i].addr, 6);
+    }
+}
+
+/* Not something Mini can use (or it never answered): let go, and don't keep it. */
+static void give_up(int i, const char *why) {
+    const char *nm = B.dev[i].name[0] ? B.dev[i].name : B.dev[i].addr_str;
+    drop_link(i, 0x13);
+    if (B.dev[i].state == BTD_PAIRING || !B.lk[i].map) {    /* paired just now and of no use: forget it */
+        if (B.lk[i].have_key && B.dev[i].state != BTD_CONNECTED) { B.lk[i].have_key = 0; B.lk[i].have_ltk = 0; save_keys(); }
+    }
+    B.dev[i].state = B.lk[i].have_key ? BTD_PAIRED : BTD_FOUND;
+    B.pairing = 0;
+    B.changes++;
+    say("%s %s", nm, why);
+}
+
 /* ---- starting ------------------------------------------------------------------------------------- */
 int bt_start(void) {
     if (B.state == BT_READY || B.state == BT_STARTING) return 0;
     B.state = BT_STARTING;
     B.changes++;
+    keep_put("btoff", 0, -1);
     shell_request_frame();
     if (wcn_start()) { B.state = BT_FAILED; say("%s", wcn_why()); return -1; }
     wcn_set_rx(CH_RX, rx);
@@ -1345,6 +1382,8 @@ int bt_pair(int vi) {
     bt_device_t *d = &B.dev[i];
     link_t *l = &B.lk[i];
     if (l->handle >= 0) { say("%s is already connected", d->name[0] ? d->name : d->addr_str); return 0; }
+    if (!d->le && ((d->cod >> 8) & 0x1F) == 4) { say("Mini has no sound output yet, so headphones and speakers can't be used."); return -1; }
+    B.pair_deadline = now_ms() + 30000;
     if (B.inquiring) { cmd(OP_INQUIRY_CANCEL, 0, 0); B.inquiring = 0; }
     if (B.le_scanning) { uint8_t se[2] = { 0, 0 }; cmd(OP_LE_SCAN_ENABLE, se, 2); B.le_scanning = 0; }
     B.scanning = 0;
@@ -1376,6 +1415,40 @@ int bt_pair(int vi) {
     return cmd(OP_CREATE_CONN, p, 13);
 }
 
+int bt_cancel(int vi) {
+    int i = real(vi);
+    if (i < 0 || B.dev[i].state != BTD_PAIRING) return -1;
+    give_up(i, "wasn't paired.");
+    return 0;
+}
+
+int bt_disconnect(int vi) {
+    int i = real(vi);
+    if (i < 0 || B.lk[i].handle < 0) return -1;
+    drop_link(i, 0x13);
+    return 0;
+}
+
+/* Off: let every device go, stop looking and listening, and turn the controller's
+ * Bluetooth off (the chip stays up for Wi-Fi). Stays off across a restart. */
+void bt_stop(void) {
+    if (B.state != BT_READY) return;
+    if (B.inquiring) { cmd(OP_INQUIRY_CANCEL, 0, 0); B.inquiring = 0; }
+    if (B.le_scanning) { uint8_t se[2] = { 0, 0 }; cmd(OP_LE_SCAN_ENABLE, se, 2); B.le_scanning = 0; }
+    le_cancel_wait();
+    for (int i = 0; i < B.ndev; i++) if (B.lk[i].handle >= 0) drop_link(i, 0x15);   /* powering off */
+    uint8_t scan = 0;
+    cmd_wait(OP_WRITE_SCAN, &scan, 1, 1000);
+    uint8_t dis[3] = { 0, 0, 0 };
+    cmd_wait(OP_VSC_ENABLE, dis, 3, 1000);
+    for (int i = 0; i < B.ndev; i++) { B.lk[i].handle = -1; if (B.dev[i].state > BTD_PAIRED) B.dev[i].state = BTD_PAIRED; }
+    B.scanning = 0; B.pairing = 0;
+    B.state = BT_OFF;
+    uint8_t off = 1;
+    keep_put("btoff", &off, 1);
+    say("Off.");
+}
+
 int bt_forget(int vi) {
     int i = real(vi);
     if (i < 0) return -1;
@@ -1392,7 +1465,7 @@ void bt_poll(void) {
     static int autostarted;
     if (!autostarted && B.state == BT_OFF && now_ms() > 4000 && g_plat == PLAT_H618) {
         autostarted = 1;                                    /* a paired keyboard should just work */
-        if (keep_get("bt", 0, 0) >= 0) bt_start();
+        if (keep_get("bt", 0, 0) >= 0 && keep_get("btoff", 0, 0) < 0) bt_start();
         return;
     }
     if (B.state != BT_READY) return;
@@ -1408,6 +1481,12 @@ void bt_poll(void) {
         link_t *l = &B.lk[i];
         if (l->rep_key && now_ms() >= l->rep_at) { input_key(l->rep_key, l->rep_ch, l->rep_mods, SRC_BT); l->rep_at = now_ms() + 33; }
         if (l->handle >= 0) hid_repeat(&l->hs, SRC_BT);
+    }
+    if (B.pairing && B.pair_deadline && now_ms() > B.pair_deadline) {
+        B.pair_deadline = 0;
+        for (int i = 0; i < B.ndev; i++)
+            if (B.dev[i].state == BTD_PAIRING) give_up(i, "didn't answer. Check it's in pairing mode, then try again.");
+        B.pairing = 0;
     }
     static uint64_t le_at;
     if (!le_waiting && !B.pairing && !B.scanning && now_ms() > le_at) { le_at = now_ms() + 5000; le_autoconnect(); }

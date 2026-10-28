@@ -555,7 +555,24 @@ void musb_poll(void) {
         queue_notifications();
     }
     if (tx & 1) ep0_irq();
+    if ((usb & I_SUSPEND) && u.configured) kprintf("[usb-c] the Mac suspended the link\n");
     if (u.configured && u.data_alt == 1) {
+        /* Say "connected" again every few seconds. When the Mac sleeps, its ECM
+         * driver can come back believing the link is down with no bus reset or
+         * resume for us to see, and only a fresh notice brings it round. If it
+         * isn't reading the interrupt endpoint, the notice just waits there. */
+        static uint64_t again_at;
+        if (!note_pending && now_ms() >= again_at) {
+            again_at = now_ms() + 2000;
+            w8(M_INDEX, EP_INT);
+            int busy = r16(M_TXCSR) & TX_PKTRDY;
+            w8(M_INDEX, 0);
+            if (!busy) {
+                memset(note, 0, 8);
+                note[0] = 0xA1; note[1] = 0x00; note[2] = 1;  /* NETWORK_CONNECTION: connected */
+                note_len = 8; note_off = 0; note_pending = 1;
+            }
+        }
         bulk_out_pump();
         bulk_in_pump();
         notify_pump();

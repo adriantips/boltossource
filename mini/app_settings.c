@@ -30,10 +30,13 @@ static char pw_edit[9]; static int pw_editing, pw_len;
 /* Wi-Fi: the network being typed a password for, and work for the next tick. */
 static int wsel = -1, wtyping, wlen, wtop, btop;
 static char wpass[64];
-enum { DO_NONE, DO_WIFI_ON, DO_WIFI_OFF, DO_SCAN, DO_JOIN, DO_LEAVE, DO_BT_ON, DO_BT_SCAN, DO_BT_PAIR, DO_BT_FORGET };
+enum { DO_NONE, DO_WIFI_ON, DO_WIFI_OFF, DO_SCAN, DO_JOIN, DO_LEAVE, DO_BT_ON, DO_BT_OFF, DO_BT_SCAN, DO_BT_PAIR, DO_BT_FORGET, DO_BT_CANCEL };
 static int todo, todo_arg;
 static uint64_t last_scan, bt_last_scan;
 #define WROW S(42)
+static void toggle(int x, int y, int on, int busy);
+static int bt_npaired(void);
+static int bt_row_y(int i, int ly, int np);
 
 static int wifi_rows(void) {
     const wifi_net_t *n;
@@ -90,8 +93,11 @@ static void wifi_activate(void) {
 }
 
 static void bt_activate(void) {
-    if (item == 0) { todo = bt_state() >= BT_READY ? DO_BT_SCAN : DO_BT_ON; return; }
-    todo = DO_BT_PAIR; todo_arg = item - 1;
+    if (item == 0) { todo = bt_state() >= BT_READY ? DO_BT_OFF : DO_BT_ON; return; }
+    const bt_device_t *d = bt_device(item - 1);
+    if (!d) return;
+    if (d->state == BTD_PAIRING) { todo = DO_BT_CANCEL; todo_arg = item - 1; }
+    else if (d->state != BTD_CONNECTED) { todo = DO_BT_PAIR; todo_arg = item - 1; }
 }
 
 static void activate(void) {
@@ -135,7 +141,13 @@ static void s_key(const input_ev_t *e) {
         else if ((e->key == KEY_RIGHT || e->key == KEY_ENTER) && items()) { in_page = 1; item = 0; confirm = 0; }
         return;
     }
-    if (page == P_BT && e->key == KEY_DELETE && item > 0) { todo = DO_BT_FORGET; todo_arg = item - 1; return; }
+    if (page == P_BT && (e->key == KEY_DELETE || e->key == KEY_BACKSPACE) && item > 0) {
+        const bt_device_t *d = bt_device(item - 1);
+        if (d && d->state >= BTD_PAIRED) {                  /* forget: press it twice */
+            if (confirm == item + 1) { todo = DO_BT_FORGET; todo_arg = item - 1; confirm = 0; } else confirm = item + 1;
+            return;
+        }
+    }
     switch (e->key) {
     case KEY_UP:    if (item > 0) item--; confirm = 0; break;
     case KEY_DOWN:  if (item < items() - 1) item++; confirm = 0; break;
@@ -161,9 +173,10 @@ static void s_pointer(const input_ev_t *e, int x, int y, int w, int h) {
         if (ui_hit(e->x, e->y, list_x, list_y + i * row_h, list_w, row_h)) { page = i; in_page = 0; confirm = 0; return; }
     if (page == P_WIFI || page == P_BT) {
         if (wtyping) return;
+        int np = bt_npaired(), ly = pane_y + S(56), off = bt_row_y(btop, ly, np) - bt_row_y(0, ly, np);
         for (int i = 0; i < items(); i++) {
             int top = page == P_WIFI ? wtop : btop;
-            int ry = i == 0 ? pane_y : pane_y + S(62) + (i - 1 - top) * WROW;
+            int ry = i == 0 ? pane_y : page == P_WIFI ? pane_y + S(62) + (i - 1 - top) * WROW : bt_row_y(i - 1, ly, np) - off;
             if (i > 0 && i - 1 < top) continue;
             if (ui_hit(e->x, e->y, pane_x, ry, pane_w, S(38))) {
                 in_page = 1;
@@ -220,11 +233,9 @@ static void draw_wifi(int hy, int bottom, int sel) {
         return;
     }
     heading(pane_x, hy, "Wi-Fi", sub);
-    ui_row(pane_x, pane_y, pane_w, "Wi-Fi", st >= WIFI_READY ? "On" : st == WIFI_STARTING ? TXT_ELLIPSIS : "Off", sel == 0);
-    if (st < WIFI_READY) {
-        text_l(pane_x + S(14), pane_y + S(64), "Return turns it on.", FONT_REGULAR, S(12), th.faint);
-        return;
-    }
+    ui_row(pane_x, pane_y, pane_w, "Wi-Fi", 0, sel == 0);
+    toggle(pane_x + pane_w - S(12), pane_y, st >= WIFI_READY || todo == DO_WIFI_ON, st == WIFI_STARTING || todo == DO_WIFI_ON);
+    if (st < WIFI_READY) return;
     int ly = pane_y + S(62), rows = (bottom - S(40) - ly) / WROW;
     if (rows < 1) rows = 1;
     if (sel > 0) {                                          /* keep the chosen one in view */
@@ -246,37 +257,77 @@ static void draw_wifi(int hy, int bottom, int sel) {
     if (!k && !wifi_scanning()) text_l(pane_x + S(14), ly + S(10), "No networks in range.", FONT_REGULAR, S(13), th.sub);
 }
 
-static void draw_bt(int hy, int bottom, int sel) {
-    char b[120];
-    int st = bt_state();
-    const char *sub = st == BT_OFF ? "Off." : st == BT_STARTING ? "Starting the radio" TXT_ELLIPSIS : bt_why();
-    if (todo == DO_BT_ON) sub = "Starting the radio" TXT_ELLIPSIS;
-    heading(pane_x, hy, "Bluetooth", sub);
-    ui_row(pane_x, pane_y, pane_w, st >= BT_READY ? (bt_scanning() ? "Looking for devices" TXT_ELLIPSIS : "Look for devices") : "Bluetooth",
-           st >= BT_READY ? 0 : st == BT_STARTING ? TXT_ELLIPSIS : "Off", sel == 0);
-    if (st < BT_READY) {
-        text_l(pane_x + S(14), pane_y + S(64), "Return turns it on.", FONT_REGULAR, S(12), th.faint);
-        return;
-    }
-    int ly = pane_y + S(62), rows = (bottom - S(60) - ly) / WROW, k = bt_device_count();
-    if (rows < 1) rows = 1;
-    if (sel > 0) {                                          /* keep the chosen one in view */
-        if (sel - 1 < btop) btop = sel - 1;
-        if (sel - 1 >= btop + rows) btop = sel - rows;
-    }
-    if (btop > k - rows) btop = k - rows > 0 ? k - rows : 0;
-    for (int i = btop; i < k && i < btop + rows; i++) {
-        const bt_device_t *d = bt_device(i);
-        int ry = ly + (i - btop) * WROW;
-        ui_row(pane_x, ry, pane_w, d->name[0] ? d->name : d->addr_str, 0, sel == i + 1);
-        snprintf(b, sizeof b, "%s", d->state == BTD_CONNECTED ? "Connected" : d->state == BTD_PAIRED ? "Paired" :
-                 d->state == BTD_PAIRING ? "Pairing" TXT_ELLIPSIS : d->kind);
-        text_r(pane_x + pane_w - S(14), ry + S(19), b, FONT_REGULAR, S(13), d->state >= BTD_PAIRED ? th.accent : th.faint);
-    }
-    if (!k) text_l(pane_x + S(14), ly + S(10), bt_scanning() ? "" : "Nothing found yet. Put the device in pairing mode, then look.",
-                   FONT_REGULAR, S(13), th.sub);
-    else text_l(pane_x + S(14), bottom - S(46), "Return pairs or connects.  Delete forgets a device.", FONT_REGULAR, S(12), th.faint);
+/* An on/off switch, as on a phone: a pill with a knob, right-aligned in a row. */
+static void toggle(int x, int y, int on, int busy) {
+    int w = S(44), hh = S(26), tx = x - w, ty = y + (S(38) - hh) / 2;
+    gfx_rrect(tx, ty, w, hh, hh / 2, on ? th.accent : th.faint, on ? 255 : 110);
+    int kx = on ? tx + w - hh + S(2) : tx + S(2);
+    gfx_circle((float)(kx + (hh - S(4)) / 2), (float)(ty + hh / 2), (float)(hh - S(4)) / 2, 0xFFFFFF, busy ? 160 : 255);
 }
+
+/* The rows below the switch: "My Devices", then "Other Devices", each with a small
+ * heading. Paired ones come first in bt_device()'s order. */
+static int bt_npaired(void) {
+    int n = 0;
+    for (int i = 0; bt_device(i); i++) if (bt_device(i)->state >= BTD_PAIRING) n++;
+    return n;
+}
+
+static int bt_row_y(int i, int ly, int np) {               /* device i's row, before scrolling */
+    int y = ly + i * WROW + S(24);
+    if (np && i >= np) y += S(30);
+    return y;
+}
+
+static void draw_bt(int hy, int bottom, int sel) {
+    int st = bt_state();
+    const char *sub = st == BT_OFF ? "Off." : st == BT_STARTING ? "Starting" TXT_ELLIPSIS : bt_why();
+    if (todo == DO_BT_ON) sub = "Starting" TXT_ELLIPSIS;
+    heading(pane_x, hy, "Bluetooth", sub);
+    ui_row(pane_x, pane_y, pane_w, "Bluetooth", 0, sel == 0);
+    toggle(pane_x + pane_w - S(12), pane_y, st >= BT_READY || todo == DO_BT_ON, st == BT_STARTING || todo == DO_BT_ON);
+    if (st < BT_READY) return;
+    int ly = pane_y + S(56), k = bt_device_count(), np = bt_npaired();
+    int view = bottom - S(56) - ly;
+    if (sel > 0) {                                          /* keep the chosen one in view */
+        int top = bt_row_y(btop, ly, np) - S(24), y = bt_row_y(sel - 1, ly, np);
+        if (sel - 1 < btop) btop = sel - 1;
+        else if (y + WROW - top > view) btop = sel - 1 - view / WROW + 1;
+        if (btop < 0) btop = 0;
+    }
+    int off = bt_row_y(btop, ly, np) - bt_row_y(0, ly, np);
+    if (np && btop == 0) text_l(pane_x + S(14), ly + S(10), "My Devices", FONT_SEMIBOLD, S(12), th.sub);
+    for (int i = btop; i < k; i++) {
+        const bt_device_t *d = bt_device(i);
+        int ry = bt_row_y(i, ly, np) - off;
+        if (ry + S(38) > bottom - S(50)) break;
+        if (i == np && (np || btop == 0)) {
+            text_l(pane_x + S(14), ry - S(14), "Other Devices", FONT_SEMIBOLD, S(12), th.sub);
+            if (bt_scanning()) text_r(pane_x + pane_w - S(14), ry - S(14), "Looking" TXT_ELLIPSIS, FONT_REGULAR, S(12), th.faint);
+        }
+        ui_row(pane_x, ry, pane_w, d->name[0] ? d->name : d->addr_str, 0, sel == i + 1);
+        const char *v = d->state == BTD_CONNECTED ? "Connected" : d->state == BTD_PAIRING ? "Pairing" TXT_ELLIPSIS :
+                        d->state == BTD_PAIRED ? "Not Connected" : d->kind;
+        if (confirm == i + 2 && d->state >= BTD_PAIRED) v = "Press Backspace again to forget";
+        text_r(pane_x + pane_w - S(14), ry + S(19), v, FONT_REGULAR, S(13), d->state == BTD_CONNECTED ? th.accent : th.faint);
+    }
+    if (k == np) {
+        int ry = bt_row_y(np, ly, np) - off;
+        if (ry < bottom - S(60)) {
+            text_l(pane_x + S(14), ry - S(14), "Other Devices", FONT_SEMIBOLD, S(12), th.sub);
+            text_l(pane_x + S(14), ry + S(12), bt_scanning() ? "Looking" TXT_ELLIPSIS : "Put a device in pairing mode to see it here.",
+                   FONT_REGULAR, S(13), th.faint);
+        }
+    }
+    const bt_device_t *cur = sel > 0 ? bt_device(sel - 1) : 0;
+    const char *hint = !cur ? "Return turns Bluetooth off." : cur->state == BTD_PAIRING ? "Return stops pairing." :
+                       cur->state == BTD_CONNECTED ? "Backspace forgets it." : cur->state == BTD_PAIRED ? "Return connects.  Backspace forgets it." :
+                       "Return pairs.";
+    text_l(pane_x + S(14), bottom - S(40), hint, FONT_REGULAR, S(12), th.faint);
+}
+
+static uint64_t drawn_at;                /* Settings drew lately: it's the app on screen */
+static int cur_is_settings(void) { return now_ms() - drawn_at < 3000; }
 
 /* Work that takes a while: after the frame that says it's happening. */
 static int s_tick(void) {
@@ -294,9 +345,11 @@ static int s_tick(void) {
         case DO_JOIN:     if (wsel >= 0 && wsel < k) wifi_connect(n[wsel].ssid, wpass); memset(wpass, 0, sizeof wpass); wlen = 0; wsel = -1; break;
         case DO_LEAVE:    wifi_leave(); break;
         case DO_BT_ON:    if (bt_start() == 0) { bt_scan(); bt_last_scan = now_ms(); } break;
+        case DO_BT_OFF:   bt_stop(); break;
         case DO_BT_SCAN:  bt_scan(); bt_last_scan = now_ms(); break;
         case DO_BT_PAIR:  bt_pair(a); break;
         case DO_BT_FORGET: bt_forget(a); break;
+        case DO_BT_CANCEL: bt_cancel(a); break;
         }
         return 1;
     }
@@ -305,7 +358,7 @@ static int s_tick(void) {
         last_scan = now_ms();
         wifi_scan();
     }
-    if (page == P_BT && bt_state() >= BT_READY && !bt_scanning() && now_ms() - bt_last_scan > 30000 && !bt_device_count()) {
+    if (page == P_BT && cur_is_settings() && bt_state() >= BT_READY && !bt_scanning() && now_ms() - bt_last_scan > 13000) {
         bt_last_scan = now_ms();
         bt_scan();
     }
@@ -318,6 +371,7 @@ static int s_tick(void) {
 
 static void s_draw(int x, int y, int w, int h) {
     (void)h;
+    drawn_at = now_ms();
     char b[96];
     /* the list */
     list_x = x + S(16); list_y = y + S(16); list_w = S(220); row_h = S(44);

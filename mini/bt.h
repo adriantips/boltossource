@@ -27,6 +27,9 @@ int  bt_device_count(void);
 const bt_device_t *bt_device(int i);
 int  bt_pair(int i);
 int  bt_forget(int i);
+int  bt_cancel(int i);                   /* stop pairing with it                  */
+int  bt_disconnect(int i);
+void bt_stop(void);                      /* off, and off after a restart too      */
 int  bt_changes(void);                   /* bumps when something worth redrawing happens */
 void bt_poll(void);                      /* from the main loop                    */
 int  bt_debug(char *out, int cap);

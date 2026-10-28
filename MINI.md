@@ -4,18 +4,19 @@ BoltOS Mini is BoltOS for small ARM boards. The first one is the **Orange Pi
 Zero3** (Allwinner H618, four Cortex-A53 cores, 1 GB). Like the rest of
 BoltOS it's written from scratch, here as an AArch64 kernel of about 600 KB.
 It's up about a quarter of a second after U-Boot hands over (about five
-seconds from plugging in), and it runs five apps:
+seconds from plugging in), and it runs six apps:
 
+- **Browser**: web pages, DuckDuckGo search with All, Images and Videos
+  tabs, and YouTube, decoded on the Pi's second core (no sound yet).
 - **Terminal**: a small shell (`help` lists the commands).
 - **Monitor**: processor load, memory, the link to your Mac, USB devices.
 - **Notes**: a page to type on.
 - **Clock**: the time, large, and a stopwatch.
-- **Settings**: wallpaper and accent, screen-sharing password, date and
-  time, About, restart and power off.
+- **Settings**: Wi-Fi, Bluetooth, wallpaper and accent, screen-sharing
+  password, date and time, About, restart and power off.
 
-The desktop edition's other 38 apps aren't here. There's no browser, no
-compilers and no games, so nothing is competing with these five for a 1 GHz
-core.
+The Pi gets online by Ethernet or by its own Wi-Fi, and Bluetooth
+keyboards, mice and game controllers work alongside USB ones.
 
 Until your LCD arrives, **your Mac is the Pi's screen**. The Pi's USB-C port
 does double duty: it takes power from the Mac and shows up there as a
@@ -129,10 +130,11 @@ keyboard and mouse behind it, which is the setup your mini keyboard uses.
 | Key | Does |
 | --- | --- |
 | ← → and Return | choose an app on Home, and open it |
-| 1–5, or F1–F5 | open an app directly |
+| 1–6, or F1–F6 | open an app directly (1 is the Browser, 6 Settings) |
 | Esc, or the Windows/⌘ key | back to Home |
 | ↑ ↓ ← → in Settings | move through the list, change a value |
 | Space, R in Clock | start/stop and reset the stopwatch |
+| Space, ← → on a video | pause and play, ten seconds back and on |
 
 Some Terminal commands: `about`, `net`, `usb`, `mem`, `cpu`, `log 40`,
 `led green off`, `time 18:30`, `theme dawn`, `reboot`, `poweroff`.
@@ -173,6 +175,31 @@ screenshot), `time`, `reboot`.
 - **The clock says "not set".** Run `pi.py screen` or `pi.py time`, open
   <http://10.77.0.1>, or set it in Settings → Date & Time.
 
+## Wi-Fi and Bluetooth
+
+The Zero3's wireless chip (a Unisoc UWE5622) needs its firmware loaded by
+the Pi at every start. `build-mini.sh` downloads it, with its Wi-Fi and
+Bluetooth settings, from Orange Pi's firmware repository at a fixed commit
+and checks it against known hashes; the files aren't part of this
+repository. Built offline, Mini works without Wi-Fi and Bluetooth.
+
+**Wi-Fi** turns itself on two seconds after boot. In Settings → Wi-Fi,
+pick a network (↑ ↓, Return), type its password and press Return. Open and
+WPA2 networks work; WPA3-only and enterprise networks don't yet. The
+network you joined last is joined again by itself, also after a restart,
+but not after the power has been off (Mini can't write to the card yet).
+The switch at the top turns Wi-Fi off.
+
+**Bluetooth**: switch it on in Settings → Bluetooth and put the device in
+pairing mode; it shows under Other Devices. Return pairs it. A keyboard
+shows a six-digit code: type it on the keyboard, then Enter. Mice and game
+controllers just pair. Paired devices are under My Devices and reconnect
+by themselves; Backspace twice forgets one. Classic and Bluetooth LE
+keyboards, mice and controllers work; a controller's D-pad or left stick
+is the arrow keys and its first four buttons are Return, Esc, Backspace
+and Tab. Headphones and speakers can't be used yet, as Mini has no sound
+output.
+
 ## When the LCD arrives
 
 The screen is a buffer in RAM, and anything can show it. Today that's VNC
@@ -203,6 +230,15 @@ HDMI output is a much larger one. The layout scales with screen height
 - **USB-A and the header ports, as a host**: `mini/usbhost.c` drives OHCI,
   with hubs and boot-protocol keyboards and mice. EHCI is left off, so a
   USB 2.0 hub runs at full speed and passes keyboards through.
+- **Wi-Fi and Bluetooth**: `mini/sdio.c` drives the H618's MMC1 as an
+  SDIO host for the UWE5622; `mini/wcn.c` loads its firmware and carries
+  its packets. `mini/wifi.c` is the host side of its Wi-Fi firmware (scans,
+  joining, WPA2's handshake with the desktop's `net/wpa.c`); `mini/bt.c` is
+  a Bluetooth host (HCI, pairing, L2CAP, SDP, SMP, GATT) and `mini/hid.c`
+  reads HID devices' reports. The build turns the vendor's `.ini` files into
+  what the firmware takes (`mini/tools/mkwifiini.py`, `mkbtcfg.py`).
+- **YouTube**: `mini/player.c` streams a video's 360p MP4 and `mini/h264*.c`
+  decode it on the second core.
 - **Network**: `mini/net.c` is a small IPv4 stack whose TCP keeps a window
   of segments in flight. The desktop's TCP sends one segment at a time,
   which is too slow to stream a screen. `mini/netsvc.c` adds DHCP, mDNS, the
@@ -215,7 +251,8 @@ HDMI output is a much larger one. The layout scales with screen height
 
 Everything runs in one loop on one core: poll each device, run the network,
 draw a frame if something changed, feed the watchdog, sleep until the next
-tick. Nothing waits on anything else.
+tick. Nothing waits on anything else. The one exception is a playing video,
+whose decoding runs on the second core.
 
 ## Building it
 
