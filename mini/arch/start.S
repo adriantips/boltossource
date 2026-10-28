@@ -30,33 +30,8 @@ _start:
 real_start:
     mov     x19, x0                 /* the device tree                        */
 
-    mrs     x1, CurrentEL
-    lsr     x1, x1, #2
-    cmp     x1, #2
-    b.ne    in_el1
-
-    /* EL2 -> EL1. EL1 is AArch64, owns its own timer, and nothing traps.     */
-    mov     x2, #(1 << 31)          /* HCR_EL2.RW                             */
-    msr     hcr_el2, x2
-    mrs     x2, cnthctl_el2
-    orr     x2, x2, #3              /* EL1PCEN | EL1PCTEN                     */
-    msr     cnthctl_el2, x2
-    msr     cntvoff_el2, xzr
-    mrs     x2, midr_el1
-    msr     vpidr_el2, x2
-    mrs     x2, mpidr_el1
-    msr     vmpidr_el2, x2
-    mov     x2, #0x33ff             /* CPTR_EL2: no FP/SIMD traps             */
-    msr     cptr_el2, x2
-    msr     hstr_el2, xzr
-    ldr     x2, =0x30d00800         /* SCTLR_EL1 RES1 bits, MMU off           */
-    msr     sctlr_el1, x2
-    mov     x2, #0x3c5              /* EL1h, DAIF masked                      */
-    msr     spsr_el2, x2
-    adr     x2, in_el1
-    msr     elr_el2, x2
-    eret
-
+    adr     x20, in_el1
+    b       to_el1
 in_el1:
     mov     x2, #(3 << 20)          /* CPACR_EL1.FPEN: FP/SIMD at EL1         */
     msr     cpacr_el1, x2
@@ -82,6 +57,60 @@ in_el1:
     bl      kmain
 3:  wfe
     b       3b
+
+/* Into EL1 from wherever the loader left us, then on to x20. */
+to_el1:
+    mrs     x1, CurrentEL
+    lsr     x1, x1, #2
+    cmp     x1, #2
+    b.ne    9f
+
+    /* EL2 -> EL1. EL1 is AArch64, owns its own timer, and nothing traps.     */
+    mov     x2, #(1 << 31)          /* HCR_EL2.RW                             */
+    msr     hcr_el2, x2
+    mrs     x2, cnthctl_el2
+    orr     x2, x2, #3              /* EL1PCEN | EL1PCTEN                     */
+    msr     cnthctl_el2, x2
+    msr     cntvoff_el2, xzr
+    mrs     x2, midr_el1
+    msr     vpidr_el2, x2
+    mrs     x2, mpidr_el1
+    msr     vmpidr_el2, x2
+    mov     x2, #0x33ff             /* CPTR_EL2: no FP/SIMD traps             */
+    msr     cptr_el2, x2
+    msr     hstr_el2, xzr
+    ldr     x2, =0x30d00800         /* SCTLR_EL1 RES1 bits, MMU off           */
+    msr     sctlr_el1, x2
+    mov     x2, #0x3c5              /* EL1h, DAIF masked                      */
+    msr     spsr_el2, x2
+    msr     elr_el2, x20
+    eret
+9:  br      x20
+
+
+/* ---------------------------------------------------------------------------
+ *  The other cores (cpu.c, cpu_start): PSCI's CPU_ON starts one here with
+ *  its number in x0, the MMU off. The same way down to EL1, a stack of its
+ *  own, the boot core's page tables and vectors, then secondary_main(cpu). */
+    .globl secondary_start
+secondary_start:
+    mov     x19, x0
+    adr     x20, 1f
+    b       to_el1
+1:  mov     x2, #(3 << 20)
+    msr     cpacr_el1, x2
+    isb
+    ldr     x2, =secondary_stacks
+    add     x2, x2, x19, lsl #18    /* 256 KiB each: the top of core n's is n * 256 KiB in */
+    mov     sp, x2
+    bl      mmu_enable
+    ldr     x2, =vectors
+    msr     vbar_el1, x2
+    isb
+    mov     x0, x19
+    bl      secondary_main
+2:  wfe
+    b       2b
 
 /* ---------------------------------------------------------------------------
  *  Exception vectors. Only the "current EL, SP_ELx" group can happen: there

@@ -29,7 +29,9 @@ try:
 except ImportError:
     usb = None
 
-PI = "http://10.77.0.1"
+# BOLTOS_PI=192.168.86.236 reaches it over the LAN instead (Ethernet or Wi-Fi),
+# for when the USB-C link is down; the DFU commands still need the cable.
+PI = "http://" + os.environ.get("BOLTOS_PI", "10.77.0.1")
 
 
 def http(path, data=None, timeout=2.0):
@@ -218,10 +220,10 @@ def main(argv):
             if running():
                 break
             if _ == 0:
-                print("Waiting for BoltOS Mini at 10.77.0.1 (is the Pi plugged into this Mac?)...")
+                print("Waiting for BoltOS Mini at %s (is the Pi plugged into this Mac?)..." % PI[7:])
             time.sleep(1)
         else:
-            raise SystemExit("BoltOS Mini did not answer at 10.77.0.1")
+            raise SystemExit("BoltOS Mini did not answer at %s" % PI[7:])
         set_time()
         if a.cmd == "screen":
             import subprocess
@@ -232,7 +234,7 @@ def main(argv):
         out = a.kernel or "boltos-mini.png"
         bmp = http("/screen.bmp", timeout=20)
         if not bmp:
-            raise SystemExit("BoltOS Mini did not answer at 10.77.0.1")
+            raise SystemExit("BoltOS Mini did not answer at %s" % PI[7:])
         try:
             import io
             from PIL import Image
@@ -244,7 +246,7 @@ def main(argv):
         return
     if a.cmd == "reboot":
         if not ask_reboot():
-            raise SystemExit("BoltOS Mini did not answer at 10.77.0.1")
+            raise SystemExit("BoltOS Mini did not answer at %s" % PI[7:])
         return
     if a.cmd == "log" and running():
         sys.stdout.write((http("/log", timeout=5) or b"").decode("utf-8", "replace"))

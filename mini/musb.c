@@ -163,7 +163,7 @@ static struct {
     int ep0_state;
     uint8_t ep0_buf[256]; int ep0_len, ep0_off, ep0_zlp;
     int out_len;                                   /* OUT data stage remaining */
-    uint64_t resets, configs;
+    uint64_t resets, configs, resumes;
 } u;
 
 static netif_t usb0;
@@ -547,6 +547,13 @@ void musb_poll(void) {
             kprintf("[usb-c] bus reset from the host (%s speed)\n", u.hs ? "high" : "full");
     }
     if (usb & I_DISCON) { u.configured = 0; u.data_alt = 0; link_state(0); }
+    /* The Mac woke from sleep: its driver starts again thinking the link is down,
+     * and won't ask (SET_INTERFACE) again. Say it's up once more. */
+    if ((usb & I_RESUME) && u.configured && u.data_alt == 1) {
+        u.resumes++;
+        if (u.resumes <= 3 || u.resumes % 50 == 0) kprintf("[usb-c] the Mac woke the link: connected again\n");
+        queue_notifications();
+    }
     if (tx & 1) ep0_irq();
     if (u.configured && u.data_alt == 1) {
         bulk_out_pump();

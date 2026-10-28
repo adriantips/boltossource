@@ -32,6 +32,8 @@
 static uint64_t l1[512] __attribute__((aligned(4096)));
 static uint64_t l2_ram[512] __attribute__((aligned(4096)));
 
+void mmu_enable(void);
+
 void mmu_init(void) {
     l1[0] = 0x00000000ull | PTE_BLOCK | PTE_AF | PTE_ATTR(ATTR_DEV) | PTE_PXN | PTE_UXN;
     l1[1] = (uint64_t)(uintptr_t)l2_ram | PTE_TABLE;
@@ -42,6 +44,11 @@ void mmu_init(void) {
         if (pa >= MINI_LOG_BASE && pa < MINI_LOG_BASE + MINI_LOG_SIZE) attr = ATTR_NC;
         l2_ram[i] = (i == 0) ? 0 : (pa | PTE_BLOCK | PTE_AF | PTE_ISH | PTE_ATTR(attr));
     }
+    mmu_enable();
+}
+
+/* The registers half: what every core does with the boot core's tables. */
+void mmu_enable(void) {
 
     uint64_t mair = (0x04ull << (8 * ATTR_DEV)) |        /* Device-nGnRE     */
                     (0xFFull << (8 * ATTR_WB))  |        /* Normal WB RWA    */
@@ -67,6 +74,31 @@ void mmu_init(void) {
     sctlr |= (1ull << 0) | (1ull << 2) | (1ull << 12);   /* M, C, I          */
     sctlr &= ~((1ull << 1) | (1ull << 19));              /* no A, no WXN     */
     __asm__ volatile("msr sctlr_el1, %0\nisb" :: "r"(sctlr) : "memory");
+}
+
+/* ---- the other cores ------------------------------------------------------------ *
+ *  A core started with cpu_start() runs fn(arg) and nothing else: no
+ *  interrupts, no timer of its own, no shell. The video decoder is one.    */
+volatile uint32_t mini_heap_lock;
+extern uint8_t secondary_stacks[];
+uint8_t secondary_stacks[4 * 0x40000] __attribute__((aligned(16)));
+static void (*volatile sec_fn[4])(void *);
+static void *volatile sec_arg[4];
+void secondary_start(void);
+int board_cpu_on(int cpu, uint64_t entry, uint64_t ctx);
+
+void secondary_main(uint64_t cpu) {
+    __asm__ volatile("dsb sy\nisb" ::: "memory");
+    if (cpu < 4 && sec_fn[cpu]) sec_fn[cpu](sec_arg[cpu]);
+    for (;;) __asm__ volatile("wfe");
+}
+
+int cpu_start(int cpu, void (*fn)(void *), void *arg) {
+    if (cpu < 1 || cpu > 3) return -1;
+    sec_fn[cpu] = fn; sec_arg[cpu] = arg;
+    /* It starts with its caches off and reads memory, not ours: push these out. */
+    __asm__ volatile("dc cvac, %0\ndc cvac, %1\ndsb sy" :: "r"(&sec_fn[cpu]), "r"(&sec_arg[cpu]) : "memory");
+    return board_cpu_on(cpu, (uint64_t)(uintptr_t)secondary_start, (uint64_t)cpu);
 }
 
 /* ---- the uncached pool ------------------------------------------------------ */

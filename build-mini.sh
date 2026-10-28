@@ -69,7 +69,8 @@ SRCS=(
 # engine (HTML, DOM, CSS layout, JS, images), on mini/netcompat.c.
 SRCS+=(net/http.c net/tls.c net/crypto.c net/x509.c net/rsa.c net/p256.c net/p384.c
        net/inflate.c kernel/html.c kernel/dom.c kernel/layout.c kernel/js.c kernel/image.c
-       mini/netcompat.c mini/webutil.c mini/flow.c mini/app_browser.c mini/player.c)
+       mini/netcompat.c mini/webutil.c mini/flow.c mini/app_browser.c mini/player.c
+       mini/mp4.c mini/h264.c mini/h264mb.c mini/h264pred.c mini/h264dbk.c mini/h264tab.c)
 # Optional parts: compiled when present, so the kernel grows a file at a time.
 for f in mini/emac.c mini/inet.c mini/net.c mini/netsvc.c mini/vnc.c mini/virtio.c mini/musb.c mini/usbdev.c \
          mini/ohci.c mini/usbhost.c mini/shell.c mini/ui.c \

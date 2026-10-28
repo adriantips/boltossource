@@ -52,8 +52,12 @@ static inline void     clr32(uintptr_t a, uint32_t m) { w32(a, r32(a) & ~m); }
 #define MINI_DMA_SIZE    0x00200000ull
 #define MINI_LOG_BASE    0x5F000000ull     /* 1 MiB, uncached; U-Boot DFU "log" */
 #define MINI_LOG_SIZE    0x00100000ull
+#define MINI_BIG_BASE    0x60000000ull     /* 384 MiB for one big thing: a video  */
+#define MINI_BIG_SIZE    0x18000000ull     /* being streamed (player.c)           */
 
 void  mmu_init(void);
+/* Run fn(arg) on core `cpu` (1..3), alone and forever. 0 if it started. */
+int   cpu_start(int cpu, void (*fn)(void *), void *arg);
 void *dma_alloc(uint32_t size, uint32_t align);   /* zeroed, uncached, never freed */
 static inline uint32_t dma_addr(const void *p) { return (uint32_t)(uintptr_t)p; }
 

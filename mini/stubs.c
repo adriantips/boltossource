@@ -63,3 +63,5 @@ __attribute__((weak)) void shell_init(void) {
     gfx_rrect(scr_w / 2 - 200, scr_h / 2 - 60, 400, 120, 24, 0xFFFFFF, 40);
     screen_present(0, 0, scr_w, scr_h);
 }
+/* The H.264 decoder's per-macroblock trace goes to the host test's stdout; on Mini, nowhere. */
+__attribute__((weak)) void h264_trace(const char *fmt, ...) { (void)fmt; }

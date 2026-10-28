@@ -663,6 +663,7 @@ static void open_watch(const char *id) {
     item_t *it = new_item();
     if (it) snprintf(it->thumb, sizeof it->thumb, "https://i.ytimg.com/vi/%s/hqdefault.jpg", B.vid);
     player_open(B.vid, B.title, sizeof B.title, B.meta, sizeof B.meta);
+    B.status[0] = 0;                               /* the watch page says its own state */
 }
 
 /* ---- loading, for real --------------------------------------------------------------------- */
@@ -898,18 +899,25 @@ static void draw_videos(int x, int y, int w, int top, int bottom) {
     B.doc_h = B.nitems ? yy + ch : 0;
 }
 
+static int vid_x, vid_y, vid_w, vid_h;          /* where the last frame went */
+
 static void draw_watch(int x, int y, int w, int h) {
     int pw = w, ph = pw * 9 / 16;
     if (ph > h - S(110)) { ph = h - S(110); pw = ph * 16 / 9; }
+    const surface_t *f0 = player_frame();
+    if (f0 && f0->w <= pw && f0->h <= ph) { pw = f0->w; ph = f0->h; }  /* its own size: sharp, and cheap */
+    else if (!f0 && pw > 640) { pw = 640; ph = 360; }
     int px = x + (w - pw) / 2, py = y;
     gfx_rrect(px, py, pw, ph, S(12), 0x000000, 255);
     const surface_t *f = player_frame();
     char msg[160] = "";
     int st = player_status(msg, sizeof msg);
+    vid_w = 0;
     if (f && f->px) {
         int fw = pw, fh = fw * f->h / f->w;
         if (fh > ph) { fh = ph; fw = fh * f->w / f->h; }
         gfx_surface_scaled(px + (pw - fw) / 2, py + (ph - fh) / 2, fw, fh, f, 0, 255);
+        if (fw == f->w && fh == f->h) { vid_x = px + (pw - fw) / 2; vid_y = py + (ph - fh) / 2; vid_w = fw; vid_h = fh; }
     } else if (B.nitems && B.items[0].pix) draw_image_cover(B.items[0].pix, px, py, pw, ph, S(12));
     if (st != 2 || !f) {                                        /* the state, over the picture */
         gfx_rrect(px, py, pw, ph, S(12), 0x000000, f || (B.nitems && B.items[0].pix) ? 110 : 0);
@@ -1014,7 +1022,21 @@ static int b_tick(void) {
         do_load();
         return 1;
     }
-    if (B.view == V_WATCH && player_tick()) return 1;
+    if (B.view == V_WATCH) {
+        int r = player_tick();
+        if (r == 2 && vid_w) {
+            /* Only the picture changed: copy it into place and show just that, not a whole frame. */
+            const surface_t *f = player_frame();
+            char msg[8]; int st = player_status(msg, sizeof msg);
+            if (f && f->w == vid_w && f->h == vid_h && st == 2) {
+                for (int j = 0; j < vid_h; j++)
+                    memcpy(g_back.px + (vid_y + j) * g_back.stride + vid_x, f->px + j * f->stride, (size_t)vid_w * 4);
+                screen_present(vid_x, vid_y, vid_w, vid_h);
+                return 0;
+            }
+        }
+        if (r) return 1;
+    }
     /* One picture per frame: the visible ones first. */
     if (B.view == V_WEB) {
         for (int i = 0; i < nwimg; i++)

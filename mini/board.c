@@ -121,6 +121,11 @@ void board_led(int green, int on) {
     h6_gpio_out(BANK_C, green ? 13 : 12, on);
 }
 
+/* PSCI CPU_ON (SMC64). 0 if the core is on its way. */
+int board_cpu_on(int cpu, uint64_t entry, uint64_t ctx) {
+    return (int)(int64_t)psci(0xC4000003u, (uint64_t)cpu, entry, ctx);
+}
+
 void board_reboot(void) {
     kprintf("[mini] restarting\n");
     irq_off();
