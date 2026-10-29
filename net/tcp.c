@@ -41,6 +41,7 @@ struct tcp_conn {
     int           passive;          /* arrived on a listening port     */
     int           accepted;         /* already handed to tcp_accept    */
     uint64_t      last_act;         /* tick of the last segment seen    */
+    uint32_t      adv_win;          /* the window our last segment said */
 };
 
 #define MAX_CONNS   16          /* a server needs more than a browser did */
@@ -139,6 +140,7 @@ static int tcp_xmit(struct tcp_conn *c, uint8_t flags, const void *data, uint16_
     h->flags    = flags;
     uint32_t win = rx_space(c); if (win > 0xFFFF) win = 0xFFFF;
     h->window   = htons((uint16_t)win);
+    c->adv_win  = win;
     h->checksum = 0;
     h->urgent   = 0;
     if (dlen) memcpy(seg + 20, data, dlen);
@@ -447,6 +449,11 @@ int tcp_recv(struct tcp_conn *c, void *buf, uint32_t cap, uint32_t timeout_ms) {
             uint32_t n = rx_count(c); if (n > cap) n = cap;
             uint8_t *o = (uint8_t *)buf;
             for (uint32_t i = 0; i < n; i++) o[i] = c->rx[(c->rx_tail++) % RXBUF];
+            /* The ring had filled and the peer was told so: say it has
+             * room again, now that a quarter of it is free. Without this
+             * the sender waits for its persist timer, which backs off
+             * every time -- a long download slowed to a few KB/s. */
+            if (c->state == ESTABLISHED && rx_space(c) >= c->adv_win + RXBUF / 4) tcp_xmit(c, TCP_ACK, 0, 0);
             return (int)n;
         }
         if (c->reset) return -1;
