@@ -14,6 +14,32 @@ void *memcpy(void *d, const void *s, size_t n) {
     while (n--) *a++ = *b++;
     return d;
 }
+#if defined(__aarch64__)
+/* BoltOS Mini: an A53 with the MMU on takes unaligned 8-byte loads, so these
+ * go a word at a time. The VNC server and the screen compare whole frames
+ * with them; byte loops made that a few milliseconds per frame. */
+typedef uint64_t u64u __attribute__((aligned(1), may_alias));
+void *memmove(void *d, const void *s, size_t n) {
+    uint8_t *a = d; const uint8_t *b = s;
+    if (a == b || !n) return d;
+    if (a < b) {
+        for (; n >= 8; n -= 8, a += 8, b += 8) *(u64u *)a = *(const u64u *)b;
+        while (n--) *a++ = *b++;
+    } else {
+        a += n; b += n;
+        for (; n >= 8; n -= 8) { a -= 8; b -= 8; *(u64u *)a = *(const u64u *)b; }
+        while (n--) *--a = *--b;
+    }
+    return d;
+}
+int memcmp(const void *a, const void *b, size_t n) {
+    const uint8_t *x = a, *y = b;
+    for (; n >= 8; n -= 8, x += 8, y += 8)
+        if (*(const u64u *)x != *(const u64u *)y) break;
+    while (n--) { if (*x != *y) return (int)*x - (int)*y; x++; y++; }
+    return 0;
+}
+#else
 void *memmove(void *d, const void *s, size_t n) {
     uint8_t *a = d; const uint8_t *b = s;
     if (a < b) { while (n--) *a++ = *b++; }
@@ -25,6 +51,7 @@ int memcmp(const void *a, const void *b, size_t n) {
     while (n--) { if (*x != *y) return (int)*x - (int)*y; x++; y++; }
     return 0;
 }
+#endif
 size_t strlen(const char *s) { size_t n = 0; while (s[n]) n++; return n; }
 int strcmp(const char *a, const char *b) {
     while (*a && *a == *b) { a++; b++; }
