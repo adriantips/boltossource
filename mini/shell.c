@@ -23,6 +23,7 @@
 #include "string.h"
 #include "stdio.h"
 #include "math.h"
+#include "update.h"
 
 /* The built-in apps, then whatever Packages has installed (shell_add_app). */
 #define MAX_APPS 10
@@ -216,6 +217,12 @@ void ui_glyph(int id, int cx, int cy, int sz, uint32_t c) {
     case G_STOP:
         gfx_rrect((int)(x - s * .18f), (int)(y - s * .18f), (int)(s * .36f), (int)(s * .36f), (int)(s * .04f), c, 255);
         break;
+    case G_UPDATE:                                          /* an arrow down onto a line */
+        gfx_line(x, y - s * .32f, x, y + s * .12f, t, c, 255);
+        gfx_line(x - s * .17f, y - s * .04f, x, y + s * .13f, t, c, 255);
+        gfx_line(x + s * .17f, y - s * .04f, x, y + s * .13f, t, c, 255);
+        gfx_line(x - s * .30f, y + s * .30f, x + s * .30f, y + s * .30f, t, c, 255);
+        break;
     case G_LOCK:
         gfx_arc(x, y - s * .06f, s * .16f, t, -90, 90, c, 255);
         gfx_line(x - s * .16f, y - s * .06f, x - s * .16f, y + s * .02f, t, c, 255);
@@ -381,6 +388,8 @@ static const netif_t *main_link(void) {
     return best;
 }
 
+static int upd_x, upd_w;                             /* the bar's update note, to click */
+
 static void draw_bar(void) {
     int h = BAR_H, cy = h / 2;
     gfx_fill(0, 0, scr_w, h, th.bar);
@@ -415,6 +424,12 @@ static void draw_bar(void) {
         rx -= text_r(rx, cy, hm, FONT_SEMIBOLD, S(12), th.text) + S(8);
         rx -= text_r(rx, cy, b, FONT_MEDIUM, S(12), th.sub) + S(18);
     } else rx -= text_r(rx, cy, "clock not set", FONT_MEDIUM, S(12), th.faint) + S(18);
+    /* a newer BoltOS Mini, or one coming in: a click opens Settings, Updates */
+    if (update_bar(b, sizeof b) > 0) {
+        int tw = text_r(rx, cy, b, FONT_MONO, S(11), th.accent);
+        upd_x = rx - tw - S(8); upd_w = tw + S(16);
+        rx -= tw + S(18);
+    } else upd_w = 0;
     snprintf(b, sizeof b, "cpu %2d%%", shell_cpu_load());
     rx -= text_r(rx, cy, b, FONT_MONO, S(11), th.sub) + S(18);
     const netif_t *n = main_link();
@@ -559,6 +574,7 @@ static void handle(const input_ev_t *e) {
             if (!click) return;
             int x, w = bar_item(-1, &x);
             if (ui_hit(e->x, e->y, x, 0, w, BAR_H)) { shell_go_home(); return; }
+            if (upd_w && ui_hit(e->x, e->y, upd_x, 0, upd_w, BAR_H)) { settings_show_updates(); return; }
             for (int i = 0; i < NAPPS; i++) {
                 w = bar_item(i, &x);
                 if (ui_hit(e->x, e->y, x, 0, w, BAR_H)) { if (cur != apps[i]) shell_open(apps[i]); return; }

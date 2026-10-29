@@ -1,8 +1,8 @@
 /* ===========================================================================
  *  BoltOS Mini  -  mini/app_settings.c
  *
- *  Seven pages: Wi-Fi, Bluetooth, Appearance, Screen Sharing, Date & Time,
- *  About, Power. Up and down move through the list on the left; Right or
+ *  Eight pages: Wi-Fi, Bluetooth, Appearance, Screen Sharing, Date & Time,
+ *  Updates, About, Power. Up and down move through the list on the left; Right or
  *  Return goes into a page, where Left and Right change a value and Return
  *  does a thing. What takes a moment (starting the radio, joining) waits for
  *  the next frame, so the page says what it's doing first.
@@ -15,14 +15,15 @@
 #include "stdlib.h"
 #include "wlan.h"
 #include "bt.h"
+#include "update.h"
 
-enum { P_WIFI, P_BT, P_LOOK, P_SHARE, P_TIME, P_ABOUT, P_POWER, NPAGES };
+enum { P_WIFI, P_BT, P_LOOK, P_SHARE, P_TIME, P_UPDATE, P_ABOUT, P_POWER, NPAGES };
 #ifdef MINI_RELEASE
-static const char *const pages[NPAGES] = { "Wi-Fi", "Bluetooth", "Appearance", "Network", "Date & Time", "About", "Power" };
-static const int page_glyph[NPAGES] = { G_WIFI, G_BLUETOOTH, G_DOT, G_GLOBE, G_CLOCK, G_CHECK, G_POWER };
+static const char *const pages[NPAGES] = { "Wi-Fi", "Bluetooth", "Appearance", "Network", "Date & Time", "Updates", "About", "Power" };
+static const int page_glyph[NPAGES] = { G_WIFI, G_BLUETOOTH, G_DOT, G_GLOBE, G_CLOCK, G_UPDATE, G_CHECK, G_POWER };
 #else
-static const char *const pages[NPAGES] = { "Wi-Fi", "Bluetooth", "Appearance", "Screen Sharing", "Date & Time", "About", "Power" };
-static const int page_glyph[NPAGES] = { G_WIFI, G_BLUETOOTH, G_DOT, G_MAC, G_CLOCK, G_CHECK, G_POWER };
+static const char *const pages[NPAGES] = { "Wi-Fi", "Bluetooth", "Appearance", "Screen Sharing", "Date & Time", "Updates", "About", "Power" };
+static const int page_glyph[NPAGES] = { G_WIFI, G_BLUETOOTH, G_DOT, G_MAC, G_CLOCK, G_UPDATE, G_CHECK, G_POWER };
 #endif
 static int page, in_page, item, confirm;
 static char pw_edit[9]; static int pw_editing, pw_len;
@@ -54,6 +55,7 @@ static int items(void) {
     case P_SHARE: return 1;
 #endif
     case P_TIME: return 3;
+    case P_UPDATE: return 2;
     case P_POWER: return 2;
     }
     return 0;
@@ -101,9 +103,20 @@ static void bt_activate(void) {
     else if (d->state != BTD_CONNECTED) { todo = DO_BT_PAIR; todo_arg = item - 1; }
 }
 
+/* Updates: the switch, then one row that does what fits -- check, install,
+ * or restart into what's installed. */
+static void update_activate(void) {
+    const update_t *u = update_state();
+    if (item == 0) { update_set_auto(!update_auto()); return; }
+    if (u->state == UPD_RESTART) board_reboot();
+    if (u->state == UPD_DOWNLOADING || u->state == UPD_INSTALLING || u->state == UPD_CHECKING) return;
+    if (u->have) update_install(); else update_check();
+}
+
 static void activate(void) {
     if (page == P_WIFI) { wifi_activate(); return; }
     if (page == P_BT) { bt_activate(); return; }
+    if (page == P_UPDATE) { update_activate(); return; }
     if (page == P_SHARE && item == 0) { pw_editing = 1; pw_len = 0; pw_edit[0] = 0; }
     else if (page == P_POWER) {
         if (confirm == item + 1) { if (item == 0) board_reboot(); else board_poweroff(); }
@@ -112,6 +125,11 @@ static void activate(void) {
 }
 
 static void s_open(void) { in_page = 0; confirm = 0; pw_editing = 0; wtyping = 0; }
+
+void settings_show_updates(void) {
+    shell_open(&app_settings);
+    page = P_UPDATE; in_page = 1; item = 1; confirm = 0;
+}
 
 /* Esc: leave the password being typed (the shell asks this first). */
 int settings_esc(void) {
@@ -154,9 +172,13 @@ static void s_key(const input_ev_t *e) {
     case KEY_DOWN:  if (item < items() - 1) item++; confirm = 0; break;
     case KEY_LEFT:
         if ((page == P_LOOK || page == P_TIME)) change(-1);
+        else if (page == P_UPDATE && item == 0 && update_auto()) update_set_auto(0);
         else { in_page = 0; confirm = 0; }
         break;
-    case KEY_RIGHT: change(1); break;
+    case KEY_RIGHT:
+        if (page == P_UPDATE) { if (item == 0) update_set_auto(1); }
+        else change(1);
+        break;
     case KEY_ENTER: activate(); break;
     case KEY_BACKSPACE: in_page = 0; confirm = 0; break;
     }
@@ -327,6 +349,85 @@ static void draw_bt(int hy, int bottom, int sel) {
     text_l(pane_x + S(14), bottom - S(40), hint, FONT_REGULAR, S(12), th.faint);
 }
 
+static void mb(char *out, int cap, uint64_t bytes) {
+    snprintf(out, (size_t)cap, "%lu.%lu MB", (unsigned long)(bytes / 1000000), (unsigned long)(bytes % 1000000 / 100000));
+}
+
+static void ago(char *out, int cap, uint64_t when) {
+    uint64_t m = (now_ms() - when) / 60000;
+    if (m < 1) snprintf(out, (size_t)cap, "just now");
+    else if (m < 60) snprintf(out, (size_t)cap, "%lu min ago", (unsigned long)m);
+    else snprintf(out, (size_t)cap, "%lu h ago", (unsigned long)(m / 60));
+}
+
+static void draw_update(int hy, int bottom, int sel) {
+    const update_t *u = update_state();
+    char sub[160], b[96], v[48];
+    if (u->state == UPD_CURRENT) {
+        ago(b, sizeof b, u->checked);
+        snprintf(sub, sizeof sub, "BoltOS Mini %s is the newest. Checked %s.", update_version(), b);
+    } else if (u->state == UPD_DOWNLOADING) {
+        char g[24], t[24];
+        mb(g, sizeof g, u->got); mb(t, sizeof t, u->size);
+        snprintf(sub, sizeof sub, "Downloading BoltOS Mini %s" TXT_ELLIPSIS "  %s of %s", u->version, g, t);
+    } else snprintf(sub, sizeof sub, "%s", u->msg);
+    heading(pane_x, hy, "Updates", sub);
+
+    ui_row(pane_x, pane_y, pane_w, "Automatic updates", 0, sel == 0);
+    toggle(pane_x + pane_w - S(12), pane_y, update_auto(), 0);
+
+    const char *label = "Check for updates";
+    v[0] = 0;
+    switch (u->state) {
+    case UPD_CHECKING:    label = "Checking" TXT_ELLIPSIS; break;
+    case UPD_DOWNLOADING: label = "Downloading"; snprintf(v, sizeof v, "%u%%", u->size ? (unsigned)(u->got * 100 / u->size) : 0); break;
+    case UPD_INSTALLING:  label = "Installing" TXT_ELLIPSIS; break;
+    case UPD_RESTART:     label = "Restart now"; snprintf(v, sizeof v, "to finish"); break;
+    default:
+        if (u->have) {
+            snprintf(b, sizeof b, u->state == UPD_FAILED ? "Try %s again" : "Update to %s", u->version);
+            label = b; mb(v, sizeof v, u->size);
+        } else if (u->checked) ago(v, sizeof v, u->checked);
+    }
+    int ry = pane_y + S(46);
+    ui_row(pane_x, ry, pane_w, label, v[0] ? v : 0, sel == 1);
+    if (u->state == UPD_DOWNLOADING && u->size) {
+        int bw = pane_w - S(28), fw = (int)((uint64_t)bw * u->got / u->size);
+        gfx_fill(pane_x + S(14), ry + S(40), bw, S(3), th.line);
+        gfx_fill(pane_x + S(14), ry + S(40), fw, S(3), th.accent);
+    }
+
+    /* what's in it, or what's running */
+    int ty = ry + S(70);
+    if (u->have) {
+        snprintf(b, sizeof b, "BoltOS Mini %s", u->version);
+        int tw = text_l(pane_x + S(14), ty, b, FONT_SEMIBOLD, S(14), th.text);
+        char sz[24]; mb(sz, sizeof sz, u->size);
+        snprintf(b, sizeof b, "%s update  " "\xB7" "  %s%s%s", u->big ? "Big" : "Quick", sz, u->date[0] ? "  " "\xB7" "  " : "", u->date);
+        text_l(pane_x + S(14) + tw + S(12), ty, b, FONT_REGULAR, S(13), th.sub);
+        ty += S(26);
+        for (const char *p = u->notes; *p && ty < bottom - S(70); ) {
+            const char *e = strchr(p, '\n');
+            int n = e ? (int)(e - p) : (int)strlen(p);
+            char line[160];
+            snprintf(line, sizeof line, "%.*s", n < 159 ? n : 159, p);
+            if (line[0]) {
+                gfx_fill(pane_x + S(16), ty - S(1), S(3), S(3), th.faint);
+                text_fit_l(pane_x + S(28), ty, line, pane_w - S(40), FONT_REGULAR, S(13), th.sub);
+                ty += S(22);
+            }
+            p += n + (e ? 1 : 0);
+        }
+    } else {
+        text_l(pane_x + S(14), ty, "Installed", FONT_MEDIUM, S(14), th.sub);
+        snprintf(b, sizeof b, "BoltOS Mini %s", mini_version());
+        text_fit_l(pane_x + S(130), ty, b, pane_w - S(140), FONT_REGULAR, S(14), th.text);
+    }
+    text_l(pane_x + S(14), bottom - S(40), update_auto() ? "Quick updates install by themselves when the Pi starts. Big ones wait for you."
+                                                       : "Updates wait for you: Return on the row above installs one.",
+           FONT_REGULAR, S(12), th.faint);
+}
+
 static uint64_t drawn_at;                /* Settings drew lately: it's the app on screen */
 static int cur_is_settings(void) { return now_ms() - drawn_at < 3000; }
 
@@ -396,6 +497,7 @@ static void s_draw(int x, int y, int w, int h) {
     switch (page) {
     case P_WIFI: draw_wifi(hy, y + h, sel); break;
     case P_BT:   draw_bt(hy, y + h, sel); break;
+    case P_UPDATE: draw_update(hy, y + h, sel); break;
     case P_LOOK:
         heading(pane_x, hy, "Appearance", "The theme, and the colour that marks what is chosen.");
         ui_row(pane_x, pane_y, pane_w, "Theme", wallpaper_names[th.wallpaper], sel == 0);

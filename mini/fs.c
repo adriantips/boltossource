@@ -14,7 +14,9 @@
  *  leaves the old file whole (and, at worst, some clusters nobody uses).
  *
  *  BOLTOS.BIN is the one file nothing here will remove, rename or replace:
- *  without it the Pi doesn't start. pi.py install replaces it through U-Boot.
+ *  without it the Pi doesn't start. pi.py install replaces it through U-Boot,
+ *  and an update from boltos.dev through fs_install_kernel, which reads the
+ *  new kernel back before it switches to it.
  *
  *  A directory is read whole into memory, changed there, and only the
  *  sectors that changed are written back. FAT sectors go through a small
@@ -652,8 +654,45 @@ static int64_t write_chain(const uint8_t *data, uint32_t len) {
     return first;
 }
 
+/* What a new chain holds, read back from the card: 0 if it's `data`. */
+static int verify_chain(uint32_t c, const uint8_t *data, uint32_t len) {
+    uint8_t *bb = bounce_buf();
+    if (!bb) return fail("Out of memory", 0);
+    for (uint32_t got = 0; got < len; ) {
+        if (c < 2 || c >= EOC) return fail("The new file's clusters don't add up", 0);
+        uint32_t run = 1, next, last = c;
+        for (;;) {
+            if (fat_get(last, &next)) return fail("The card can't be read", 0);
+            if (next != last + 1 || (run + 1) * V.cbytes > BOUNCE || got + run * V.cbytes >= len) break;
+            run++; last = next;
+        }
+        if (rd(clus_sec(c), bb, run * V.spc)) return fail("The card can't be read", 0);
+        uint32_t n = run * V.cbytes;
+        if (n > len - got) n = len - got;
+        if (memcmp(bb, data + got, n)) return fail("The card didn't keep what was written to it", 0);
+        got += n;
+        c = next;
+    }
+    return 0;
+}
+
+static int put_file(const char *path, const void *data, uint32_t len, int verify);
+
 int fs_write(const char *path, const void *data, uint32_t len) {
     if (protected_path(path)) return fail("BOLTOS.BIN is the system itself: pi.py install replaces it", 0);
+    return put_file(path, data, len, 0);
+}
+
+/* The updater's way in (update.c): the same as any save -- new clusters,
+ * then the one directory sector that points at them, then the old ones
+ * freed -- so a power cut leaves the old kernel or the new one, whole.
+ * Before that sector is written, the new clusters are read back. */
+int fs_install_kernel(const void *data, uint32_t len) {
+    if (len < 4096) return fail("That's too small to be a kernel", 0);
+    return put_file("/BOLTOS.BIN", data, len, 1);
+}
+
+static int put_file(const char *path, const void *data, uint32_t len, int verify) {
     dir_t d; char leaf[FS_NAME];
     if (walk_to(path, &d, leaf)) return -1;
     if (!name_ok(leaf)) { dir_free(&d); return fail("\"%s\" can't be a file name", leaf); }
@@ -663,6 +702,7 @@ int fs_write(const char *path, const void *data, uint32_t len) {
     int64_t first = write_chain(data, len);
     if (first < 0) { dir_free(&d); return -1; }
     if (fat_flush()) { free_chain((uint32_t)first); dir_free(&d); return fail("The SD card won't take a write", 0); }
+    if (verify && verify_chain((uint32_t)first, data, len)) { free_chain((uint32_t)first); fat_flush(); dir_free(&d); return -1; }
     uint32_t old = 0;
     int err;
     if (have) {

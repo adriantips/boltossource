@@ -158,6 +158,38 @@ completes a name. `edit file` opens a file in Code, and `run file.py` (or
 
 ## Updating it
 
+BoltOS Mini updates itself from boltos.dev. It asks once it's online and
+the clock is set, and every six hours after. Settings → Updates says
+which version is running and which is the newest, with what's in it.
+
+- **Automatic updates on** (the default): a *quick* update found when the
+  Pi starts downloads, goes onto the card and the Pi restarts into it,
+  before you've opened anything. One found later waits for the next start.
+- A *big* update, or any update with Automatic updates off, waits: the bar
+  says `update 1.2.0` (click it), and Return on **Update to 1.2.0** in
+  Settings → Updates installs it and restarts.
+
+The download has to match its SHA-256. The new `BOLTOS.BIN` is written
+beside the old one and read back before one directory sector points at it,
+so a power cut leaves one kernel or the other. If the Pi restarts for an
+update and comes back on the old version, it never tries that version by
+itself again (Update still offers it).
+
+The kernels boltos.dev hands out are built without the Wi-Fi chip's
+firmware (it isn't ours to give away). A kernel that has it keeps a copy
+in `System/Firmware` on the card at every start, and an updated kernel
+loads it from there, so Wi-Fi and Bluetooth carry on. A card that never
+ran a kernel with the firmware has no copy; copy `wcnmodem.bin`,
+`wifi_ini.bin`, `bt_pskey.bin` and `bt_rf.bin` from `build/mini-fw/uwe5622/`
+of a build that fetched them into `System/Firmware` to get them.
+
+Publishing an update is `bash release.sh mini`: it raises `mini/VERSION`,
+builds the kernel and puts it on boltos.dev (see `release.sh --help`;
+`--big` marks a big one). The dev endpoint `/update` shows where updates
+stand, and `/update?check`, `?install` and `?auto=0|1` drive them.
+
+### From the Mac
+
 Every time the Pi starts, U-Boot spends two seconds as a firmware-update
 (DFU) device on the USB-C port. `pi.py` uses that window. If BoltOS is
 running, it asks it to restart first, so nobody has to touch the Pi.

@@ -27,6 +27,7 @@
 #include "mini.h"
 #include "sdio.h"
 #include "wcn.h"
+#include "fs.h"
 #include "crypto.h"
 #include "kheap.h"
 #include "kprintf.h"
@@ -49,6 +50,9 @@
 #define SYNC_ALL_FINISHED       0xF0F0F0FFu
 
 extern const uint8_t _binary_wcnmodem_bin_start[], _binary_wcnmodem_bin_end[];
+extern const uint8_t _binary_wifi_ini_bin_start[], _binary_wifi_ini_bin_end[];
+extern const uint8_t _binary_bt_pskey_bin_start[], _binary_bt_pskey_bin_end[];
+extern const uint8_t _binary_bt_rf_bin_start[], _binary_bt_rf_bin_end[];
 
 struct sync_info {                       /* the chip's side of the handshake */
     uint32_t init_status;
@@ -159,11 +163,66 @@ static void bind_verify(const uint8_t in[16], uint8_t out[16]) {
     for (int i = 0; i < 4; i++) { a = out[n++]; b = out[n++]; c = out[n++]; out[i + 12] = (uint8_t)((a & b) ^ (a & c) ^ (b & c) ^ seed[i]); }
 }
 
+/* ---- the firmware ------------------------------------------------------------------------------
+ *  build-mini.sh puts it in the kernel when it can fetch it. The kernels
+ *  boltos.dev sends as updates are built without it, so a kernel that has
+ *  it leaves a copy on the card at boot, and one that doesn't reads that. */
+static const struct { const char *name; const uint8_t *start, *end; } FW[WCN_NFW] = {
+    { "wcnmodem.bin", _binary_wcnmodem_bin_start, _binary_wcnmodem_bin_end },
+    { "wifi_ini.bin", _binary_wifi_ini_bin_start, _binary_wifi_ini_bin_end },
+    { "bt_pskey.bin", _binary_bt_pskey_bin_start, _binary_bt_pskey_bin_end },
+    { "bt_rf.bin",    _binary_bt_rf_bin_start,    _binary_bt_rf_bin_end },
+};
+static struct { char *data; uint32_t len; int tried; } fw_card[WCN_NFW];
+
+static void fw_path(int i, char *out, int cap) { snprintf(out, (size_t)cap, "/System/Firmware/%s", FW[i].name); }
+
+const uint8_t *wcn_blob(int which, uint32_t *len) {
+    *len = 0;
+    if (which < 0 || which >= WCN_NFW) return 0;
+    uint32_t n = (uint32_t)(FW[which].end - FW[which].start);
+    if (n) { *len = n; return FW[which].start; }
+    if (!fw_card[which].tried && fs_ready()) {
+        char p[64];
+        fw_path(which, p, sizeof p);
+        fw_card[which].tried = 1;
+        if (fs_read(p, &fw_card[which].data, &fw_card[which].len) == 0)
+            kprintf("[wcn] %s from the card (%u bytes)\n", FW[which].name, (unsigned)fw_card[which].len);
+    }
+    *len = fw_card[which].len;
+    return (const uint8_t *)fw_card[which].data;
+}
+
+static int fw_on_card(int i) {
+    char p[64];
+    fs_ent_t e;
+    fw_path(i, p, sizeof p);
+    return fs_stat(p, &e) == 0 && e.size == (uint32_t)(FW[i].end - FW[i].start);
+}
+
+void wcn_keep_firmware(void) {
+    if (!fs_ready() || FW[WCN_FW_MODEM].end == FW[WCN_FW_MODEM].start) return;
+    for (int i = 0; i < WCN_NFW; i++) {
+        if (fw_on_card(i)) continue;
+        char p[64];
+        fw_path(i, p, sizeof p);
+        fs_mkdir("/System/Firmware");
+        if (fs_write(p, FW[i].start, (uint32_t)(FW[i].end - FW[i].start)) == 0) kprintf("[wcn] kept %s on the card\n", p);
+        else kprintf("[wcn] couldn't keep %s on the card: %s\n", p, fs_why());
+    }
+}
+
+int wcn_firmware_safe(void) {
+    if (FW[WCN_FW_MODEM].end == FW[WCN_FW_MODEM].start) return 1;     /* nothing here to lose */
+    for (int i = 0; i < WCN_NFW; i++) if (!fw_on_card(i)) return 0;
+    return 1;
+}
+
 /* ---- starting it ---------------------------------------------------------------------------- */
 static int load_firmware(void) {
-    const uint8_t *fw = _binary_wcnmodem_bin_start;
-    uint32_t size = (uint32_t)(_binary_wcnmodem_bin_end - _binary_wcnmodem_bin_start);
-    if (size < 65536) return fail("This kernel was built without the Wi-Fi firmware");
+    uint32_t size;
+    const uint8_t *fw = wcn_blob(WCN_FW_MODEM, &size);
+    if (size < 65536) return fail("This kernel has no Wi-Fi firmware, and the card has no copy of it");
     uint64_t t = now_ms();
     for (uint32_t off = 0; off < size; off += 32768) {
         uint32_t n = size - off < 32768 ? size - off : 32768;

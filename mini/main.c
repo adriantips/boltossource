@@ -8,6 +8,7 @@
  *      poll the USB host ports         (the keyboard on the hub)
  *      poll QEMU's virtio devices      (when there is no Pi)
  *      run the network                 (DHCP, the web page, VNC)
+ *      look after packages and updates (boltos.dev)
  *      let the shell draw a frame      (only if something changed)
  *      feed the watchdog, sleep until the next tick
  *
@@ -26,8 +27,9 @@
 #include "wcn.h"
 #include "wlan.h"
 #include "bt.h"
+#include "update.h"
 
-const char *mini_version(void) { return "1.0 (" BOLT_BUILD_ID ")"; }
+const char *mini_version(void) { return BOLT_VERSION " (" BOLT_BUILD_ID ")"; }
 
 int mini_uptime_str(char *out, int cap) {
     uint64_t s = now_ms() / 1000;
@@ -121,9 +123,10 @@ void kmain(uint64_t dtb) {
     shell_init();
     /* The card's files: what a power cut took from the kept settings comes
      * back from there before Wi-Fi and Bluetooth look for it. */
-    if (fs_mount() == 0) fs_keep_restore();
+    if (fs_mount() == 0) { fs_keep_restore(); wcn_keep_firmware(); }
     void shell_settings_restore(void);
     shell_settings_restore();
+    update_init();
     kprintf("[%4lu ms] the card's files\n", now_ms() - t0);
     void pkg_init(void);
     pkg_init();
@@ -142,6 +145,7 @@ void kmain(uint64_t dtb) {
         mini_pump();
         int pkg_poll(void);
         if (pkg_poll()) shell_request_frame();
+        if (update_poll()) shell_request_frame();
         shell_frame();
         netsvc_jobs();
         fs_poll();

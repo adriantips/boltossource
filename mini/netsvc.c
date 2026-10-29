@@ -33,6 +33,7 @@
 #include "string.h"
 #include "stdio.h"
 #include "stdlib.h"
+#include "update.h"
 
 #define PI_IP     0x0A4D0001u          /* 10.77.0.1                            */
 #define MAC_IP    0x0A4D0002u          /* 10.77.0.2: what the Mac is given     */
@@ -627,6 +628,11 @@ static void http_handle(int i) {
         url_decode(path + 5, cmd, sizeof cmd);
         /* url_decode stops at '&': keep "file=..." whole */
         if (buf) { run_dev(cmd, buf, 32768); http_text(c, 200, buf); kfree(buf); }
+    } else if (!strncmp(path, "/update", 7)) {
+        /* /update: where updates stand; ?check, ?install, ?auto=0|1 */
+        char buf[1024];
+        update_dev(path[7] == '?' ? path + 8 : "", buf, sizeof buf);
+        http_text(c, 200, buf);
     } else if (strcmp(path, "/perf") == 0) {
         char buf[2048];
         perf_report(buf, sizeof buf);

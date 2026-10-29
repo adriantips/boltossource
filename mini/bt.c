@@ -80,8 +80,6 @@ enum { H4_CMD = 1, H4_ACL = 2, H4_EVT = 4 };
 #define PSM_HID_CTRL 0x11
 #define PSM_HID_INTR 0x13
 
-extern const uint8_t _binary_bt_pskey_bin_start[], _binary_bt_pskey_bin_end[];
-extern const uint8_t _binary_bt_rf_bin_start[], _binary_bt_rf_bin_end[];
 void hid_pointer_move(int dx, int dy, int btn, int wheel);
 
 /* What we know about a device beyond what the Settings page shows. */
@@ -1302,17 +1300,18 @@ int bt_start(void) {
     B.rxn = 0;
 
     /* The vendor's three: settings (with our own address), RF tables, enable. */
-    int plen = (int)(_binary_bt_pskey_bin_end - _binary_bt_pskey_bin_start);
-    int rlen = (int)(_binary_bt_rf_bin_end - _binary_bt_rf_bin_start);
-    if (plen < 26 || plen > 255 || rlen < 1 || rlen > 255) { B.state = BT_FAILED; say("This kernel was built without the Bluetooth settings"); return -1; }
+    uint32_t pl, rl;
+    const uint8_t *ps = wcn_blob(WCN_FW_BT_PSKEY, &pl), *rf = wcn_blob(WCN_FW_BT_RF, &rl);
+    int plen = (int)pl, rlen = (int)rl;
+    if (plen < 26 || plen > 255 || rlen < 1 || rlen > 255) { B.state = BT_FAILED; say("This kernel has no Bluetooth settings, and the card has no copy of them"); return -1; }
     uint8_t pskey[255];
-    memcpy(pskey, _binary_bt_pskey_bin_start, (size_t)plen);
+    memcpy(pskey, ps, (size_t)plen);
     uint32_t h = 0x811C9DC5u;                               /* from the H618's ID, as the USB link's MAC */
     for (int i = 0; i < 4; i++) { h ^= r32(0x03006200u + 4u * (uint32_t)i) + 0x42u; h *= 16777619u; }
     uint8_t a[6] = { (uint8_t)h, (uint8_t)(h >> 8), (uint8_t)(h >> 16), (uint8_t)(h >> 24), 0x2E, 0xB0 };
     if (a[2] == 0x9E && a[1] == 0x8B && a[0] < 0x40) a[0] |= 0x40;   /* not an inquiry access code */
     memcpy(pskey + 20, a, 6);
-    if (cmd_wait(OP_VSC_PSKEY, pskey, plen, 2000) < 0 || cmd_wait(OP_VSC_RF, _binary_bt_rf_bin_start, rlen, 2000) < 0) {
+    if (cmd_wait(OP_VSC_PSKEY, pskey, plen, 2000) < 0 || cmd_wait(OP_VSC_RF, rf, rlen, 2000) < 0) {
         B.state = BT_FAILED; say("The Bluetooth controller didn't answer"); return -1;
     }
     uint8_t en[3] = { 0, 0, 1 };                            /* dual mode, enable */

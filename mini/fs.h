@@ -26,6 +26,8 @@ int  fs_stat(const char *path, fs_ent_t *out);                 /* 0 if it exists
 /* The whole file, NUL-terminated, in a kmalloc'd buffer the caller frees. */
 int  fs_read(const char *path, char **out, uint32_t *len);
 int  fs_write(const char *path, const void *data, uint32_t len);  /* makes or replaces */
+/* BOLTOS.BIN, which fs_write won't touch: for an update (update.c) only. */
+int  fs_install_kernel(const void *data, uint32_t len);
 int  fs_mkdir(const char *path);          /* and the folders above it                          */
 int  fs_remove(const char *path);         /* a file, or a folder and everything in it          */
 int  fs_rename(const char *from, const char *to);              /* also into another folder */

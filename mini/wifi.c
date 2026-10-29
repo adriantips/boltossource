@@ -54,7 +54,6 @@ enum {
 #define AKM_PSK         2
 #define HDR             12               /* struct sprdwl_cmd_hdr */
 
-extern const uint8_t _binary_wifi_ini_bin_start[], _binary_wifi_ini_bin_end[];
 
 static netif_t wlan;
 static struct {
@@ -468,8 +467,9 @@ int wifi_start(void) {
             i == 160 || i == 161 || (i >= 176 && i <= 179) || i == 224 || (i >= 242 && i <= 248)) api[4 + i] = 1;
     if (command(CMD_SYNC_VERSION, api, sizeof api, 3000) < 0) { say(WIFI_FAILED, "The Wi-Fi firmware didn't answer"); return -1; }
 
-    const uint8_t *ini = _binary_wifi_ini_bin_start;
-    int inilen = (int)(_binary_wifi_ini_bin_end - _binary_wifi_ini_bin_start);
+    uint32_t inisz;
+    const uint8_t *ini = wcn_blob(WCN_FW_WIFI_INI, &inisz);
+    int inilen = (int)inisz;
     if (inilen >= 1796) {
         int rf = (int)(ini[1792] | ini[1793] << 8);
         int bad = download_ini(1, ini, 328);

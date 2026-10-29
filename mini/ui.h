@@ -36,7 +36,7 @@ extern const app_t app_browser, app_code, app_terminal, app_monitor, app_notes, 
 
 enum { G_TERMINAL, G_MONITOR, G_NOTES, G_CLOCK, G_SETTINGS, G_MAC, G_KEYBOARD,
        G_POWER, G_CHECK, G_CHEVRON, G_CLOSE, G_DOT, G_GLOBE, G_WIFI, G_BLUETOOTH, G_LOCK,
-       G_PACKAGE, G_CHAT, G_CODE, G_FOLDER, G_FILE, G_PLAY, G_STOP };
+       G_PACKAGE, G_CHAT, G_CODE, G_FOLDER, G_FILE, G_PLAY, G_STOP, G_UPDATE };
 
 /* ---- the theme ---------------------------------------------------------------- */
 typedef struct {
@@ -79,6 +79,7 @@ int  shell_mac_connected(void);
 extern uint64_t g_idle_us;
 void clock_text(char *hm, int hm_cap, char *date, int date_cap);
 void shell_settings_save(void);                     /* theme, accent, time zone */
+void settings_show_updates(void);                   /* Settings, on its Updates page */
 /* The clipboard, shared by the apps and the Mac's (through Screen Sharing). */
 void clip_set(const char *s, int n);
 const char *clip_get(int *n);
