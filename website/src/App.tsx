@@ -4,6 +4,7 @@ import { Layout } from '@/components/site/Layout'
 import Home from '@/pages/Home'
 
 const Tv = lazy(() => import('@/pages/Tv'))
+const Mini = lazy(() => import('@/pages/Mini'))
 const Revamp = lazy(() => import('@/pages/Revamp'))
 const SystemOverview = lazy(() => import('@/pages/SystemOverview'))
 const SystemDetail = lazy(() => import('@/pages/SystemDetail'))
@@ -23,6 +24,7 @@ export default function App() {
           <Route element={<Layout />}>
             <Route index element={<Home />} />
             <Route path="tv" element={<Tv />} />
+            <Route path="mini" element={<Mini />} />
             <Route path="revamp" element={<Revamp />} />
             <Route path="system" element={<SystemOverview />} />
             <Route path="system/:slug" element={<SystemDetail />} />

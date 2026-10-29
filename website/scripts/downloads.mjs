@@ -1,5 +1,5 @@
-// Put the BoltOS TV images on boltos.dev itself, so they download from the
-// site rather than from GitHub. Workers static assets refuse any file over
+// Put the BoltOS TV and Mini images on boltos.dev itself, so they download
+// from the site rather than from GitHub. Workers static assets refuse any file over
 // 25 MiB and the TV images are ~37 MiB (the films do not compress), so each
 // one is cut into parts here and worker.js stitches them back into a single
 // response. Runs after `vite build`; an image that has not been built is
@@ -11,7 +11,7 @@ const root = path.resolve(import.meta.dirname, '..')
 const iso = path.resolve(root, '..', 'iso')
 const out = path.join(root, 'dist', 'dl')
 const PART = 20 * 1024 * 1024
-const files = ['boltostv-usb.img.gz', 'boltos-tv.iso']
+const files = ['boltostv-usb.img.gz', 'boltos-tv.iso', 'boltos-mini-sdcard.img.gz']
 
 fs.mkdirSync(out, { recursive: true })
 const manifest = {}

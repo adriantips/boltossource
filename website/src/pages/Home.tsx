@@ -15,12 +15,14 @@ import { systems } from '@/data/systems'
 import { stats, downloads } from '@/data/site'
 import { hasShot, thumbSrc } from '@/data/shots'
 import { tv, tvNumbers, tvDownloads } from '@/data/tv'
+import { mini, miniNumbers, miniDownloads } from '@/data/mini'
 
 export default function Home() {
   return (
     <>
       <Hero />
       <HeroShot />
+      <MiniBand />
       <TvBand />
       <Marquee />
       <Stats />
@@ -136,6 +138,75 @@ function HeroShot() {
           <span>The glass desktop, captured from the current build at 1920×1080.</span>
           <span className="font-mono">QEMU · 2 CPUs · 2 GiB</span>
         </div>
+      </Container>
+    </section>
+  )
+}
+
+// The newest edition: BoltOS on an Orange Pi Zero3, with the Mac as its screen.
+function MiniBand() {
+  const card = miniDownloads[0]
+  const shots = ['mini_web', 'mini_video', 'mini_terminal', 'mini_settings'].filter(hasShot)
+  return (
+    <section className="relative overflow-hidden border-t border-line py-28 sm:py-40">
+      <div className="grid-bg fade-edges pointer-events-none absolute inset-0 opacity-40" />
+      <Container className="relative">
+        <Reveal>
+          <p className="inline-flex items-center gap-3 rounded-full border border-white/15 bg-black/40 py-1.5 pr-4 pl-1.5 backdrop-blur">
+            <span className="rounded-full bg-white px-2.5 py-0.5 font-mono text-[10.5px] font-medium text-black">NEW</span>
+            <span className="font-mono text-[11.5px] text-smoke">{mini.dates} · for the {mini.board}</span>
+          </p>
+        </Reveal>
+        <h2 className="display mt-8 text-[clamp(4rem,15.5vw,16rem)] !leading-[0.86]">
+          <MaskLines lines={['BoltOS', <span className="serif-i text-smoke">Mini.</span>]} />
+        </h2>
+        <div className="mt-10 grid gap-10 lg:grid-cols-[1.3fr_1fr] lg:items-end">
+          <Reveal>
+            <p className="max-w-2xl text-[clamp(1.1rem,1.6vw,1.35rem)] leading-relaxed text-white/80">
+              BoltOS on a matchbox-sized ARM board. Its own 64-bit kernel for the Orange Pi Zero3, up a quarter of a second after
+              U-Boot, with a code editor that runs Python, C and C++, a browser, YouTube on the second core, Wi-Fi, Bluetooth and
+              a language model of its own — and a Mac as its screen, over one USB-C cable.
+            </p>
+          </Reveal>
+          <Reveal delay={0.1} className="flex flex-wrap gap-3 lg:justify-end">
+            <Button to="/mini">Meet BoltOS Mini <ArrowUpRight className="size-4" /></Button>
+            <Button to={card.href} variant="ghost" download><DownloadIcon className="size-4" /> Get it</Button>
+          </Reveal>
+        </div>
+
+        <Reveal className="relative mx-auto mt-16 max-w-5xl sm:mt-20">
+          <div className="overflow-hidden rounded-[12px] border border-white/12 bg-[#1b1c1f] shadow-[0_60px_160px_-40px_rgba(255,255,255,0.18)]">
+            <div className="flex h-9 items-center gap-2 border-b border-white/10 px-4">
+              <span className="size-3 rounded-full bg-[#ff5f57]" />
+              <span className="size-3 rounded-full bg-[#febc2e]" />
+              <span className="size-3 rounded-full bg-[#28c840]" />
+              <span className="ml-3 text-[12.5px] font-medium text-white/70">BoltOS Mini</span>
+            </div>
+            {hasShot('mini_home') && <img src="/shots/mini_home.webp" alt="BoltOS Mini's home screen in Screen Sharing on a Mac" width={1024} height={600} loading="lazy" className="block h-auto w-full" />}
+          </div>
+          <p className="mt-4 text-center font-mono text-[11px] tracking-[0.14em] text-fog uppercase">Home, in Screen Sharing · straight off the Pi</p>
+        </Reveal>
+
+        {shots.length > 0 && (
+          <Reveal className="mt-14 grid grid-cols-2 gap-4 lg:grid-cols-4">
+            {shots.map(k => (
+              <Link key={k} to="/mini" className="group overflow-hidden rounded-xl border border-white/10 bg-black">
+                <img src={thumbSrc(k)} alt="" width={960} height={562} loading="lazy" className="block h-auto w-full transition-transform duration-700 group-hover:scale-[1.03]" />
+              </Link>
+            ))}
+          </Reveal>
+        )}
+
+        <Reveal className="mt-16 grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-white/10 bg-white/10 lg:grid-cols-4">
+          {miniNumbers.map(n => (
+            <div key={n.label} className="bg-black/75 p-6 sm:p-8">
+              <div className="display text-[clamp(2rem,4vw,3.4rem)] tabular-nums">
+                {n.value}<span className="ml-1 text-[0.45em] text-fog">{n.unit}</span>
+              </div>
+              <p className="mt-3 text-[13px] leading-snug text-smoke">{n.label}</p>
+            </div>
+          ))}
+        </Reveal>
       </Container>
     </section>
   )

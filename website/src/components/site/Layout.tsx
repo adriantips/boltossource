@@ -9,6 +9,7 @@ import Noise from '@/components/bits/Noise'
 const titles: Record<string, string> = {
   '/': 'BoltOS — an operating system, written from nothing',
   '/tv': 'BoltOS TV — the television edition',
+  '/mini': 'BoltOS Mini — for the Orange Pi Zero3',
   '/revamp': 'The huge UI revamp — BoltOS',
   '/system': 'Architecture — BoltOS',
   '/apps': 'Apps — BoltOS',

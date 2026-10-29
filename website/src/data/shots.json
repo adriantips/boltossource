@@ -295,6 +295,50 @@
 889,
 556
 ],
+"mini_code": [
+1024,
+600
+],
+"mini_code_cpp": [
+1024,
+600
+],
+"mini_browser_start": [
+1024,
+600
+],
+"mini_clock": [
+1024,
+600
+],
+"mini_home": [
+1024,
+600
+],
+"mini_home_light": [
+1024,
+600
+],
+"mini_monitor": [
+1024,
+600
+],
+"mini_settings": [
+1024,
+600
+],
+"mini_terminal": [
+1024,
+600
+],
+"mini_video": [
+1024,
+600
+],
+"mini_web": [
+1024,
+600
+],
 "mixer": [
 1920,
 1080
@@ -714,5 +758,13 @@
 "v1_tiled": [
 1920,
 1080
+],
+"mini_packages": [
+1024,
+600
+],
+"mini_ai": [
+1024,
+600
 ]
 }
