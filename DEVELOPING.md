@@ -404,6 +404,26 @@ bash run-uefi.sh          # the same, on OVMF firmware
 `esp/` (an EFI system partition). It fails the build if stage2 outgrows its 32
 sectors, which is the kind of thing you find out about at boot otherwise.
 
+It runs on Windows with msys2, and on macOS or Linux with the toolchain in
+`build/.tools/env` that TV.md describes (LLVM's `llvm-dlltool` stands in for
+mingw's kernel32 import library there).
+
+### Releasing a version
+
+```sh
+bash release.sh desktop   # or mini, or tv
+```
+
+raises the edition's version (`kernel/VERSION`, `mini/VERSION`, `tv/VERSION`),
+builds it and puts the kernel and a description of it on boltos.dev, under
+`/update/`. Every running BoltOS of that edition sees it within six hours, or
+at its next start. `--big` marks an update that only installs when someone
+presses Update; `--notes` says what's new (by default, the subjects of the
+edition's commits since the last release); `--channel NAME` publishes to a test
+channel that only a kernel built with `BOLTOS_UPDATE_CHANNEL=NAME` asks for.
+The update itself is `kernel/sysupdate.c` on the desktop and the TV, and
+`mini/update.c` on Mini.
+
 ### The layout
 
 ```

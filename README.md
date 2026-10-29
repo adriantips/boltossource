@@ -10,6 +10,18 @@ honest account of what it cannot do yet.
 [SDK.md](SDK.md) for the syscall ABI and [SHELL.md](SHELL.md) for the shell.
 **What is left:** [ROADMAP.md](ROADMAP.md).
 
+## New: updates, by themselves
+
+Every edition -- the desktop, BoltOS TV and BoltOS Mini -- now checks
+boltos.dev for a newer version when it starts and every six hours after.
+A quick update installs itself at the start and the machine restarts into
+it; a big one waits in **Settings → Updates** for the Update button, and a
+switch there turns the automatic part off. The new kernel is checked
+against its SHA-256, written beside the old one and read back before one
+sector switches the machine over, so a power cut never leaves half of it.
+`bash release.sh mini|tv|desktop` publishes one; [boltos.dev/updates](https://boltos.dev/updates)
+shows what each edition is on.
+
 ## New: BoltOS TV
 
 ![BoltOS TV](website/public/shots/tv_home.webp)
