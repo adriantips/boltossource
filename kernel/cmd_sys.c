@@ -17,7 +17,8 @@
 #include "framebuffer.h"
 #include "ata.h"
 
-#define BOLT_VERSION "BoltOS 0.2"
+#include "buildid.h"
+#define OS_NAME "BoltOS " BOLT_VERSION
 
 static void p2(uint8_t v) { kprintf("%s%u", v < 10 ? "0" : "", (unsigned)v); }
 
@@ -122,7 +123,7 @@ int cmd_uptime(int argc, char **argv) {
 int cmd_version(int argc, char **argv) {
     (void)argc; (void)argv;
     char brand[49]; hw_cpu_brand(brand);
-    kprintf("%s  (64-bit long mode)\n", BOLT_VERSION);
+    kprintf("%s  (64-bit long mode)\n", OS_NAME);
     kprintf("arch     : x86-64\n");
     kprintf("cpu      : %s\n", brand[0] ? brand : "x86-64");
     kprintf("clock    : "); print_datetime(); kprintf("\n");
@@ -324,7 +325,7 @@ int cmd_sysinfo(int argc, char **argv) {
     int npci = pci_scan(pds, 32);
 
     kprintf("=============== BoltOS system summary ===============\n");
-    kprintf(" os      : %s (x86-64 long mode)\n", BOLT_VERSION);
+    kprintf(" os      : %s (x86-64 long mode)\n", OS_NAME);
     kprintf(" cpu     : %s\n", brand[0] ? brand : "x86-64");
     kprintf(" memory  : %lu MiB total, %lu MiB free\n",
             (unsigned long)((totp * 4096ull) >> 20),

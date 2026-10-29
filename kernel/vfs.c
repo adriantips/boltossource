@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
+#include "buildid.h"
 #include "vfs.h"
 #include "fs.h"
 #include "kheap.h"
@@ -121,7 +122,7 @@ static procbuf *proc_gen(const char *path) {
         o = put_str(o, "KHeapAvail:"); o = put_u64(o, h.free_bytes >> 10); o = put_str(o, " kB\n");
         o = put_str(o, "KHeapLargest:"); o = put_u64(o, h.largest_free >> 10); o = put_str(o, " kB\n");
     } else if (!strcmp(path, "/proc/version")) {
-        o = put_str(o, "BoltOS 0.3 (x86-64 long mode)\n");
+        o = put_str(o, "BoltOS " BOLT_VERSION " (x86-64 long mode)\n");
     } else {
         kfree(buf); return 0;
     }

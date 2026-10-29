@@ -30,6 +30,9 @@
 #include "keyboard.h"
 #include "mouse.h"
 #include "xhci.h"
+#include "ata.h"
+#include "ahci.h"
+#include "nvme.h"
 #include "sched.h"
 #include "audio.h"
 #include "hw.h"
@@ -71,7 +74,7 @@ void kmain(struct bootinfo *bi) {
     if (fb_present()) fb_fill(0x000000);
 
     kprintf("==================================================\n");
-    kprintf("   BoltOS TV  -  build %s\n", BOLT_BUILD_ID);
+    kprintf("   BoltOS TV %s  -  build %s\n", BOLT_VERSION, BOLT_BUILD_ID);
     kprintf("==================================================\n");
     if (fb_present())
         kprintf("[ok] panel %ux%u @0x%lx (%s)\n", fb_width(), fb_height(), bi->fb_addr,
@@ -98,6 +101,11 @@ void kmain(struct bootinfo *bi) {
     hpet_init();
     sti();
 
+    /* The disks, for updates only: the stick BoltOS TV started from is where
+     * a new kernel goes (kernel/sysupdate.c). Nothing else touches them. */
+    ata_init();
+    ahci_init();
+    nvme_init();
     xhci_init();
     {
         int uk = 0, um = 0;

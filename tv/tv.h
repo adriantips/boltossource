@@ -71,6 +71,8 @@ float tv_view_t(void);             /* 0..1, eased, since the top view arrived   
 void tv_text_mode(int on);         /* a text field has the keyboard            */
 uint32_t tv_log_snapshot(char *out, uint32_t cap);
 void tv_pop(void);
+uint64_t tv_idle_ms(void);         /* since the last key                        */
+void tv_update_init(void);         /* boltos.dev's updates (tv/settings.c)      */
 void tv_go_home(void);
 const view_t *tv_top(void);
 int  tv_pointer_visible(void);
@@ -215,6 +217,9 @@ const uint8_t *settings_picture_lut(void);
 /* ---- network service (tv/netsvc.c) --------------------------------------- */
 enum { NET_DOWN = 0, NET_PROBING, NET_DHCP, NET_UP, NET_NOLINK };
 void netsvc_start(void);
+/* GET url into buf on the network thread, waiting for it: for a thread of its
+ * own (the updater's), never the shell's. The body's length, or -1. */
+int  netsvc_get(const char *url, const char *headers, char *buf, uint32_t cap, int *status);
 int  netsvc_state(void);
 const char *netsvc_nic(void);        /* "Intel e1000", "" if none */
 uint32_t netsvc_ip(void);
@@ -234,6 +239,7 @@ typedef struct fetch {
     int       len;             /* body bytes on success                        */
     int       status;          /* HTTP status, or a negative reason            */
     char      location[1024];  /* a redirect's target                          */
+    const char *headers;       /* extra request header lines, or NULL           */
 } fetch_t;
 int  netsvc_fetch(fetch_t *f);       /* 0 queued, -1 queue full */
 void netsvc_cancel(fetch_t *f);

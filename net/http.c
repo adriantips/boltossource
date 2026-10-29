@@ -432,6 +432,10 @@ done:;
     return (int)blen;
 }
 
+/* Bytes of the response read so far by the http_request running now: a
+ * download's progress, read from another thread (kernel/sysupdate.c). */
+volatile uint32_t http_rx_bytes;
+
 int http_get(const char *url, char *out, uint32_t cap,
              int *status, char *location, uint32_t loc_cap) {
     return http_request("GET", url, 0, 0, 0, out, cap, status, location, loc_cap);
@@ -495,6 +499,7 @@ int http_request(const char *method, const char *url, const char *headers,
                        : tcp_recv(tc, out + total, cap - 1 - total, 8000);
         if (r <= 0) break;
         total += (uint32_t)r;
+        http_rx_bytes = total;
     }
     if (secure) tls_close(sc); else tcp_close(tc);
     out[total] = 0;

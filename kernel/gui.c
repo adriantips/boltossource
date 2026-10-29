@@ -1839,6 +1839,14 @@ void gui_run(void) {
             }
             (void)mouse_wheel();
             if (login_active) {
+                /* Updates carry on behind the sign-in screen: it is when a
+                 * quick one goes in, before anybody has opened anything. */
+                static uint64_t upd_pit;
+                if (pit_ticks() - upd_pit >= 150) {
+                    upd_pit = pit_ticks();
+                    void settings_update_tick(void);
+                    settings_update_tick();
+                }
                 int busy_anim = login_frame(gui_now());
                 if (!busy_anim) __asm__ volatile("hlt");
                 continue;
@@ -1894,6 +1902,8 @@ void gui_run(void) {
             }
             last_caret = caret;
             shell_tick(now);
+            void settings_update_tick(void);
+            settings_update_tick();
         }
 
         /* Brightness is applied on the way to VRAM, so only what gets

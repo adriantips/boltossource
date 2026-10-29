@@ -51,8 +51,8 @@ name and the time.
   speakers), not over HDMI. Driving HDMI audio is not done yet.
 - **Network** is wired Ethernet only (Intel e1000-family and virtio
   adapters). There is no Wi-Fi.
-- **Settings are not saved.** The TV build has no disk, so it starts with the
-  defaults every time.
+- **Settings are not saved.** BoltOS TV starts with the defaults every time.
+  The one exception is Automatic updates, which is kept on the stick.
 - **No JavaScript in the browser.** Text-first sites work well; web apps
   don't. YouTube and streaming services won't play.
 
@@ -167,6 +167,25 @@ a second. On real hardware they play at full speed.
 
 A mouse or air-mouse works everywhere as well: point and click, and use the
 wheel to scroll pages.
+
+## Updates
+
+BoltOS TV asks boltos.dev for a newer version once it's online, and every
+six hours after; Settings → Updates shows the answer. With Automatic
+updates on, a *quick* update found when the TV starts installs and
+restarts into itself. A *big* one, or any one with the switch off, waits
+for **Update** on that page.
+
+The new kernel goes onto the stick the TV started from, beside the old
+one, on the EFI partition, which is why the stick image has room for two.
+Both ways of starting switch over (the boot header for legacy BIOS,
+`kernel.bin` for UEFI), each with one sector write, after the new kernel
+has been read back against its SHA-256. Sticks written before version 1.1
+don't have the updater (or the room): write the new image to them once.
+The ISO can't be changed, so a TV started from a CD is told to use the
+stick.
+
+`bash release.sh tv` publishes one (see `release.sh --help`).
 
 ## Building it
 

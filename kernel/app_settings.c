@@ -2,7 +2,7 @@
  *  BoltOS  -  kernel/app_settings.c
  *
  *  Settings: a sidebar of pages, the way every OS since about 2015 has done
- *  it -- Personalization, Display, Sound, Text, About. Each control edits
+ *  it -- Personalization, Display, Sound, Text, Updates, About. Each control edits
  *  g_settings and calls settings_apply(), which retints the theme and asks the
  *  desktop to relayout and repaint; nothing here knows how any of that works.
  *
@@ -30,10 +30,15 @@
 #include "kheap.h"
 #include "buildid.h"
 #include "keyboard.h"
+#include "sysupdate.h"
+#include "net.h"
+#include "notify.h"
+#include "acpi.h"
+#include "gui_int.h"
 
-enum { PG_PERSONAL = 0, PG_DISPLAY, PG_SOUND, PG_TEXT, PG_ABOUT, PG_COUNT };
-static const char *PAGE_NAME[PG_COUNT] = { "Personalization", "Display", "Sound", "Text & fonts", "About" };
-static const int   PAGE_GLYPH[PG_COUNT] = { GLYPH_PALETTE, GLYPH_MONITOR, GLYPH_SPEAKER, GLYPH_TYPE, GLYPH_INFO };
+enum { PG_PERSONAL = 0, PG_DISPLAY, PG_SOUND, PG_TEXT, PG_UPDATE, PG_ABOUT, PG_COUNT };
+static const char *PAGE_NAME[PG_COUNT] = { "Personalization", "Display", "Sound", "Text & fonts", "Updates", "About" };
+static const int   PAGE_GLYPH[PG_COUNT] = { GLYPH_PALETTE, GLYPH_MONITOR, GLYPH_SPEAKER, GLYPH_TYPE, GLYPH_DOWNLOAD, GLYPH_INFO };
 
 static int      page;
 static window_t *self;
@@ -56,6 +61,8 @@ static int      sl_x[4], sl_w[4]; /* slider geometry, desktop coords, by id-SL_B
 #define ID_MIXER     1001
 #define SL_BASE      1100         /* sliders: + 0 brightness, 1 volume */
 #define ID_MOTION    1200         /* + MOTION_*                    */
+#define ID_UPD_AUTO  1300
+#define ID_UPD_GO    1301
 
 /* ---- wallpapers ------------------------------------------------------------- */
 typedef struct { const char *name; const char *stem; int style; } wpick_t;
@@ -368,11 +375,105 @@ static int draw_text(int x, int y, int w) {
     return y + 130;
 }
 
+/* ---- updates (kernel/sysupdate.c does the work) ----------------------------- */
+static int  desk_online(void) { return net_ip != 0; }
+static void desk_toast(const char *t, const char *d) {
+    char b[128];
+    snprintf(b, sizeof b, "%s %s", t, d ? d : "");
+    notify_info("Updates", b);
+}
+static void desk_reboot(void) { fs_sync(); acpi_reboot(); }
+static uint64_t desk_idle(void) { return pit_ticks() - gui_last_input_tick; }
+static const sysupd_host_t desk_host = {
+    .product = "BoltOS", .version = BOLT_VERSION, .online = desk_online,
+#ifdef UPDATE_CHANNEL
+    .channel = UPDATE_CHANNEL,            /* release.sh --channel: a test one */
+#else
+    .channel = "desktop",
+#endif
+    .toast = desk_toast, .reboot = desk_reboot, .idle_ms = desk_idle,
+};
+
+/* The compositor's app tick, whether or not Settings is open. */
+void settings_update_tick(void) {
+    if (sysupd_poll() && self && page == PG_UPDATE) gui_redraw_window(self);
+}
+
+static void mbytes(char *out, int cap, uint32_t b) {
+    snprintf(out, (size_t)cap, "%u.%u MB", b / 1000000, b % 1000000 / 100000);
+}
+
+static int draw_updates(int x, int y, int w) {
+    const sysupd_t *u = sysupd_state();
+    char line[128], sz[16];
+    ui_card(x, y, w, 60);
+    row_label(x + 16, y + 30, "Automatic updates",
+              sysupd_auto() ? "Quick updates install when BoltOS starts; big ones wait for you" : "Updates wait for you to choose Update");
+    ui_toggle(&U, x + w - 16 - 40, y + 19, sysupd_auto(), ID_UPD_AUTO);
+    y += 70;
+
+    int busy = u->state == SU_CHECKING || u->state == SU_DOWNLOADING || u->state == SU_INSTALLING;
+    int lines = 0;
+    for (const char *p = u->notes; u->have && *p; p++) if (*p == '\n') lines++;
+    int h = 76 + (u->have && u->notes[0] ? 26 + (lines + 1) * 20 : 0) + (u->state == SU_DOWNLOADING ? 16 : 0);
+    ui_card(x, y, w, h);
+    const char *title = "Up to date";
+    if (u->have) { snprintf(line, sizeof line, "BoltOS %s", u->version); title = line; }
+    else if (u->state == SU_WAITING || u->state == SU_CHECKING || u->state == SU_FAILED) title = "Updates";
+    char sub[128];
+    if (u->state == SU_DOWNLOADING && u->size) {
+        char g[16]; mbytes(g, sizeof g, u->got > u->size ? u->size : u->got); mbytes(sz, sizeof sz, u->size);
+        snprintf(sub, sizeof sub, "Downloading " TXT_EMDASH " %s of %s", g, sz);
+    } else snprintf(sub, sizeof sub, "%s", u->msg);
+    row_label(x + 16, y + 34, title, sub);
+    const char *label = "Check now";
+    char bl[40];
+    int style = UI_BTN_SECONDARY;
+    if (u->state == SU_RESTART) { label = "Restart now"; style = UI_BTN_PRIMARY; }
+    else if (u->have) { snprintf(bl, sizeof bl, "%s %s", u->state == SU_FAILED ? "Try" : "Update to", u->version); label = bl; style = UI_BTN_PRIMARY; }
+    if (busy) label = u->state == SU_CHECKING ? "Checking" "\x85" : "Installing" "\x85";
+    int bw = ui_button_w(label);
+    ui_button(&U, x + w - 16 - bw, y + 19, bw, 30, label, busy ? UI_BTN_SUBTLE : style, busy ? -1 : ID_UPD_GO);
+    int ty = y + 76;
+    if (u->state == SU_DOWNLOADING) {
+        ui_progress(x + 16, y + 66, w - 32, u->size ? (int)((uint64_t)u->got * 100 / u->size) : 0, 0);
+        ty += 16;
+    }
+    if (u->have && u->notes[0]) {
+        mbytes(sz, sizeof sz, u->size);
+        snprintf(line, sizeof line, "%s update " "\xB7" " %s%s%s", u->big ? "Big" : "Quick", sz, u->date[0] ? " " "\xB7" " " : "", u->date);
+        text_l(x + 16, ty, line, FONT_SEMIBOLD, 12, COL_TEXT_DIM);
+        ty += 26;
+        for (const char *p = u->notes; *p; ) {
+            const char *e = strchr(p, '\n');
+            int n = e ? (int)(e - p) : (int)strlen(p);
+            char l[160];
+            snprintf(l, sizeof l, "%.*s", n < 159 ? n : 159, p);
+            gfx_circle((float)x + 20.0f, (float)ty, 2.0f, COL_TEXT_DIM, 255);
+            text_fit_l(x + 30, ty, l, w - 46, FONT_REGULAR, 13, COL_TEXT);
+            ty += 20;
+            p += n + (e ? 1 : 0);
+        }
+    }
+    y += h + 10;
+
+    ui_card(x, y, w, 2 * 40 + 8);
+    const char *K[2] = { "Installed", "Installs to" };
+    const char *V[2] = { "BoltOS " BOLT_VERSION " (" BOLT_BUILD_ID ")", u->disk[0] ? u->disk : "The disk BoltOS started from" };
+    for (int i = 0; i < 2; i++) {
+        int ry = y + 4 + i * 40;
+        if (i) ui_card_row_sep(x + 16, ry, w - 32);
+        text_l(x + 16, ry + 20, K[i], FONT_REGULAR, 13, COL_TEXT);
+        text_fit_l(x + 150, ry + 20, V[i], w - 166, FONT_REGULAR, 13, COL_TEXT_DIM);
+    }
+    return y + 2 * 40 + 18;
+}
+
 static int draw_about(int x, int y, int w) {
     ui_card(x, y, w, 150);
     icon_draw(ICON_START, x + 24, y + 27, 96, 255);
     font_draw(FONT_BOLD, 30, x + 140, y + 62, "BoltOS", -1, COL_TEXT, 255);
-    text_l(x + 140, y + 86, "Built " BOLT_BUILD_ID, FONT_REGULAR, 12, COL_TEXT_DIM);
+    text_l(x + 140, y + 86, "Version " BOLT_VERSION ", built " BOLT_BUILD_ID, FONT_REGULAR, 12, COL_TEXT_DIM);
     text_l(x + 140, y + 108, "A 64-bit operating system, written from the boot sector up", FONT_REGULAR, 12, COL_TEXT_DIM);
     y += 164;
     char cpu[49]; hw_cpu_brand(cpu);
@@ -422,6 +523,7 @@ static void settings_draw(window_t *w, int cx, int cy, int cw, int ch) {
     case PG_DISPLAY:  draw_display(px, y, pw); break;
     case PG_SOUND:    draw_sound(px, y, pw); break;
     case PG_TEXT:     draw_text(px, y, pw); break;
+    case PG_UPDATE:   draw_updates(px, y, pw); break;
     default:          draw_about(px, y, pw); break;
     }
     gfx_clip_pop();
@@ -471,6 +573,14 @@ static void act(int id, int lx_desktop) {
         return;
     }
     if (id == ID_MIXER) { mixer_app_open(); return; }
+    if (id == ID_UPD_AUTO) { sysupd_set_auto(!sysupd_auto()); return; }
+    if (id == ID_UPD_GO) {
+        const sysupd_t *u = sysupd_state();
+        if (u->state == SU_RESTART) sysupd_restart();
+        else if (u->have) sysupd_install();
+        else sysupd_check();
+        return;
+    }
     if (id == SL_BASE + 0) { backlight_set(ui_slider_value(sl_x[0], sl_w[0], lx_desktop) < 10 ? 10 : ui_slider_value(sl_x[0], sl_w[0], lx_desktop)); return; }
     if (id == SL_BASE + 1) { audio_set_volume(ui_slider_value(sl_x[1], sl_w[1], lx_desktop)); return; }
 }
@@ -516,4 +626,5 @@ void settings_app_init(void) {
     win->lazy_tick = 1;
     win->min_w = 640; win->min_h = 440;
     win->x = 90; win->y = 50;
+    sysupd_init(&desk_host);
 }

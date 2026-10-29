@@ -16,6 +16,10 @@
 int http_get(const char *url, char *out, uint32_t cap,
              int *status, char *location, uint32_t loc_cap);
 
+/* What the http_request running now has read, headers included: a big
+ * download's progress, for another thread to show. */
+extern volatile uint32_t http_rx_bytes;
+
 /* The same with a method, extra header lines ("Name: value\r\n" each, or
  * NULL) and a body (NULL for none; it gets a Content-Length). A User-Agent
  * among the headers replaces BoltOS's own. */

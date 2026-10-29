@@ -106,6 +106,23 @@ partition 1  a FAT32 EFI system partition holding BOOTX64.EFI and the kernel
 partition 2  BoltFS -- your files
 ```
 
+### Updates
+
+BoltOS checks boltos.dev for a newer version when it starts and every six
+hours after. Settings → Updates shows what it found and what changed.
+
+With **Automatic updates** on, a *quick* update found at the start installs
+itself and the machine restarts into it. A *big* update -- or any update with
+the switch off -- waits for **Update to ...** on that page, and a
+notification says it's there.
+
+The new kernel is written to the EFI partition of the disk BoltOS started
+from, beside the old one, and read back against its SHA-256. Then the boot
+header (legacy BIOS) and `kernel.bin` (UEFI) are each switched over with one
+sector write, so a power cut leaves the old kernel or the new one. A copy
+started from the CD image can't update itself; one started from the USB stick
+or installed to a disk can.
+
 ---
 
 ## Signing in

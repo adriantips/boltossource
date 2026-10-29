@@ -7,8 +7,9 @@
  *  step through with Left and Right, a switch, an action -- plus read-only
  *  rows for the network and About pages.
  *
- *  There is no disk in the TV build, so settings last until the set is
- *  switched off; the defaults below are what it comes up with every time.
+ *  Settings last until the set is switched off; the defaults below are what
+ *  it comes up with every time. The one exception is automatic updates,
+ *  which kernel/sysupdate.c keeps on the stick the TV started from.
  * ===========================================================================*/
 #include <stdint.h>
 #include "tv.h"
@@ -24,6 +25,7 @@
 #include "keyboard.h"
 #include "mouse.h"
 #include "buildid.h"
+#include "sysupdate.h"
 
 tvsettings_t tvs;
 
@@ -89,13 +91,33 @@ typedef struct {
     int id;                    /* what a CHOICE / ACTION does           */
 } item_t;
 
-enum { C_PICTURE, C_SOUND, C_BACKGROUND, C_NETWORK, C_SLEEP, C_CLOCK, C_ABOUT, C_POWER, C_COUNT };
+enum { C_PICTURE, C_SOUND, C_BACKGROUND, C_NETWORK, C_SLEEP, C_CLOCK, C_UPDATE, C_ABOUT, C_POWER, C_COUNT };
 static const struct { const char *name; int glyph; } CATS[C_COUNT] = {
     { "Picture", GL_SUN }, { "Sound", GL_VOL }, { "Background", GL_IMAGE }, { "Network", GL_ETHER },
-    { "Sleep timer", GL_MOON }, { "Clock", GL_CLOCK }, { "About", GL_INFO }, { "Power", GL_POWER },
+    { "Sleep timer", GL_MOON }, { "Clock", GL_CLOCK }, { "Updates", GL_RELOAD }, { "About", GL_INFO },
+    { "Power", GL_POWER },
 };
 
-enum { A_PICTURE_MODE = 1, A_FILM, A_SLEEP, A_TZ, A_RESTART, A_OFF };
+enum { A_PICTURE_MODE = 1, A_FILM, A_SLEEP, A_TZ, A_RESTART, A_OFF, A_UPDATE };
+
+/* ---- updates (kernel/sysupdate.c does the work) --------------------------- */
+static int upd_auto = 1;                  /* the switch's own copy             */
+
+static int tv_online(void) { return netsvc_state() == NET_UP; }
+static const sysupd_host_t tv_host = {
+    .product = "BoltOS TV", .version = BOLT_VERSION, .online = tv_online,
+#ifdef UPDATE_CHANNEL
+    .channel = UPDATE_CHANNEL,            /* release.sh --channel: a test one  */
+#else
+    .channel = "tv",
+#endif
+    .fetch = netsvc_get, .toast = tv_toast, .reboot = acpi_reboot, .idle_ms = tv_idle_ms,
+};
+void tv_update_init(void) { sysupd_init(&tv_host); }
+
+static void mbytes(char *out, int cap, uint32_t b) {
+    snprintf(out, (size_t)cap, "%u.%u MB", b / 1000000, b % 1000000 / 100000);
+}
 
 static item_t items[24];
 static int nitems;
@@ -183,8 +205,45 @@ static void build(void) {
         if (!tvs.utc_offset) snprintf(it->value, sizeof it->value, "UTC");
         info("Source", "%s", netsvc_clock_synced() ? "Internet time (NTP)" : "The computer's clock");
         break;
+    case C_UPDATE: {
+        const sysupd_t *u = sysupd_state();
+        static char act_label[48], line[160], notes[480];
+        upd_auto = sysupd_auto();
+        it = add(IT_SWITCH, "Automatic updates"); it->pv = &upd_auto;
+        int busy = u->state == SU_CHECKING || u->state == SU_DOWNLOADING || u->state == SU_INSTALLING;
+        if (!busy) {
+            if (u->state == SU_RESTART) snprintf(act_label, sizeof act_label, "Restart now");
+            else if (u->have) snprintf(act_label, sizeof act_label, "%s %s", u->state == SU_FAILED ? "Try again:" : "Update to", u->version);
+            else snprintf(act_label, sizeof act_label, "Check for updates");
+            it = add(IT_ACTION, act_label); it->id = A_UPDATE;
+        }
+        info("Software", "%s", "BoltOS TV " BOLT_VERSION);
+        if (u->state == SU_DOWNLOADING && u->size) {
+            char g[16], t[16];
+            mbytes(g, sizeof g, u->got > u->size ? u->size : u->got); mbytes(t, sizeof t, u->size);
+            snprintf(line, sizeof line, "Downloading %s: %s of %s", u->version, g, t);
+            info("Status", "%s", line);
+        } else info("Status", "%s", u->msg);
+        if (u->have) {
+            char sz[16]; mbytes(sz, sizeof sz, u->size);
+            snprintf(line, sizeof line, "%s  \x95  %s update  \x95  %s%s%s", u->version, u->big ? "big" : "quick", sz,
+                     u->date[0] ? "  \x95  " : "", u->date);
+            info("Newest", "%s", line);
+            int n = 0;
+            for (const char *p = u->notes; *p && n < (int)sizeof notes - 4; p++) {
+                if (*p == '\n') { if (n) { notes[n++] = ' '; notes[n++] = '\x95'; notes[n++] = ' '; } }
+                else notes[n++] = *p;
+            }
+            notes[n] = 0;
+            if (n) add(IT_HEAD, notes);
+        }
+        if (u->disk[0]) info("Installs to", "%s", u->disk);
+        add(IT_HEAD, upd_auto ? "Quick updates install by themselves when the TV starts. Big ones wait until you choose Update."
+                              : "Updates wait for you: choose Update when it suits you.");
+        break;
+    }
     case C_ABOUT: {
-        info("Software", "%s", "BoltOS TV 1.0");
+        info("Software", "%s", "BoltOS TV " BOLT_VERSION);
         info("Build", "%s", BOLT_BUILD_ID);
         static char cpu[49];
         hw_cpu_brand(cpu);
@@ -226,6 +285,7 @@ static int first_focusable(void) {
 }
 
 static void changed(item_t *it) {
+    if (it->pv == &upd_auto) sysupd_set_auto(upd_auto);
     if (it->pv == &tvs.brightness) settings_apply_picture();
     if (it->pv == &tvs.volume || it->pv == &tvs.muted) tv_volume_changed();
 }
@@ -262,6 +322,12 @@ static void act(item_t *it) {
     if (it->kind != IT_ACTION) return;
     sfx_select();
     if (it->id == A_RESTART) { tv_toast("Restarting", 0); acpi_reboot(); }
+    if (it->id == A_UPDATE) {
+        const sysupd_t *u = sysupd_state();
+        if (u->state == SU_RESTART) sysupd_restart();
+        else if (u->have) sysupd_install();
+        else sysupd_check();
+    }
     if (it->id == A_OFF) {
         acpi_poweroff();
         tv_toast("Could not switch off", "This machine did not answer the ACPI power-off. Hold its power button.");
@@ -354,7 +420,7 @@ static void settings_tick(uint64_t now) {
     float nc = ui_ease(cat_y, tc, dt, 150), nr = ui_ease(row_y, tr, dt, 150);
     if (nc != cat_y || nr != row_y || tv_view_t() < 1.0f) tv_redraw();
     cat_y = nc; row_y = nr;
-    if (cat == C_NETWORK || cat == C_SLEEP || cat == C_ABOUT) {
+    if (cat == C_NETWORK || cat == C_SLEEP || cat == C_ABOUT || cat == C_UPDATE) {
         static uint64_t last;
         if (now - last > 1000) { last = now; tv_redraw(); }
     }
@@ -441,7 +507,7 @@ static void settings_draw(uint64_t now) {
             }
             break;
         case IT_ACTION:
-            art_glyph(it->id == A_OFF ? GL_POWER : GL_RESTART, right - S(16), cy, S(28), ink, a);
+            art_glyph(it->id == A_OFF ? GL_POWER : it->id == A_UPDATE ? GL_CHEV_R : GL_RESTART, right - S(16), cy, S(28), ink, a);
             break;
         case IT_INFO:
             font_draw_fit(FONT_REGULAR, S(25), rx + S(330), cy + font_capheight(FONT_REGULAR, S(25)) / 2,

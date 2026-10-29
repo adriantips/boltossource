@@ -84,13 +84,6 @@ uint32_t netcfg_hosts_lookup(const char *name) { (void)name; return 0; }
  * repaints every frame anyway. */
 void gui_request_redraw(void) { }
 
-/* ---- USB mass storage ---------------------------------------------------- *
- * A stick plugged into the TV is enumerated and left alone. */
-void usbstor_attach(const usb_bulk_t *p) {
-    (void)p;
-    kprintf("[tv] USB storage device ignored (the TV build has no filesystem)\n");
-}
-
 /* ---- DNS ----------------------------------------------------------------- *
  * The one hook that is not a stub: dns.c asks before it resolves anything,
  * and the answer comes from the ad blocker. That is what makes it apply to

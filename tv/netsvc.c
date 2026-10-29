@@ -97,7 +97,7 @@ static void run_job(fetch_t *j) {
         j->len = -1;
     } else {
         j->location[0] = 0;
-        j->len = http_get(j->url, j->buf, j->cap, &j->status, j->location, sizeof j->location);
+        j->len = http_request("GET", j->url, j->headers, 0, 0, j->buf, j->cap, &j->status, j->location, sizeof j->location);
     }
     uint64_t f = irq_save();
     if (j->state == FETCH_CANCELLED) { irq_restore(f); kfree(j->buf); kfree(j); return; }
@@ -141,6 +141,20 @@ int netsvc_fetch(fetch_t *j) {
     irq_restore(f);
     ensure_worker();
     return 0;
+}
+
+int netsvc_get(const char *url, const char *headers, char *buf, uint32_t cap, int *status) {
+    fetch_t *j = kmalloc(sizeof *j);
+    if (!j) return -1;
+    memset(j, 0, sizeof *j);
+    snprintf(j->url, sizeof j->url, "%s", url);
+    j->buf = buf; j->cap = cap; j->headers = headers;
+    if (netsvc_fetch(j) != 0) { kfree(j); return -1; }
+    while (j->state == FETCH_QUEUED || j->state == FETCH_RUNNING) __asm__ volatile("hlt");
+    int n = j->state == FETCH_DONE ? j->len : -1;
+    if (status) *status = j->status;
+    kfree(j);                           /* the buffer is the caller's */
+    return n;
 }
 
 /* The caller is done with `j` (and its buffer, which must be kmalloc'd):

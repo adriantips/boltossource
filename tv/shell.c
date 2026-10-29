@@ -15,6 +15,7 @@
  * ===========================================================================*/
 #include <stdint.h>
 #include "tv.h"
+#include "sysupdate.h"
 #include "framebuffer.h"
 #include "keyboard.h"
 #include "keymap.h"
@@ -356,8 +357,12 @@ static void choose_canvas(void) {
 }
 
 /* ---- input --------------------------------------------------------------- */
+static uint64_t last_key;
+uint64_t tv_idle_ms(void) { return tv_now_ms() - last_key; }
+
 static void deliver(tvkey_t k) {
     const view_t *v = tv_top();
+    last_key = tv_now_ms();
     if (k.k == K_VOLUP || k.k == K_VOLDN || k.k == K_MUTE) { volume_key(k.k); return; }
     if (k.k == K_HOME && v != &view_home) { sfx_back(); tv_go_home(); return; }
     if (tvs.sleep_at && tvs.sleep_at - tv_now_ms() < 60000) {     /* any key keeps it on */
@@ -443,6 +448,7 @@ void tv_run(void) {
     film_begin(tvs.film >= 0 ? tvs.film : 0);
     tv_push(&view_home);
     netsvc_start();
+    tv_update_init();
 
     uint64_t last_min = (uint64_t)-1, frames = 0, sec0 = tv_now_ms();
     for (;;) {
@@ -452,6 +458,7 @@ void tv_run(void) {
         if (v->backdrop != BG_NONE && films_tick(now)) dirty = 1;
         if (v->tick) v->tick(now);
         sleep_tick(now);
+        if (sysupd_poll()) dirty = 1;
         if (now / 60000 != last_min) { last_min = now / 60000; dirty = 1; }
 
         if (dirty) {
