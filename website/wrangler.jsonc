@@ -1,10 +1,12 @@
 {
   // A static site on Workers. Unknown paths fall back to index.html so the
-  // client router can take /system/network. worker.js runs only for /dl/*
-  // and /pkg/*. /dl/ is the card and disk images, which are over the 25 MiB
-  // a single asset may be, so they are stored in parts and stitched back
-  // together there. /pkg/ is BoltOS Mini's packages (its Packages app reads
-  // /pkg/index.json), kept in the R2 bucket below.
+  // client router can take /system/network. worker.js runs only for /dl/*,
+  // /pkg/* and /update/*. /dl/ is the card and disk images, which are over
+  // the 25 MiB a single asset may be, so they are stored in parts and
+  // stitched back together there. /pkg/ is BoltOS Mini's packages (its
+  // Packages app reads /pkg/index.json) and /update/ is each edition's
+  // newest version (release.sh puts them there), both kept in the R2
+  // bucket below.
   "name": "boltos",
   "main": "worker.js",
   "compatibility_date": "2026-09-21",
@@ -12,7 +14,7 @@
     "directory": "./dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/dl/*", "/pkg/*"]
+    "run_worker_first": ["/dl/*", "/pkg/*", "/update/*"]
   },
   "r2_buckets": [
     { "binding": "PKG", "bucket_name": "boltos-packages" }

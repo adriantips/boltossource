@@ -6,6 +6,7 @@ import { GitHubIcon } from '@/components/site/GitHubIcon'
 import { downloads, links } from '@/data/site'
 import { tvDownloads } from '@/data/tv'
 import { hasShot, thumbSrc } from '@/data/shots'
+import { useLatest } from '@/data/updates'
 
 const icons = { iso: Disc3, img: Usb, vdi: HardDrive, zip: FileArchive, tar: FileArchive } as const
 
@@ -47,13 +48,14 @@ VBoxManage startvm BoltOS`,
 ]
 
 export default function Download() {
+  const latest = useLatest('desktop')
   const images = downloads.filter(d => d.kind === 'image')
   const source = downloads.filter(d => d.kind === 'source')
 
   return (
     <>
       <PageHero
-        eyebrow="Download · version 0.2"
+        eyebrow={`Download · version ${latest ? latest.version : '0.4'}`}
         title={['Download', <span className="serif-i text-smoke">BoltOS.</span>]}
         intro="Every file below is served straight from GitHub, so what you download is exactly what is in the repository. Sign in with user / bolt."
       />
@@ -143,6 +145,7 @@ export default function Download() {
           </div>
         </Reveal>
         <p className="mt-5 text-[13px] text-fog">
+          Once it's running, BoltOS keeps itself up to date: <a href="/updates" className="text-smoke underline decoration-white/30 underline-offset-4 hover:text-white">how updates work</a>.
           Looking for an older build? Every tagged version is on the <a href={links.releases} target="_blank" rel="noreferrer" className="text-smoke underline decoration-white/30 underline-offset-4 hover:text-white">releases page</a>.
         </p>
       </Container>

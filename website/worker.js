@@ -1,4 +1,4 @@
-// boltos.dev is a static site; this script exists for two things.
+// boltos.dev is a static site; this script exists for three things.
 //
 // /dl/<name>: Workers static assets cap a file at 25 MiB, so the BoltOS TV
 // and Mini images are stored in parts (scripts/downloads.mjs) and served
@@ -9,17 +9,23 @@
 // index.json (what the Packages app lists) and the .bpk files it installs.
 // The Pi asks with a Range so a download can carry on where it stopped.
 //
+// /update/<name>: new versions of the systems themselves, from the same
+// bucket under update/. release.sh puts there, for each edition, a kernel
+// (<edition>-<version>.bin) and <edition>.json, which says which version
+// is the newest and how to check it. BoltOS asks for the .json at start
+// and every few hours; the website's Updates section reads them too.
+//
 // Everything else never reaches this script: wrangler.jsonc runs it first
-// only for /dl/* and /pkg/*.
-async function pkg(request, env, url) {
-  const key = decodeURIComponent(url.pathname.slice(5))
+// only for /dl/*, /pkg/* and /update/*.
+async function r2file(request, env, key) {
   if (!key || key.includes('..')) return new Response('Not found', { status: 404 })
   const type = key.endsWith('.json') ? 'application/json; charset=utf-8' : 'application/octet-stream'
   const cache = key.endsWith('.json') ? 'public, max-age=60' : 'public, max-age=86400'
+  const cors = key.endsWith('.json') ? { 'access-control-allow-origin': '*' } : {}
   const head = await env.PKG.head(key)
   if (!head) return new Response('Not found', { status: 404 })
   const size = head.size
-  const headers = { 'content-type': type, 'cache-control': cache, 'accept-ranges': 'bytes', etag: head.httpEtag }
+  const headers = { 'content-type': type, 'cache-control': cache, 'accept-ranges': 'bytes', etag: head.httpEtag, ...cors }
   const m = /^bytes=(\d+)-(\d*)$/.exec(request.headers.get('range') || '')
   if (m) {
     const start = Number(m[1]), end = m[2] ? Math.min(Number(m[2]), size - 1) : size - 1
@@ -40,7 +46,9 @@ async function pkg(request, env, url) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url)
-    if (url.pathname.startsWith('/pkg/')) return pkg(request, env, url)
+    if (url.pathname.startsWith('/pkg/')) return r2file(request, env, decodeURIComponent(url.pathname.slice(5)))
+    if (url.pathname.startsWith('/update/'))
+      return r2file(request, env, 'update/' + decodeURIComponent(url.pathname.slice(8)))
     if (!url.pathname.startsWith('/dl/')) return env.ASSETS.fetch(request)
 
     const name = decodeURIComponent(url.pathname.slice(4))

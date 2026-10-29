@@ -13,6 +13,7 @@ const Gallery = lazy(() => import('@/pages/Gallery'))
 const Timeline = lazy(() => import('@/pages/Timeline'))
 const Creator = lazy(() => import('@/pages/Creator'))
 const Download = lazy(() => import('@/pages/Download'))
+const Updates = lazy(() => import('@/pages/Updates'))
 const Docs = lazy(() => import('@/pages/Docs'))
 const NotFound = lazy(() => import('@/pages/NotFound'))
 
@@ -33,6 +34,7 @@ export default function App() {
             <Route path="timeline" element={<Timeline />} />
             <Route path="creator" element={<Creator />} />
             <Route path="download" element={<Download />} />
+            <Route path="updates" element={<Updates />} />
             <Route path="docs" element={<Docs />} />
             <Route path="*" element={<NotFound />} />
           </Route>

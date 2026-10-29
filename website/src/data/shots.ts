@@ -39,6 +39,7 @@ const captions: Record<string, string> = {
   mini_code_cpp: 'Code running C++: classes with virtual methods, a vector, sort() and a range-for.',
   mini_monitor: 'Monitor: two minutes of processor load, memory, the link to the Mac, the USB ports.',
   mini_settings: 'Settings → Appearance: Dark, Light or Black, and the accent colour.',
+  mini_updates: 'Settings → Updates: a big update waiting for Update, with what is in it, and a note in the bar.',
   mini_clock: 'Clock, with a stopwatch under it.',
   desktop: 'The glass desktop at 1920×1080: the dock in the middle, the desktop switcher on the left, the tray on the right.',
   startmenu: 'Start: a pinned grid, All apps, and one box that searches apps, settings and files.',

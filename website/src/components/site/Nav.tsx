@@ -16,6 +16,7 @@ const primary: { to: string; label: string; isNew?: boolean }[] = [
   { to: '/apps', label: 'Apps' },
   { to: '/gallery', label: 'Gallery' },
   { to: '/timeline', label: 'Timeline' },
+  { to: '/updates', label: 'Updates', isNew: true },
   { to: '/creator', label: 'Creator' },
   { to: '/docs', label: 'Docs' },
 ]

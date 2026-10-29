@@ -42,7 +42,7 @@ export const tvFeatures: TvFeature[] = [
   },
   {
     title: 'Settings that a TV has',
-    body: 'Brightness and four picture modes, volume and mute, which film plays at home, network status, a sleep timer that switches the set off, the clock and time zone, and About with every credit.',
+    body: 'Brightness and four picture modes, volume and mute, which film plays at home, network status, a sleep timer that switches the set off, the clock and time zone, updates from boltos.dev that install themselves when the TV starts, and About with every credit.',
     shot: 'tv_settings',
   },
   {

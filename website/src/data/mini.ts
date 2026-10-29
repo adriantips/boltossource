@@ -63,8 +63,13 @@ export const miniFeatures: MiniFeature[] = [
   },
   {
     title: 'Wi-Fi and Bluetooth, on the board’s own chip',
-    body: 'Settings joins open and WPA2 networks on the Zero3’s UWE5622 and remembers the last one across restarts. Bluetooth finds and pairs keyboards, mice and game controllers, classic and LE. Themes, accent colour, the screen-sharing password, date and time, restart and power off live there too.',
+    body: 'Settings joins open and WPA2 networks on the Zero3’s UWE5622 and remembers the last one across restarts. Bluetooth finds and pairs keyboards, mice and game controllers, classic and LE. Themes, accent colour, the screen-sharing password, date and time, updates, restart and power off live there too.',
     shot: 'mini_settings',
+  },
+  {
+    title: 'It keeps itself up to date',
+    body: 'Mini asks boltos.dev for a newer version when it starts and every few hours. A quick update downloads, goes onto the SD card beside the old kernel and the Pi restarts into it before you have opened anything; a big one waits in Settings → Updates for you to press Update. The switch turns the automatic part off.',
+    shot: 'mini_updates',
   },
   {
     title: 'Flat, and quick because of it',
