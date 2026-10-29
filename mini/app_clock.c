@@ -45,7 +45,7 @@ static void c_draw(int x, int y, int w, int h) {
     snprintf(b, sizeof b, "%02lu:%02lu.%01lu", (unsigned long)(ms / 60000), (unsigned long)(ms / 1000 % 60),
              (unsigned long)(ms / 100 % 10));
     int sy = y + h - S(110);
-    gfx_fill(x + S(60), sy - S(34), w - S(120), 1, th.faint);
+    gfx_fill(x + S(60), sy - S(34), w - S(120), 1, th.line);
     text_l(x + S(60), sy, "Stopwatch", FONT_SEMIBOLD, S(13), th.sub);
     font_draw(FONT_MONO, S(30), x + S(60), sy + S(46), b, -1, sw_running ? th.accent : th.text, 255);
     text_r(x + w - S(60), sy + S(36), sw_running ? "Space stops" : (ms ? "Space goes on " TXT_BULLET " R resets" : "Space starts"),
@@ -59,4 +59,4 @@ static int c_tick(void) {
     return 0;
 }
 
-const app_t app_clock = { "Clock", 0xD9534F, G_CLOCK, 0, c_key, 0, c_draw, c_tick };
+const app_t app_clock = { "Clock", 0xD9534F, G_CLOCK, 0, c_key, 0, c_draw, c_tick, 0 };

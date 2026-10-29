@@ -16,11 +16,13 @@
  * ===========================================================================*/
 #include <stdint.h>
 #include "mini.h"
+#include "fs.h"
 #include "kprintf.h"
 #include "kheap.h"
 #include "buildid.h"
 #include "font.h"
 #include "stdio.h"
+#include "string.h"
 #include "wcn.h"
 #include "wlan.h"
 #include "bt.h"
@@ -38,6 +40,30 @@ int mini_uptime_str(char *out, int cap) {
 }
 
 extern uint64_t g_idle_us;
+
+perf_t g_perf;
+int perf_report(char *out, int cap) {
+    perf_t p = g_perf;
+    uint64_t t = now_us(), dt = p.t0 ? t - p.t0 : 1;
+    int vnc_perf(char *out, int cap, uint64_t window_us);
+    memset(&g_perf, 0, sizeof g_perf);
+    g_perf.t0 = t;
+    uint32_t f = p.frames ? p.frames : 1, u = p.vnc_updates ? p.vnc_updates : 1;
+    int n = snprintf(out, (size_t)cap,
+        "window %lu ms\n"
+        "frames %u (%lu.%lu/s), draw avg %lu us max %lu us, present avg %lu us\n"
+        "loops %u (%lu/s), longest turn %lu us\n"
+        "vnc updates %u (%lu.%lu/s), %u rects, %lu KiB (%lu KiB/s), scan avg %lu us max %lu us, pump %lu us total\n",
+        (unsigned long)(dt / 1000),
+        p.frames, (unsigned long)(p.frames * 10000000ull / dt / 10), (unsigned long)(p.frames * 10000000ull / dt % 10),
+        (unsigned long)(p.draw_us / f), (unsigned long)p.draw_max, (unsigned long)(p.present_us / f),
+        p.loops, (unsigned long)(p.loops * 1000000ull / dt), (unsigned long)p.busy_max,
+        p.vnc_updates, (unsigned long)(p.vnc_updates * 10000000ull / dt / 10), (unsigned long)(p.vnc_updates * 10000000ull / dt % 10),
+        p.vnc_rects, (unsigned long)(p.vnc_bytes >> 10), (unsigned long)((p.vnc_bytes * 1000000ull / dt) >> 10),
+        (unsigned long)(p.vnc_scan_us / u), (unsigned long)p.vnc_scan_max, (unsigned long)p.vnc_pump_us);
+    if (n < cap) n += vnc_perf(out + n, cap - n, dt);
+    return n;
+}
 
 /* Everything but the shell: what a blocking wait (a DNS lookup, a page
  * load) keeps turning so the links, the keyboard and VNC carry on. */
@@ -76,6 +102,7 @@ void kmain(uint64_t dtb) {
     board_init();
     irq_on();
     kprintf("[ok] GIC and timer (1 kHz); CPU %u MHz\n", board_cpu_mhz());
+    cores_init();
 
     font_init();
     kprintf("[%4lu ms] fonts\n", now_ms() - t0);
@@ -92,6 +119,14 @@ void kmain(uint64_t dtb) {
     netsvc_init();
     inet_init();
     shell_init();
+    /* The card's files: what a power cut took from the kept settings comes
+     * back from there before Wi-Fi and Bluetooth look for it. */
+    if (fs_mount() == 0) fs_keep_restore();
+    void shell_settings_restore(void);
+    shell_settings_restore();
+    kprintf("[%4lu ms] the card's files\n", now_ms() - t0);
+    void pkg_init(void);
+    pkg_init();
     kprintf("[%4lu ms] shell (wallpaper)\n", now_ms() - t0);
     board_led(1, 1);
     kprintf("[ok] up in %lu ms (%lu since power-on)\n", now_ms() - t0, now_ms());
@@ -103,13 +138,19 @@ void kmain(uint64_t dtb) {
     extern volatile uint64_t g_loop_ms;
     for (;;) {
         g_loop_ms = now_ms();
+        uint64_t t_turn = now_us();
         mini_pump();
+        int pkg_poll(void);
+        if (pkg_poll()) shell_request_frame();
         shell_frame();
         netsvc_jobs();
+        fs_poll();
         wifi_poll();
         bt_poll();
-        if (musb_busy()) continue;
         uint64_t t = now_us();
+        g_perf.loops++;
+        if (t - t_turn > g_perf.busy_max) g_perf.busy_max = t - t_turn;
+        if (musb_busy()) continue;
         wfi();
         g_idle_us += now_us() - t;
     }

@@ -1,25 +1,50 @@
 /* ===========================================================================
  *  BoltOS Mini  -  mini/app_notes.c
  *
- *  A page to type on. It lives in RAM: there is no filesystem on Mini yet,
- *  and the page says so rather than pretending otherwise.
+ *  A page to type on, kept on the SD card as /Notes/notes.txt: saved a
+ *  moment after typing stops, and when Notes is left. With no card it stays
+ *  in memory until the Pi restarts, and says so.
  * ===========================================================================*/
 #include <stdint.h>
 #include "ui.h"
+#include "fs.h"
+#include "kheap.h"
 #include "string.h"
 
 #define CAP 32768
+#define PATH "/Notes/notes.txt"
 static char text[CAP] = "Notes\n\nA quiet page for lists and thoughts.\n"
-                        "Everything here stays until the Pi restarts.\n";
+                        "It's kept on the SD card, in Notes/notes.txt.\n";
 static int len = -1, cur, top_line;
+static int on_card, changed;
+static uint64_t changed_at;
 
-static void ensure(void) { if (len < 0) { len = (int)strlen(text); cur = len; } }
+static void ensure(void) {
+    if (len >= 0) return;
+    on_card = fs_mount() == 0;
+    char *d; uint32_t n;
+    if (on_card && fs_read(PATH, &d, &n) == 0) {
+        if (n > CAP - 1) n = CAP - 1;
+        memcpy(text, d, n); text[n] = 0;
+        kfree(d);
+    }
+    len = (int)strlen(text); cur = len;
+}
+
+static void save(void) {
+    if (!changed || !on_card) return;
+    if (fs_mkdir("/Notes") == 0 && fs_write(PATH, text, (uint32_t)len) == 0) changed = 0;
+}
 
 static int line_start(int i) { while (i > 0 && text[i - 1] != '\n') i--; return i; }
 static int line_end(int i)   { while (i < len && text[i] != '\n') i++; return i; }
 
 static void n_key(const input_ev_t *e) {
     ensure();
+    int before = len;
+    char first = len ? text[0] : 0;
+    static int last_cur;
+    last_cur = cur;
     switch (e->key) {
     case KEY_CHAR:
         if (len < CAP - 1 && e->ch >= 32 && !(e->mods & MOD_CTRL)) {
@@ -60,6 +85,8 @@ static void n_key(const input_ev_t *e) {
     case KEY_PGUP: for (int i = 0; i < 10; i++) { int s = line_start(cur); if (!s) { cur = 0; break; } cur = line_start(s - 1); } break;
     case KEY_PGDN: for (int i = 0; i < 10; i++) { int e2 = line_end(cur); if (e2 >= len) { cur = len; break; } cur = e2 + 1; } break;
     }
+    if (len != before || (len && text[0] != first)) { changed = 1; changed_at = now_ms(); }
+    (void)last_cur;
 }
 
 static void n_draw(int x, int y, int w, int h) {
@@ -90,14 +117,23 @@ static void n_draw(int x, int y, int w, int h) {
         i = e + 1;
         if (e >= len) break;
     }
-    text_l(x + pad, y + h - S(22), "Kept in memory until the Pi restarts", FONT_REGULAR, S(11), th.faint);
+    text_l(x + pad, y + h - S(22), !on_card ? "No SD card: kept in memory until the Pi restarts" :
+           changed ? "Editing" TXT_ELLIPSIS : "Saved on the SD card, in Notes/notes.txt", FONT_REGULAR, S(11), th.faint);
 }
 
 static int n_tick(void) {
     static uint64_t phase;
+    if (changed && now_ms() - changed_at > 1500) { save(); return 1; }
     uint64_t p = now_ms() / 530;
     if (p != phase) { phase = p; return 1; }
     return 0;
 }
 
-const app_t app_notes = { "Notes", 0xE2A93B, G_NOTES, 0, n_key, 0, n_draw, n_tick };
+/* Notes isn't in front: what was typed last is still saved (the shell calls this) */
+int notes_background(void);
+int notes_background(void) { if (changed && now_ms() - changed_at > 1500) save(); return 0; }
+
+/* Esc on the way out: what's typed is saved now */
+static int n_esc(void) { save(); return 0; }
+
+const app_t app_notes = { "Notes", 0xE2A93B, G_NOTES, 0, n_key, 0, n_draw, n_tick, n_esc };

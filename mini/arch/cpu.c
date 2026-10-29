@@ -77,28 +77,94 @@ void mmu_enable(void) {
 }
 
 /* ---- the other cores ------------------------------------------------------------ *
- *  A core started with cpu_start() runs fn(arg) and nothing else: no
- *  interrupts, no timer of its own, no shell. The video decoder is one.    */
+ *  Cores 1-3 start at boot into pool_loop and wait there (WFE) for work.
+ *  core_run() hands an idle one a job; cpu_start() waits for the core to
+ *  come free first (asking a pool job there to finish) -- the video decoder
+ *  on core 1, which returns when the video closes. Either way the core
+ *  waits in the pool again afterwards. No interrupts, no timer of their
+ *  own, no shell.
+ *
+ *  What the boot core writes (the job) and what the worker writes (that it
+ *  finished) live on cache lines of their own: a core spinning on a line
+ *  the other one keeps writing never gets to finish its own access.        */
 volatile uint32_t mini_heap_lock[16] __attribute__((aligned(64)));   /* word 0; a cache line of its own */
 extern uint8_t secondary_stacks[];
 uint8_t secondary_stacks[4 * 0x40000] __attribute__((aligned(16)));
-static void (*volatile sec_fn[4])(void *);
-static void *volatile sec_arg[4];
 void secondary_start(void);
 int board_cpu_on(int cpu, uint64_t entry, uint64_t ctx);
 
+typedef struct {
+    void (*volatile fn)(void *);
+    void *volatile arg;
+    volatile uint32_t seq;                  /* bumped for every job posted          */
+    volatile int wanted;                    /* cpu_start is waiting for the core    */
+} __attribute__((aligned(64))) post_t;
+typedef struct {
+    volatile uint32_t done;                 /* the seq of the last job finished     */
+    volatile int up;                        /* the core reached pool_loop           */
+} __attribute__((aligned(64))) ack_t;
+static post_t post[4];
+static ack_t  ack[4];
+static int    pooled[4];                    /* started into the pool, still in it   */
+
 void secondary_main(uint64_t cpu) {
     __asm__ volatile("dsb sy\nisb" ::: "memory");
-    if (cpu < 4 && sec_fn[cpu]) sec_fn[cpu](sec_arg[cpu]);
-    for (;;) __asm__ volatile("wfe");
+    if (cpu >= 4) for (;;) __asm__ volatile("wfe");
+    __atomic_store_n(&ack[cpu].up, 1, __ATOMIC_RELEASE);
+    __asm__ volatile("sev");
+    uint32_t seen = 0;
+    for (;;) {
+        uint32_t q;
+        while ((q = __atomic_load_n(&post[cpu].seq, __ATOMIC_ACQUIRE)) == seen) __asm__ volatile("wfe");
+        seen = q;
+        __asm__ volatile("isb" ::: "memory");             /* the job may be code loaded since (pkg.c) */
+        post[cpu].fn(post[cpu].arg);
+        __atomic_store_n(&ack[cpu].done, seen, __ATOMIC_RELEASE);
+        __asm__ volatile("dsb ish\nsev" ::: "memory");
+    }
+}
+
+void cores_init(void) {
+    for (int c = 1; c < 4; c++) {
+        if (board_cpu_on(c, (uint64_t)(uintptr_t)secondary_start, (uint64_t)c) != 0) continue;
+        uint64_t end = now_ms() + 200;
+        while (!__atomic_load_n(&ack[c].up, __ATOMIC_ACQUIRE) && now_ms() < end) __asm__ volatile("yield");
+        pooled[c] = ack[c].up;
+    }
+    int n = 0;
+    for (int c = 1; c < 4; c++) n += pooled[c];
+    kprintf("[ok] %d more core%s waiting for work\n", n, n == 1 ? "" : "s");
+}
+
+static int post_job(int cpu, void (*fn)(void *), void *arg) {
+    if (cpu < 1 || cpu > 3 || !pooled[cpu] || core_busy(cpu)) return -1;
+    post[cpu].fn = fn; post[cpu].arg = arg;
+    __atomic_store_n(&post[cpu].seq, post[cpu].seq + 1, __ATOMIC_RELEASE);
+    __asm__ volatile("dsb ish\nsev" ::: "memory");
+    return 0;
+}
+
+int core_pooled(int cpu) { return cpu >= 1 && cpu <= 3 && pooled[cpu]; }
+int core_busy(int cpu) {
+    if (!core_pooled(cpu)) return 1;
+    return __atomic_load_n(&ack[cpu].done, __ATOMIC_ACQUIRE) != post[cpu].seq;
+}
+int core_wanted(int cpu) { return cpu >= 1 && cpu <= 3 && post[cpu].wanted; }
+int core_run(int cpu, void (*fn)(void *), void *arg) {
+    if (core_wanted(cpu)) return -1;
+    return post_job(cpu, fn, arg);
 }
 
 int cpu_start(int cpu, void (*fn)(void *), void *arg) {
-    if (cpu < 1 || cpu > 3) return -1;
-    sec_fn[cpu] = fn; sec_arg[cpu] = arg;
-    /* It starts with its caches off and reads memory, not ours: push these out. */
-    __asm__ volatile("dc cvac, %0\ndc cvac, %1\ndsb sy" :: "r"(&sec_fn[cpu]), "r"(&sec_arg[cpu]) : "memory");
-    return board_cpu_on(cpu, (uint64_t)(uintptr_t)secondary_start, (uint64_t)cpu);
+    if (!core_pooled(cpu)) return -1;
+    /* A job of the pool's may be running there: ask it to finish (pool users
+     * check core_wanted between steps) and give it a moment. */
+    post[cpu].wanted = 1;
+    uint64_t end = now_ms() + 3000;
+    while (core_busy(cpu) && now_ms() < end) __asm__ volatile("yield");
+    post[cpu].wanted = 0;
+    /* The core stays the job's until it returns, then waits in the pool again. */
+    return post_job(cpu, fn, arg);
 }
 
 /* ---- the uncached pool ------------------------------------------------------ */

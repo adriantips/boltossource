@@ -88,6 +88,9 @@ void board_early(uint64_t dtb) {
         gic_v3 = g_plat == PLAT_QEMU && ic && strstr(ic, "gic-v3");
         const char *m = fdt_prop_str(fdt, "/psci", "method");
         psci_hvc_conduit = m && strcmp(m, "hvc") == 0;
+        /* The tree itself sits where apps' memory goes (mini.h): keep only a copy. */
+        static char model_copy[64];
+        if (model) { strncpy(model_copy, model, sizeof model_copy - 1); model = model_copy; }
         if (g_plat == PLAT_H618) g_board_name = model ? model : "Allwinner H618";
         else if (g_plat == PLAT_QEMU) g_board_name = "QEMU virt (on your Mac)";
     } else {

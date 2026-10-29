@@ -16,19 +16,25 @@ static volatile uint32_t qhead, qtail;
 static uint32_t counts[8];
 static int last_x = -1, last_y = -1, last_btn;
 
-static void push(const input_ev_t *e) {
+static uint64_t last_act;                           /* the last key, click or wheel */
+
+/* A pointer that only moved asks for no frame: the shell moves the arrow
+ * over the picture, and redraws only if what is under it reacts. */
+static void push(const input_ev_t *e, int act) {
     if (qhead - qtail >= QCAP) qtail++;            /* full: drop the oldest */
     q[qhead % QCAP] = *e;
     qhead++;
     if (e->source < 8) counts[e->source]++;
-    shell_request_frame();
+    if (act) { last_act = now_ms(); shell_request_frame(); }
 }
+
+uint64_t input_idle_ms(void) { return now_ms() - last_act; }
 
 void input_key(int key, int ch, int mods, int source) {
     if (key == KEY_NONE) return;
     input_ev_t e = { .type = EV_KEY, .key = (uint8_t)key, .mods = (uint8_t)mods,
                      .ch = ch, .source = (uint8_t)source };
-    push(&e);
+    push(&e, 1);
 }
 
 void input_pointer(int x, int y, int buttons, int wheel, int source) {
@@ -37,10 +43,11 @@ void input_pointer(int x, int y, int buttons, int wheel, int source) {
     if (x >= scr_w) x = scr_w - 1;
     if (y >= scr_h) y = scr_h - 1;
     if (x == last_x && y == last_y && buttons == last_btn && !wheel) return;
+    int act = buttons != last_btn || wheel;
     last_x = x; last_y = y; last_btn = buttons;
     input_ev_t e = { .type = EV_POINTER, .buttons = (uint8_t)buttons, .x = (int16_t)x,
                      .y = (int16_t)y, .wheel = (int8_t)wheel, .source = (uint8_t)source };
-    push(&e);
+    push(&e, act);
 }
 
 int input_pop(input_ev_t *ev) {

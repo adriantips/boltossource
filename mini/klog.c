@@ -163,4 +163,27 @@ void keep_put(const char *tag, const void *data, int len) {
     uint32_t magic = KEEP_MAGIC, ln = (uint32_t)n, sum = keep_sum(out + 12, (uint32_t)n);
     __builtin_memcpy(out, &magic, 4); __builtin_memcpy(out + 4, &ln, 4); __builtin_memcpy(out + 8, &sum, 4);
     for (int i = 0; i < 12 + n; i++) keep[i] = out[i];
+    void fs_keep_changed(void);
+    fs_keep_changed();                         /* and to the card, a moment later (fs.c) */
+}
+
+/* The whole area, header and records, for fs.c's copy on the card. */
+int keep_blob(uint8_t *out, int cap) {
+    static uint8_t buf[KEEP_SIZE];
+    int len = keep_load(buf);
+    if (12 + len > cap) return -1;
+    __builtin_memcpy(out, buf, (size_t)(12 + len));
+    return 12 + len;
+}
+
+/* The card's copy back, after a power cut: only when RAM holds nothing valid,
+ * and only a copy whose sum checks. The number of record bytes, or 0. */
+int keep_restore_blob(const uint8_t *blob, int len) {
+    static uint8_t buf[KEEP_SIZE];
+    if (keep_load(buf) > 0 || len < 12 || len > (int)KEEP_SIZE) return 0;
+    uint32_t magic, n, sum;
+    __builtin_memcpy(&magic, blob, 4); __builtin_memcpy(&n, blob + 4, 4); __builtin_memcpy(&sum, blob + 8, 4);
+    if (magic != KEEP_MAGIC || (int)n != len - 12 || keep_sum(blob + 12, n) != sum) return 0;
+    for (int i = 0; i < len; i++) keep[i] = blob[i];
+    return (int)n;
 }

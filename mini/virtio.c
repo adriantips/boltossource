@@ -217,6 +217,47 @@ static void vin_init(uintptr_t base) {
     nvin++;
 }
 
+/* ---- a disk ------------------------------------------------------------------------
+ *  QEMU's stand-in for the Pi's microSD card (sdcard.c sends us its sectors):
+ *  one request at a time, three descriptors -- the header, the data, the
+ *  status byte -- and wait for it.                                          */
+static struct { uintptr_t base; struct vq q; uint64_t sectors; int live; } vblk;
+
+static void vblk_init(uintptr_t base) {
+    uint32_t ver;
+    if (dev_start(base, 0, &ver) != 0) return;
+    if (vq_setup(&vblk.q, base, 0, (int)ver, 64)) return;
+    w32(base + R_STATUS, r32(base + R_STATUS) | 4);
+    vblk.base = base;
+    vblk.sectors = (uint64_t)r32(base + R_CONFIG) | (uint64_t)r32(base + R_CONFIG + 4) << 32;
+    vblk.live = 1;
+}
+
+uint64_t vblk_sectors(void) { return vblk.live ? vblk.sectors : 0; }
+
+int vblk_rw(int write, uint64_t lba, void *buf, uint32_t n) {
+    if (!vblk.live || lba + n > vblk.sectors) return -1;
+    struct vq *q = &vblk.q;
+    uint8_t *h = q->bufs;                                 /* slot 0: header and status */
+    uint32_t t = write ? 1 : 0;
+    memcpy(h, &t, 4); memset(h + 4, 0, 4); memcpy(h + 8, &lba, 8);
+    h[16] = 0xFF;
+    q->desc[0].addr = (uint64_t)(uintptr_t)h;        q->desc[0].len = 16; q->desc[0].flags = 1; q->desc[0].next = 1;
+    q->desc[1].addr = (uint64_t)(uintptr_t)buf;      q->desc[1].len = n * 512;
+    q->desc[1].flags = (uint16_t)(1 | (write ? 0 : 2)); q->desc[1].next = 2;
+    q->desc[2].addr = (uint64_t)(uintptr_t)(h + 16); q->desc[2].len = 1; q->desc[2].flags = 2; q->desc[2].next = 0;
+    q->avail[2 + q->avail_idx % QSZ] = 0;
+    dsb();
+    q->avail_idx++;
+    q->avail[1] = q->avail_idx;
+    vq_kick(q);
+    uint64_t end = now_ms() + 5000;
+    uint32_t len;
+    while (vq_take(q, &len) < 0) if (now_ms() > end) return -1;
+    w32(vblk.base + R_IACK, r32(vblk.base + R_ISR));
+    return *(volatile uint8_t *)(h + 16) == 0 ? 0 : -1;
+}
+
 int virtio_init(void) {
     int found = 0;
     for (int i = 0; i < VIO_SLOTS; i++) {
@@ -225,9 +266,10 @@ int virtio_init(void) {
         uint32_t id = r32(b + R_DEVID);
         if (id == 1 && !vnet.live) { vnet_init(b); found++; }
         else if (id == 18) { vin_init(b); found++; }
+        else if (id == 2 && !vblk.live) { vblk_init(b); found++; }
     }
-    kprintf("[virtio] %s, %d input device%s\n", vnet.live ? "network card" : "no network card",
-            nvin, nvin == 1 ? "" : "s");
+    kprintf("[virtio] %s, %d input device%s, %s\n", vnet.live ? "network card" : "no network card",
+            nvin, nvin == 1 ? "" : "s", vblk.live ? "a disk" : "no disk");
     return found;
 }
 

@@ -75,14 +75,16 @@ SRCS+=(net/http.c net/tls.c net/crypto.c net/wpa.c net/x509.c net/rsa.c net/p256
 for f in mini/sdio.c mini/wcn.c mini/wifi.c mini/bt.c mini/hid.c mini/emac.c mini/inet.c mini/net.c mini/netsvc.c mini/vnc.c mini/virtio.c mini/musb.c mini/usbdev.c \
          mini/ohci.c mini/usbhost.c mini/shell.c mini/ui.c \
          mini/app_terminal.c mini/app_monitor.c mini/app_notes.c mini/app_clock.c \
-         mini/app_settings.c; do
+         mini/app_settings.c mini/app_packages.c mini/sdcard.c mini/store.c mini/dl.c \
+         mini/pkg.c mini/exports.c mini/fs.c mini/rt.c mini/gc.c mini/numfmt.c mini/mathx.c mini/app_code.c \
+         mini/py_obj.c mini/py_parse.c mini/py_eval.c mini/py_lib.c mini/cc.c mini/cc_eval.c mini/cc_lib.c; do
     [ -f "$f" ] || continue
     # The release build is the Pi on its own: what only a Mac uses stays out.
     if [ "$RELEASE" = 1 ]; then case "$f" in mini/musb.c|mini/vnc.c|mini/netsvc.c) continue ;; esac; fi
     SRCS+=("$f")
 done
 
-echo "[1/4] kernel"
+echo "[1/5] kernel"
 OBJS=()
 clang "${CFLAGS[@]}" -mstrict-align mini/arch/cpu.c -o "$B/obj/cpu.o"
 clang --target=aarch64-none-elf -mcpu=cortex-a53 -c mini/arch/start.S -o "$B/obj/start.o"
@@ -108,7 +110,7 @@ FAIL=0
 for p in "${PIDS[@]}"; do wait "$p" || FAIL=1; done
 [ "$FAIL" = 0 ] || { echo "ERROR: a kernel source failed to compile (above)"; exit 1; }
 
-echo "[2/4] fonts"
+echo "[2/5] fonts"
 UIFONTS=(
     "font_r:assets/fonts/Inter.ttf:wght=400:opsz=14"
     "font_m:assets/fonts/Inter.ttf:wght=500:opsz=14"
@@ -143,7 +145,10 @@ FW_FILES=(
 )
 mkdir -p "$FW_DIR"
 FW_OK=1
-for spec in "${FW_FILES[@]}"; do
+# BOLTOS_NO_FW=1 leaves it out on purpose: the card image published on
+# boltos.dev is built that way, so it doesn't hand out Unisoc's firmware.
+[ "${BOLTOS_NO_FW:-0}" = 1 ] && FW_FILES=() && FW_OK=0
+for spec in ${FW_FILES[@]+"${FW_FILES[@]}"}; do
     f="${spec%%:*}"; want="${spec#*:}"
     if [ ! -f "$FW_DIR/$f" ]; then
         curl -fsSL --max-time 60 -o "$FW_DIR/$f.tmp" \
@@ -166,7 +171,8 @@ if [ "$FW_OK" = 1 ]; then
     done
     echo "      Wi-Fi/Bluetooth firmware: UWE5622, $(( $(wc -c < "$FW_DIR/wcnmodem.bin") / 1024 )) KiB"
 else
-    echo "      Wi-Fi/Bluetooth firmware: not available (offline?): building without it"
+    if [ "${BOLTOS_NO_FW:-0}" = 1 ]; then echo "      Wi-Fi/Bluetooth firmware: left out (BOLTOS_NO_FW=1)"
+    else echo "      Wi-Fi/Bluetooth firmware: not available (offline?): building without it"; fi
     # Every file's start and end at one address: zero bytes, so wcn.c sees none.
     clang "${CFLAGS[@]}" -x c - -o "$B/obj/nofw.o" <<'NOFW'
 #define EMPTY(n) __asm__(".globl _binary_" n "_start\n.globl _binary_" n "_end\n_binary_" n "_start:\n_binary_" n "_end:\n");
@@ -175,7 +181,7 @@ NOFW
     OBJS+=("$B/obj/nofw.o")
 fi
 
-echo "[3/4] link"
+echo "[3/5] link"
 ld.lld -T mini/linker.ld -o "$B/boltos.elf" "${OBJS[@]}"
 llvm-objcopy -O binary "$B/boltos.elf" "$B/boltos.bin"
 # Image and .bss must end below the heap at 0x41000000 (mini/mini.h).
@@ -184,7 +190,33 @@ END=$(llvm-nm "$B/boltos.elf" | awk '$3 == "__image_end" {print $1}')
 KSIZE=$(wc -c < "$B/boltos.bin" | tr -d ' ')
 echo "      boltos.bin = $KSIZE bytes ($((KSIZE / 1024)) KiB)"
 
-echo "[4/4] microSD image"
+echo "[4/5] packages"
+# Apps that aren't in the kernel (mini/pkg.h): each mini/pkg/<name>/ with a
+# pkg.conf is compiled position-independent, linked as a shared object at 0,
+# and turned into a .bpk by mkpkg.py, which refuses one that needs a kernel
+# symbol exports.c doesn't have. Packages ships them; the Pi loads them.
+PKG_CFLAGS=(--target=aarch64-none-elf -mcpu=cortex-a53 -ffreestanding -fpic -fno-plt -fno-stack-protector
+            -fno-builtin-printf -Wall -Wextra -O2 -std=c11 -DBOLT_MINI -DBOLT_PKG
+            -Imini -Imini/include -I"$B/gen" -Iinclude -c)
+mkdir -p "$B/pkg"
+for conf in mini/pkg/*/pkg.conf; do
+    [ -f "$conf" ] || continue
+    dir="$(dirname "$conf")"
+    pid="$(sed -n 's/^id=//p' "$conf")"; pname="$(sed -n 's/^name=//p' "$conf")"; pver="$(sed -n 's/^version=//p' "$conf")"
+    POBJS=()
+    for c in "$dir"/*.c; do
+        o="$B/pkg/${pid}_$(basename "${c%.c}").o"
+        clang "${PKG_CFLAGS[@]}" "$c" -o "$o" || { echo "ERROR: $c failed to compile"; exit 1; }
+        POBJS+=("$o")
+    done
+    ld.lld -shared -z now -z max-page-size=4096 -Bsymbolic --hash-style=sysv -e pkg_main -o "$B/pkg/$pid.so" "${POBJS[@]}"
+    "$PYTHON" mini/tools/mkpkg.py "$B/pkg/$pid.so" "$B/pkg/$pid-$pver.bpk" --id "$pid" --name "$pname" \
+        --version "$pver" --exports mini/exports.c
+done
+
+"$PYTHON" mini/tools/pkgindex.py "$B/pkg/index.json" "$B/pkg" mini/pkg
+
+echo "[5/5] microSD image"
 "$PYTHON" mini/tools/mkcard.py "$B/sdcard.img" --uboot mini/firmware/u-boot-sunxi-with-spl.bin \
     --kernel "$B/boltos.bin"
 

@@ -73,7 +73,7 @@ static struct {
 /* The decoder's side, shared with the core it runs on. */
 #define RING 5
 static struct {
-    volatile int run, solo, started, flushed, eos, err, buffering;
+    volatile int run, solo, started, flushed, eos, err, buffering, quit;
     volatile int next;                   /* the next sample to decode                 */
     /* The pause handshake: ack catches up to req. Each on its own cache line: the
      * decoding core writing ack beside req kept breaking this core's exclusive
@@ -340,6 +340,7 @@ static void worker(void *arg) {
     (void)arg;
     for (;;) {
         while (!__atomic_load_n(&W.run, __ATOMIC_ACQUIRE)) {
+            if (__atomic_load_n(&W.quit, __ATOMIC_ACQUIRE)) return;   /* the video closed: core 1 goes back to the pool */
             uint32_t q = __atomic_load_n(&W.req, __ATOMIC_ACQUIRE);
             if (__atomic_load_n(&W.ack, __ATOMIC_RELAXED) != q) __atomic_store_n(&W.ack, q, __ATOMIC_RELEASE);
             for (int i = 0; i < 64; i++) __asm__ volatile("yield");
@@ -379,8 +380,12 @@ static void restart_at(int ms) {
 }
 
 /* ---- the API ---------------------------------------------------------------------------------- */
+int bigmem_take_for_video(void);
+void bigmem_video_done(void);
+
 int player_open(const char *id, char *title, int title_cap, char *meta, int meta_cap) {
     player_close();
+    bigmem_take_for_video();                                /* the high window is the file's: a package gives it back */
     P.state = S_LOADING;
     snprintf(P.msg, sizeof P.msg, "Asking YouTube for the video\x85");
     char body[600];
@@ -455,12 +460,32 @@ int player_open(const char *id, char *title, int title_cap, char *meta, int meta
 
 void player_close(void) {
     pause_worker();
+    /* Give the decoding core back (a language model uses it too); the next
+     * video starts it again. */
+    if (W.started && !W.solo) {
+        __atomic_store_n(&W.quit, 1, __ATOMIC_RELEASE);
+        uint64_t end = now_ms() + 2000;
+        while (core_busy(1) && now_ms() < end) __asm__ volatile("yield");
+        W.quit = 0;
+        W.started = 0;
+    }
     drop_conn();
     if (P.dec) h264_close(P.dec);
     if (P.have_mp4) mp4_free(&P.mp4);
     memset(&P, 0, sizeof P);
     P.shown = -1;
     W.wr = W.rd = 0; W.decoded = W.skipped = 0; W.dec_us = 0;
+    bigmem_video_done();
+}
+
+/* Something else needs the video's memory (a language model) while its
+ * page isn't on screen: stop it, and let the page say why. */
+void player_stop(const char *why) {
+    if (P.state == S_IDLE) return;
+    player_close();
+    P.state = S_ERROR;
+    snprintf(P.msg, sizeof P.msg, "%s", why);
+    kprintf("[yt] stopped: %s\n", why);
 }
 
 /* Each turn of the loop while the watch page is up: fetch, and show what is due.

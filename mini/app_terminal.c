@@ -3,10 +3,13 @@
  *
  *  A terminal with a small shell in it: the commands a little board needs
  *  -- what it is, what it is doing, what is plugged in, its log, its LEDs,
- *  its clock -- and nothing that needs a filesystem. `help` lists them.
+ *  its clock -- and the files on the SD card (ls, cd, cat, mkdir, rm, mv,
+ *  cp, df), with `edit` and `run` handing a file to the Code app. `help`
+ *  lists them; Tab completes a file's name.
  * ===========================================================================*/
 #include <stdint.h>
 #include "ui.h"
+#include "fs.h"
 #include "kheap.h"
 #include "string.h"
 #include "stdio.h"
@@ -24,6 +27,11 @@ static int scroll;                       /* lines scrolled back                 
 static char in[128]; static int in_len, in_cur;
 static char hist[16][128]; static int hist_n, hist_i;
 static int started;
+static char cwd[FS_PATH] = "/";
+
+static int lower_eq(char a, char b) { return (a | 32) == (b | 32) && ((a >= 'A' && a <= 'Z') || (a >= 'a' && a <= 'z')) ? 1 : a == b; }
+static void complete(void);
+static void prompt(char *out, int cap) { snprintf(out, (size_t)cap, "mini:%s$ ", cwd); }
 static int view_cols = 80;
 
 static void put_line(const char *s, int c) {
@@ -95,7 +103,13 @@ static void cmd_help(void) {
         { "log [n]", "the last n lines of the boot log" },
         { "led green|red on|off", "the board's LEDs" },
         { "passwd WORD", "the screen-sharing password" },
-        { "theme dusk|dawn|midnight", "the wallpaper" },
+        { "theme dark|light|black", "the colours" },
+        { "ls [folder]", "what's in a folder on the SD card" }, { "cd folder", "go into a folder" },
+        { "cat file", "show a file" }, { "mkdir folder", "make a folder" },
+        { "rm file|folder", "remove one (a folder with what's in it)" },
+        { "mv from to", "rename or move" }, { "cp from to", "copy a file" },
+        { "touch file", "make an empty file" }, { "df", "room on the card" },
+        { "edit file", "open it in Code" }, { "run file.py|.c|.cpp", "run it in Code" },
         { "echo TEXT", "say something" }, { "clear", "clear the screen" },
         { "reboot", "restart the Pi" }, { "poweroff", "stop the Pi" },
     };
@@ -104,12 +118,149 @@ static void cmd_help(void) {
     out(C_DIM, "Up and down recall earlier commands. Esc on an empty line goes home.");
 }
 
+/* ---- the SD card's files -------------------------------------------------------------------- */
+static int path_of(const char *arg, char *dst) {
+    if (!*arg) { out(C_WARN, "Which one?"); return -1; }
+    if (fs_join(cwd, arg, dst, FS_PATH)) { out(C_WARN, "That path is too long."); return -1; }
+    return 0;
+}
+
+static void cmd_ls(const char *arg) {
+    char p[FS_PATH];
+    if (fs_join(cwd, *arg ? arg : ".", p, sizeof p)) return;
+    fs_ent_t st;
+    if (fs_stat(p, &st)) { out(C_WARN, "ls: %s", fs_why()); return; }
+    if (!st.dir) { out(C_TEXT, "%s  %u bytes", st.name, st.size); return; }
+    fs_ent_t *e = kmalloc(sizeof(fs_ent_t) * 256);
+    if (!e) return;
+    int n = fs_list(p, e, 256);
+    if (n < 0) out(C_WARN, "ls: %s", fs_why());
+    else if (!n) out(C_DIM, "(empty)");
+    for (int i = 0; i < n; i++) {
+        char d[24]; fs_date_str(e[i].date, e[i].time, d, sizeof d);
+        if (e[i].dir) out(C_ACC, "  %s  %8s  %s/", d, "", e[i].name);
+        else out(C_TEXT, "  %s  %8u  %s", d, e[i].size, e[i].name);
+    }
+    kfree(e);
+}
+
+static void cmd_cat(const char *arg) {
+    char p[FS_PATH], *b; uint32_t n;
+    if (path_of(arg, p)) return;
+    if (fs_read(p, &b, &n)) { out(C_WARN, "cat: %s", fs_why()); return; }
+    int bin = 0;
+    for (uint32_t i = 0; i < n && i < 4096; i++) if (!b[i]) bin = 1;
+    if (bin) out(C_WARN, "%s isn't text (%u bytes).", fs_basename(p), n);
+    else if (n > 64 * 1024) { b[64 * 1024] = 0; out(C_TEXT, "%s", b); out(C_DIM, "... the first 64 KiB of %u bytes", n); }
+    else out(C_TEXT, "%s", b);
+    kfree(b);
+}
+
+static int two_paths(const char *arg, char *a, char *b) {
+    char x[FS_PATH], y[FS_PATH];
+    if (sscanf(arg, "%255s %255s", x, y) != 2) { out(C_WARN, "Two names, please: the one there and the new one."); return -1; }
+    if (fs_join(cwd, x, a, FS_PATH) || fs_join(cwd, y, b, FS_PATH)) return -1;
+    /* Into a folder that's there: keep the name. */
+    fs_ent_t st;
+    if (fs_stat(b, &st) == 0 && st.dir) {
+        int n = (int)strlen(b);
+        snprintf(b + n, (size_t)(FS_PATH - n), "%s%s", n > 1 ? "/" : "", fs_basename(a));
+    }
+    return 0;
+}
+
+static int files_cmd(const char *line, const char *arg) {
+    char p[FS_PATH], q[FS_PATH];
+    if (!strcmp(line, "pwd")) out(C_TEXT, "%s", cwd);
+    else if (!strcmp(line, "ls") || !strcmp(line, "dir")) cmd_ls(arg);
+    else if (!strcmp(line, "cd")) {
+        if (fs_join(cwd, *arg ? arg : "/", p, sizeof p)) return 1;
+        fs_ent_t st;
+        if (fs_stat(p, &st)) out(C_WARN, "cd: %s", fs_why());
+        else if (!st.dir) out(C_WARN, "cd: %s is a file", st.name);
+        else snprintf(cwd, sizeof cwd, "%s", p);
+    }
+    else if (!strcmp(line, "cat") || !strcmp(line, "type")) cmd_cat(arg);
+    else if (!strcmp(line, "mkdir")) { if (!path_of(arg, p) && fs_mkdir(p)) out(C_WARN, "mkdir: %s", fs_why()); }
+    else if (!strcmp(line, "rm") || !strcmp(line, "rmdir") || !strcmp(line, "del")) {
+        if (!path_of(arg, p)) {
+            if (!strncasecmp(cwd, p, strlen(p)) && (cwd[strlen(p)] == '/' || !cwd[strlen(p)])) out(C_WARN, "rm: you're in there; cd out first");
+            else if (fs_remove(p)) out(C_WARN, "rm: %s", fs_why());
+        }
+    }
+    else if (!strcmp(line, "mv") || !strcmp(line, "ren")) { if (!two_paths(arg, p, q) && fs_rename(p, q)) out(C_WARN, "mv: %s", fs_why()); }
+    else if (!strcmp(line, "cp") || !strcmp(line, "copy")) {
+        char *b; uint32_t n;
+        if (two_paths(arg, p, q)) return 1;
+        if (fs_read(p, &b, &n)) { out(C_WARN, "cp: %s", fs_why()); return 1; }
+        if (fs_write(q, b, n)) out(C_WARN, "cp: %s", fs_why());
+        kfree(b);
+    }
+    else if (!strcmp(line, "touch")) {
+        fs_ent_t st;
+        if (!path_of(arg, p) && fs_stat(p, &st) != 0 && fs_write(p, "", 0)) out(C_WARN, "touch: %s", fs_why());
+    }
+    else if (!strcmp(line, "df")) {
+        uint64_t fr, tot;
+        if (fs_space(&fr, &tot)) out(C_WARN, "df: %s", fs_why());
+        else out(C_TEXT, "SD card, BOLTOS partition: %lu MiB free of %lu MiB", (unsigned long)(fr >> 20), (unsigned long)(tot >> 20));
+    }
+    else if (!strcmp(line, "edit") || !strcmp(line, "code") || !strcmp(line, "run")) {
+        if (!*arg) { shell_open(&app_code); return 1; }
+        if (path_of(arg, p)) return 1;
+        int code_open_path(const char *path, int run);
+        if (code_open_path(p, !strcmp(line, "run"))) out(C_WARN, "%s: %s", line, fs_why());
+    }
+    else return 0;
+    return 1;
+}
+
+/* Tab: the word under the cursor, completed from the names in its folder. */
+static void complete(void) {
+    int s = in_cur;
+    while (s > 0 && in[s - 1] != ' ') s--;
+    char word[FS_PATH]; int wl = in_cur - s;
+    if (wl >= (int)sizeof word) return;
+    memcpy(word, in + s, (size_t)wl); word[wl] = 0;
+    char *slash = strrchr(word, '/');
+    char dir[FS_PATH], stem[FS_NAME];
+    if (slash) { *slash = 0; if (fs_join(cwd, word[0] ? word : "/", dir, sizeof dir)) return; snprintf(stem, sizeof stem, "%s", slash + 1); *slash = '/'; }
+    else { snprintf(dir, sizeof dir, "%s", cwd); snprintf(stem, sizeof stem, "%s", word); }
+    fs_ent_t *e = kmalloc(sizeof(fs_ent_t) * 256);
+    if (!e) return;
+    int n = fs_list(dir, e, 256), hit = -1, hits = 0, sl = (int)strlen(stem), common = 0;
+    for (int i = 0; i < n; i++) {
+        if (strncasecmp(e[i].name, stem, (size_t)sl)) continue;
+        if (hit < 0) { hit = i; common = (int)strlen(e[i].name); }
+        else { int k = 0; while (k < common && lower_eq(e[hit].name[k], e[i].name[k])) k++; common = k; }
+        hits++;
+    }
+    if (hit >= 0 && common > sl) {
+        char add[FS_NAME + 2]; int al = 0;
+        for (int k = sl; k < common && al < FS_NAME; k++) add[al++] = e[hit].name[k];
+        if (hits == 1 && e[hit].dir) add[al++] = '/';
+        else if (hits == 1) add[al++] = ' ';
+        if (in_len + al < (int)sizeof in - 1) {
+            memmove(in + in_cur + al, in + in_cur, (size_t)(in_len - in_cur + 1));
+            memcpy(in + in_cur, add, (size_t)al);
+            in_cur += al; in_len += al;
+        }
+    } else if (hits > 1) {
+        char list[1024]; int ln = 0;
+        for (int i = 0; i < n && ln < 900; i++)
+            if (!strncasecmp(e[i].name, stem, (size_t)sl)) ln += snprintf(list + ln, sizeof list - (size_t)ln, "%s%s  ", e[i].name, e[i].dir ? "/" : "");
+        out(C_DIM, "%s", list);
+    }
+    kfree(e);
+}
+
 static void run(char *line) {
     while (*line == ' ') line++;
     char *arg = strchr(line, ' ');
     if (arg) { *arg++ = 0; while (*arg == ' ') arg++; } else arg = line + strlen(line);
     if (!*line) return;
     if (!strcmp(line, "help") || !strcmp(line, "?")) cmd_help();
+    else if (files_cmd(line, arg)) { }
     else if (!strcmp(line, "clear")) { count = 0; scroll = 0; }
     else if (!strcmp(line, "about") || !strcmp(line, "neofetch") || !strcmp(line, "uname")) cmd_about();
     else if (!strcmp(line, "uptime")) { char up[32]; mini_uptime_str(up, sizeof up); out(C_TEXT, "up %s", up); }
@@ -166,9 +317,10 @@ static void run(char *line) {
         else { snprintf(g_vnc_password, sizeof g_vnc_password, "%s", arg); out(C_OK, "Screen-sharing password changed. It lasts until a restart."); }
     }
     else if (!strcmp(line, "theme")) {
-        int w = !strcmp(arg, "dusk") ? 0 : !strcmp(arg, "dawn") ? 1 : !strcmp(arg, "midnight") ? 2 : -1;
-        if (w < 0) out(C_WARN, "usage: theme dusk|dawn|midnight");
-        else theme_set(w, th.accent_i);
+        int w = !strcmp(arg, "dark") || !strcmp(arg, "dusk") ? 0 : !strcmp(arg, "light") || !strcmp(arg, "dawn") ? 1 :
+                !strcmp(arg, "black") || !strcmp(arg, "midnight") ? 2 : -1;
+        if (w < 0) out(C_WARN, "usage: theme dark|light|black");
+        else { theme_set(w, th.accent_i); shell_settings_save(); }
     }
     else if (!strcmp(line, "echo")) out(C_TEXT, "%s", arg);
     else if (!strcmp(line, "reboot") || !strcmp(line, "restart")) { out(C_TEXT, "Restarting..."); board_reboot(); }
@@ -196,7 +348,7 @@ static void t_key(const input_ev_t *e) {
     switch (e->key) {
     case KEY_CHAR:
         if ((e->mods & MOD_CTRL) && (e->ch == 'l' || e->ch == 'L')) { count = 0; return; }
-        if ((e->mods & MOD_CTRL) && (e->ch == 'c' || e->ch == 'C')) { out(C_DIM, "mini$ %s^C", in); in_len = in_cur = 0; in[0] = 0; return; }
+        if ((e->mods & MOD_CTRL) && (e->ch == 'c' || e->ch == 'C')) { char p[FS_PATH + 8]; prompt(p, sizeof p); out(C_DIM, "%s%s^C", p, in); in_len = in_cur = 0; in[0] = 0; return; }
         if (in_len < (int)sizeof in - 1 && e->ch >= 32) {
             memmove(in + in_cur + 1, in + in_cur, (size_t)(in_len - in_cur + 1));
             in[in_cur++] = (char)e->ch; in_len++;
@@ -208,6 +360,7 @@ static void t_key(const input_ev_t *e) {
     case KEY_DELETE:
         if (in_cur < in_len) { memmove(in + in_cur, in + in_cur + 1, (size_t)(in_len - in_cur)); in_len--; }
         break;
+    case KEY_TAB: complete(); break;
     case KEY_LEFT:  if (in_cur > 0) in_cur--; break;
     case KEY_RIGHT: if (in_cur < in_len) in_cur++; break;
     case KEY_HOME:  in_cur = 0; break;
@@ -223,7 +376,7 @@ static void t_key(const input_ev_t *e) {
         in_len = in_cur = (int)strlen(in);
         break;
     case KEY_ENTER: {
-        out(C_DIM, "mini$ %s", in);
+        { char p[FS_PATH + 8]; prompt(p, sizeof p); out(C_DIM, "%s%s", p, in); }
         if (in_len) { snprintf(hist[hist_n % 16], 128, "%s", in); hist_n++; }
         hist_i = hist_n;
         char cmd[128]; snprintf(cmd, sizeof cmd, "%s", in);
@@ -253,7 +406,8 @@ static void t_draw(int x, int y, int w, int h) {
     }
     /* the prompt */
     int base = yy + font_ascent(FONT_MONO, px);
-    int pw = font_draw(FONT_MONO_BOLD, px, x + pad, base, "mini$ ", -1, th.accent, 255);
+    char pr[FS_PATH + 8]; prompt(pr, sizeof pr);
+    int pw = font_draw(FONT_MONO_BOLD, px, x + pad, base, pr, -1, th.accent, 255);
     font_draw(FONT_MONO, px, x + pad + pw, base, in, in_len, th.text, 255);
     int cx = x + pad + pw + font_width(FONT_MONO, px, in, in_cur);
     if ((now_ms() / 530) % 2 == 0) gfx_fill(cx, yy + S(2), S(2), lh - S(4), th.accent);
@@ -267,4 +421,4 @@ static int t_tick(void) {
     return 0;
 }
 
-const app_t app_terminal = { "Terminal", 0x3A3F55, G_TERMINAL, t_open, t_key, 0, t_draw, t_tick };
+const app_t app_terminal = { "Terminal", 0x3A3F55, G_TERMINAL, t_open, t_key, 0, t_draw, t_tick, 0 };

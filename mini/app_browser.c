@@ -666,6 +666,15 @@ static void open_watch(const char *id) {
     B.status[0] = 0;                               /* the watch page says its own state */
 }
 
+/* Space on the watch page: play and pause -- or start the video again if
+ * it stopped (it failed, or Local AI needed its memory). */
+static void watch_space(void) {
+    char m[8];
+    int st = player_status(m, sizeof m);
+    if (st <= 0 && B.vid[0]) { char id[16]; snprintf(id, sizeof id, "%s", B.vid); open_watch(id); }
+    else player_toggle();
+}
+
 /* ---- loading, for real --------------------------------------------------------------------- */
 static void do_load(void) {
     hist_t n = B.next;
@@ -717,17 +726,18 @@ static int wrap_lines(const char *s, int face, int px, int w, int max, int draw_
 }
 
 static void draw_bar(int x, int y, int w) {
-    int h = S(38), r = h / 2;
+    int h = S(34), r = S(4);
     int bx = x;
     if (B.nhist || B.view != V_START) {                         /* back */
-        gfx_rrect(bx, y, h, h, r, th.dark ? 0xFFFFFF : 0x000000, th.dark ? 22 : 14);
+        gfx_rrect(bx, y, h, h, r, th.line, 255);
+        gfx_rrect(bx + 1, y + 1, h - 2, h - 2, r - 1, th.surface, 255);
         gfx_line((float)(bx + h / 2 + S(3)), (float)(y + h / 2 - S(6)), (float)(bx + h / 2 - S(3)), (float)(y + h / 2), (float)S(2), th.text, 255);
         gfx_line((float)(bx + h / 2 - S(3)), (float)(y + h / 2), (float)(bx + h / 2 + S(3)), (float)(y + h / 2 + S(6)), (float)S(2), th.text, 255);
         bx += h + S(8);
     }
     int aw = x + w - bx;
-    gfx_rrect(bx, y, aw, h, r, th.dark ? 0xFFFFFF : 0x000000, B.editing ? (th.dark ? 34 : 22) : (th.dark ? 22 : 14));
-    if (B.editing) gfx_rrect_stroke(bx, y, aw, h, r, S(2) > 1 ? 2 : 1, th.accent, 200);
+    gfx_rrect(bx, y, aw, h, r, B.editing ? th.accent : th.line, 255);
+    gfx_rrect(bx + 1, y + 1, aw - 2, h - 2, r - 1, th.surface, 255);
     int tx = bx + S(16), cy = y + h / 2, px = S(14);
     int lock = !strncmp(B.url, "https://", 8) && !B.editing && B.view == V_WEB;
     if (lock) {
@@ -799,8 +809,8 @@ static void draw_start(int x, int y, int w, int h) {
     for (int i = 0; i < n; i++) {
         int tx = qx + i * (ts + gap);
         int f = B.focus == i;
-        gfx_rrect(tx, qy, ts, ts, ts * 26 / 100, quick[i].c, 255);
-        if (f) gfx_rrect_stroke(tx - S(4), qy - S(4), ts + S(8), ts + S(8), ts * 30 / 100, 2, th.accent, 255);
+        if (f) gfx_rrect(tx - S(3), qy - S(3), ts + S(6), ts + S(6), S(6), th.accent, 255);
+        gfx_rrect(tx, qy, ts, ts, S(4), quick[i].c, 255);
         char l[2] = { quick[i].name[0], 0 };
         text_c(tx + ts / 2, qy + ts / 2, l, FONT_SEMIBOLD, S(22), 0xFFFFFF);
         text_c(tx + ts / 2, qy + ts + S(16), quick[i].name, FONT_MEDIUM, S(11), th.sub);
@@ -819,7 +829,7 @@ static void draw_results(int x, int w, int top, int bottom) {
         int sy = top + yy - B.scroll;
         if (sy + ih >= top && sy <= bottom) {
             if (B.focus >= 0 && hits[B.focus].item == i)
-                gfx_rrect(x - S(8), sy - S(6), w + S(16), ih - S(6), S(12), th.accent, th.dark ? 46 : 36);
+                gfx_rrect(x - S(8), sy - S(6), w + S(16), ih - S(6), S(4), th.sel, 255);
             font_draw_fit(FONT_REGULAR, S(12), x + pad, sy + S(12), it->sub, w - 2 * pad, th.dark ? 0x7FD49B : 0x188038, 255);
             font_draw_fit(FONT_MEDIUM, S(17), x + pad, sy + S(36), it->title, w - 2 * pad, th.dark ? 0x9DB8FF : 0x1A0DAB, 255);
             wrap_lines(it->text, FONT_REGULAR, S(13), w - 2 * pad, 3, x + pad, sy + S(58), S(19), th.sub);
@@ -856,9 +866,9 @@ static void draw_images(int x, int y, int w, int top, int bottom) {
             it->x = xx; it->y = yy; it->w = iw; it->h = h;
             int sy = top + yy - B.scroll;
             if (sy + h >= top && sy <= bottom) {
-                if (it->pix) draw_image_cover(it->pix, x + xx, sy, iw, h, S(8));
-                else gfx_rrect(x + xx, sy, iw, h, S(8), th.dark ? 0xFFFFFF : 0x000000, th.dark ? 18 : 12);
-                if (B.focus >= 0 && hits[B.focus].item == k) gfx_rrect_stroke(x + xx - 2, sy - 2, iw + 4, h + 4, S(10), 3, th.accent, 255);
+                if (it->pix) draw_image_cover(it->pix, x + xx, sy, iw, h, S(3));
+                else gfx_rrect(x + xx, sy, iw, h, S(3), th.surface, 255);
+                if (B.focus >= 0 && hits[B.focus].item == k) gfx_rrect_stroke(x + xx - 2, sy - 2, iw + 4, h + 4, S(4), 2, th.accent, 255);
             }
             add_hit(x + xx, yy, iw, h, H_ITEM, it->href, 0, k);
             xx += iw + gap;
@@ -881,9 +891,9 @@ static void draw_videos(int x, int y, int w, int top, int bottom) {
         int sy = top + yy - B.scroll;
         if (sy + ch >= top && sy <= bottom) {
             int f = B.focus >= 0 && hits[B.focus].item == i;
-            if (f) gfx_rrect(x + cx - S(6), sy - S(6), cw + S(12), ch - S(4), S(14), th.accent, th.dark ? 50 : 40);
-            if (it->pix) draw_image_cover(it->pix, x + cx, sy, cw, thh, S(10));
-            else gfx_rrect(x + cx, sy, cw, thh, S(10), th.dark ? 0xFFFFFF : 0x000000, th.dark ? 18 : 12);
+            if (f) gfx_rrect(x + cx - S(6), sy - S(6), cw + S(12), ch - S(4), S(5), th.sel, 255);
+            if (it->pix) draw_image_cover(it->pix, x + cx, sy, cw, thh, S(3));
+            else gfx_rrect(x + cx, sy, cw, thh, S(3), th.surface, 255);
             if (it->badge[0]) {
                 int bw = font_width(FONT_SEMIBOLD, S(11), it->badge, -1) + S(10);
                 int live = !strcmp(it->badge, "LIVE");
@@ -908,7 +918,7 @@ static void draw_watch(int x, int y, int w, int h) {
     if (f0 && f0->w <= pw && f0->h <= ph) { pw = f0->w; ph = f0->h; }  /* its own size: sharp, and cheap */
     else if (!f0 && pw > 640) { pw = 640; ph = 360; }
     int px = x + (w - pw) / 2, py = y;
-    gfx_rrect(px, py, pw, ph, S(12), 0x000000, 255);
+    gfx_fill(px, py, pw, ph, 0x000000);
     const surface_t *f = player_frame();
     char msg[160] = "";
     int st = player_status(msg, sizeof msg);
@@ -918,9 +928,9 @@ static void draw_watch(int x, int y, int w, int h) {
         if (fh > ph) { fh = ph; fw = fh * f->w / f->h; }
         gfx_surface_scaled(px + (pw - fw) / 2, py + (ph - fh) / 2, fw, fh, f, 0, 255);
         if (fw == f->w && fh == f->h) { vid_x = px + (pw - fw) / 2; vid_y = py + (ph - fh) / 2; vid_w = fw; vid_h = fh; }
-    } else if (B.nitems && B.items[0].pix) draw_image_cover(B.items[0].pix, px, py, pw, ph, S(12));
+    } else if (B.nitems && B.items[0].pix) draw_image_cover(B.items[0].pix, px, py, pw, ph, 0);
     if (st != 2 || !f) {                                        /* the state, over the picture */
-        gfx_rrect(px, py, pw, ph, S(12), 0x000000, f || (B.nitems && B.items[0].pix) ? 110 : 0);
+        gfx_fill_a(px, py, pw, ph, 0x000000, f || (B.nitems && B.items[0].pix) ? 110 : 0);
         int cx = px + pw / 2, cy = py + ph / 2;
         if (st == 3 || st == 0) {                               /* a play button */
             gfx_circle((float)cx, (float)cy, (float)S(30), 0xFFFFFF, 230);
@@ -946,7 +956,7 @@ static void draw_watch(int x, int y, int w, int h) {
 
 static void draw_picture(int x, int y, int w, int h) {
     item_t *it = &B.items[B.picked];
-    gfx_rrect(x, y, w, h, S(14), 0x000000, 200);
+    gfx_rrect(x, y, w, h, S(4), 0x000000, 200);
     image_t *im = it->pix;
     if (im) {
         int iw = w - S(40), ih = iw * im->h / im->w;
@@ -979,7 +989,7 @@ static void b_draw(int x, int y, int w, int h) {
             if (B.dom) {
                 int pw = cw;
                 ensure_layout(pw - 2 * S(14));
-                gfx_rrect(cx, top, pw, bottom - top, S(12), B.paper, 255);
+                gfx_rrect(cx, top, pw, bottom - top, S(4), B.paper, 255);
                 gfx_clip_push(cx, top, pw, bottom - top);
                 paint_page(cx + S(14), top + S(10) - B.scroll, top, bottom);
                 B.doc_h = B.fl.doc_h + S(30);
@@ -1037,8 +1047,11 @@ static int b_tick(void) {
         }
         if (r) return 1;
     }
-    /* One picture per frame: the visible ones first. */
-    if (B.view == V_WEB) {
+    /* One picture per frame: the visible ones first. A fetch holds the
+     * loop until it is in, so none starts while keys or the wheel are
+     * moving things: the page answers first, the pictures come after. */
+    int idle = input_idle_ms() >= 600;
+    if (idle && B.view == V_WEB) {
         for (int i = 0; i < nwimg; i++)
             if (!wimg[i].state && wimg[i].near) {
                 wimg[i].im = fetch_image(wimg[i].url);
@@ -1046,7 +1059,7 @@ static int b_tick(void) {
                 if (wimg[i].im) B.relayout = 1;
                 return 1;
             }
-    } else if (B.items) {
+    } else if (idle && B.items) {
         int vt = B.scroll - S(200), vb = B.scroll + B.view_h + S(300);
         for (int pass = 0; pass < 2; pass++)
             for (int i = 0; i < B.nitems; i++) {
@@ -1212,7 +1225,7 @@ static void b_key(const input_ev_t *e) {
     int grid = B.view == V_IMAGES || B.view == V_VIDEOS || B.view == V_START;
     int list = B.view == V_RESULTS;
     if (B.view == V_WATCH) {
-        if (e->key == KEY_CHAR && (e->ch == ' ' || e->ch == 'k')) { player_toggle(); return; }
+        if (e->key == KEY_CHAR && (e->ch == ' ' || e->ch == 'k')) { watch_space(); return; }
         if (e->key == KEY_LEFT) { player_seek(-10); return; }
         if (e->key == KEY_RIGHT) { player_seek(10); return; }
     }
@@ -1269,7 +1282,7 @@ static void b_pointer(const input_ev_t *e, int x, int y, int w, int h) {
         top += S(34);
     }
     if (B.view == V_IMAGES && B.picked >= 0) { B.picked = -1; return; }
-    if (B.view == V_WATCH) { player_toggle(); return; }
+    if (B.view == V_WATCH) { watch_space(); return; }
     int origin = (B.view == V_RESULTS ? S(8) : B.view == V_VIDEOS ? S(10) : B.view == V_IMAGES ? S(4) : 0);
     int py = e->y - top - origin + B.scroll;
     B.field = 0;
@@ -1300,4 +1313,4 @@ static void b_open(void) {
     if (B.view == V_START) B.editing = 1;
 }
 
-const app_t app_browser = { "Browser", 0x3478F6, G_GLOBE, b_open, b_key, b_pointer, b_draw, b_tick };
+const app_t app_browser = { "Browser", 0x3478F6, G_GLOBE, b_open, b_key, b_pointer, b_draw, b_tick, 0 };

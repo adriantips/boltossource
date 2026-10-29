@@ -7,12 +7,20 @@
  *  from then on the Mac's keyboard and trackpad drive Mini as well as the
  *  keyboard on the Pi's own USB port.
  *
- *  Updates are computed, not tracked: each viewer has a shadow of what it
- *  was last sent, and when the front buffer has moved on, the two are
- *  compared 16x16 tile by tile. The changed tiles go out as Hextile -- a
- *  tile of one colour costs five bytes, any other tile its raw pixels --
- *  or Raw for a viewer that does not know Hextile. A big update is streamed
- *  across as many loops as the TCP send ring needs; the UI never waits.
+ *  Updates come from the screen's tile stamps (screen.c): every 16x16 tile
+ *  carries the g_front_gen it last changed in, and a viewer is owed each
+ *  tile stamped after the update it was last sent. An update is encoded
+ *  whole into a buffer when it starts and streamed out as the TCP send ring
+ *  takes it, across as many loops as that needs; the UI never waits.
+ *
+ *  Encodings, in the order the viewer lists them: ZRLE (64x64 tiles as one
+ *  colour, a packed palette, runs, or plain pixels), zlib (pixels through a
+ *  small deflate made for screens), Hextile (16x16 tiles, one colour or
+ *  raw), Raw. macOS Screen Sharing lists zlib before ZRLE and doesn't ask
+ *  for Hextile at all -- before zlib it was sent every changed pixel raw. A flat screen is mostly tiles of
+ *  one colour, so a whole new screen is tens of kilobytes, not 2.4 MB.
+ *  ZRLE's zlib stream is written as stored blocks: its tiles are small
+ *  already, and the 29 MB/s cable is cheaper than compressing them again.
  * ===========================================================================*/
 #include <stdint.h>
 #include "mini.h"
@@ -123,22 +131,60 @@ typedef struct {
     uint8_t  in[1024]; int inlen;
     uint8_t  chal[16];
     /* the viewer's pixel format */
-    int      bpp, big, rmax, gmax, bmax, rsh, gsh, bsh, native;
-    int      hextile, desktop_size, cursor, cursor_sent, size_sent;
-    int      want, incremental;
-    uint32_t *shadow;
-    int      sw, sh;                    /* shadow's size                     */
-    uint32_t gen;
+    int      bpp, depth, big, rmax, gmax, bmax, rsh, gsh, bsh, native;
+    int      cpix;                      /* bytes in a ZRLE CPIXEL            */
+    int      enc;                       /* 16 ZRLE, 6 zlib, 5 Hextile, 0 Raw: the viewer's first */
+    int      desktop_size, cursor, cursor_sent, size_sent;
+    int      want;
+    uint32_t gen;                       /* g_front_gen it has been sent      */
     int      full;
+    int      z_started, zl_started;     /* ZRLE's, zlib's stream header is out */
     /* the update being streamed */
-    struct { uint16_t x, y, w, h; } *rects;
-    int      nrects, rect_cap, cur, cur_tile;
+    uint8_t *out;
+    int      out_cap, out_len, out_pos, out_rects;
     uint64_t t_conn;
     uint32_t updates;
+    uint32_t p_updates; uint64_t p_bytes;       /* since the last /perf  */
+    /* the clipboard: a viewer's arriving in pieces, ours going out */
+    char    *cut; uint32_t cut_len, cut_left;
+    uint32_t cut_sent;
 } vclient_t;
+
+void clip_from_viewer(const char *s, int n);
+uint32_t clip_gen(void);
+const char *clip_get(int *n);
 
 static vclient_t vc[VNC_N];
 static uint16_t vnc_port;
+
+/* Every viewer is still being sent an update: a new frame would wait. */
+int vnc_streaming(void) {
+    int n = 0;
+    for (int i = 0; i < VNC_N; i++) {
+        if (!vc[i].c || vc[i].st != V_RUN) continue;
+        if (vc[i].out_pos >= vc[i].out_len) return 0;
+        n++;
+    }
+    return n > 0;
+}
+
+/* For /perf: each viewer's updates since the last call. */
+int vnc_perf(char *out, int cap, uint64_t window_us) {
+    int n = 0;
+    for (int i = 0; i < VNC_N && n < cap - 160; i++) {
+        vclient_t *v = &vc[i];
+        if (!v->c || v->st != V_RUN) continue;
+        uint16_t port; char ip[16]; net_fmt_ip(tcp_peer(v->c, &port), ip);
+        uint64_t w = window_us ? window_us : 1;
+        n += snprintf(out + n, (size_t)(cap - n), "viewer %s:%u RFB 3.%d, %s, %d-byte pixels: %u updates (%lu.%lu/s), %lu KiB\n",
+                      ip, port, v->minor, v->enc == 16 ? "ZRLE" : v->enc == 6 ? "zlib" : v->enc == 5 ? "Hextile" : "Raw",
+                      v->enc == 16 ? v->cpix : v->bpp / 8, v->p_updates,
+                      (unsigned long)(v->p_updates * 10000000ull / w / 10), (unsigned long)(v->p_updates * 10000000ull / w % 10),
+                      (unsigned long)(v->p_bytes >> 10));
+        v->p_updates = 0; v->p_bytes = 0;
+    }
+    return n;
+}
 
 int vnc_clients(void) {
     int n = 0;
@@ -150,18 +196,33 @@ static void vc_drop(vclient_t *v, const char *why) {
     if (v->c) { uint16_t p; uint32_t ip = tcp_peer(v->c, &p); char s[16]; net_fmt_ip(ip, s);
                 kprintf("[vnc] %s left (%s)\n", s, why); tcp_abort(v->c); }
     if (v->st == V_RUN) shell_toast("Screen sharing ended", 0);
-    if (v->shadow) kfree(v->shadow);
-    if (v->rects) kfree(v->rects);
+    if (v->out) kfree(v->out);
+    kfree(v->cut);
     memset(v, 0, sizeof *v);
     shell_request_frame();
 }
 
+static int vtcp_write(tcb_t *c, const void *b, int n) { g_perf.vnc_bytes += (uint64_t)n; return tcp_write(c, b, n); }
+#define tcp_write vtcp_write
+
 static void put16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
 static void put32(uint8_t *p, uint32_t v) { put16(p, (uint16_t)(v >> 16)); put16(p + 2, (uint16_t)v); }
 
+/* A ZRLE CPIXEL drops the unused byte of a 32-bit pixel whose colour fits
+ * in its low or high three bytes. RFC 6143 also asks for depth <= 24;
+ * RealVNC/TigerVNC and libvncserver go by the colour bits alone, and so do
+ * we. (Screen Sharing, which asks for depth 32, gets zlib instead: see
+ * enc_zlib.) */
+static void set_cpix(vclient_t *v) {
+    int lo = (v->rmax << v->rsh) < (1 << 24) && (v->gmax << v->gsh) < (1 << 24) && (v->bmax << v->bsh) < (1 << 24);
+    int hi = v->rsh >= 8 && v->gsh >= 8 && v->bsh >= 8;
+    v->cpix = v->bpp == 32 && (lo || hi) ? 3 : v->bpp / 8;
+}
+
 static void set_native_format(vclient_t *v) {
-    v->bpp = 32; v->big = 0; v->rmax = v->gmax = v->bmax = 255;
+    v->bpp = 32; v->depth = 24; v->big = 0; v->rmax = v->gmax = v->bmax = 255;
     v->rsh = 16; v->gsh = 8; v->bsh = 0; v->native = 1;
+    set_cpix(v);
 }
 
 static int px_bytes(vclient_t *v) { return v->bpp / 8; }
@@ -280,23 +341,28 @@ static int vc_message(vclient_t *v) {
     switch (m[0]) {
     case 0:                                                /* SetPixelFormat  */
         if (n < 20) return 0;
-        v->bpp = m[4]; v->big = m[6] != 0;
+        v->bpp = m[4]; v->depth = m[5]; v->big = m[6] != 0;
         v->rmax = (m[8] << 8) | m[9]; v->gmax = (m[10] << 8) | m[11]; v->bmax = (m[12] << 8) | m[13];
         v->rsh = m[14]; v->gsh = m[15]; v->bsh = m[16];
         if (!m[7] || (v->bpp != 8 && v->bpp != 16 && v->bpp != 32)) { set_native_format(v); }
         v->native = v->bpp == 32 && !v->big && v->rmax == 255 && v->gmax == 255 && v->bmax == 255 &&
                     v->rsh == 16 && v->gsh == 8 && v->bsh == 0;
+        set_cpix(v);
         v->full = 1;
+        kprintf("[vnc] pixel format: %d bpp, depth %d, %s, max %d/%d/%d, shift %d/%d/%d\n", v->bpp, m[5],
+                v->big ? "big" : "little", v->rmax, v->gmax, v->bmax, v->rsh, v->gsh, v->bsh);
         return 20;
     case 2: {                                              /* SetEncodings    */
         if (n < 4) return 0;
         int cnt = (m[2] << 8) | m[3];
         if (n < 4 + 4 * cnt) return 0;
-        v->hextile = v->desktop_size = v->cursor = 0;
+        v->enc = 0; v->desktop_size = v->cursor = 0;
+        int picked = 0;
         for (int i = 0; i < cnt; i++) {
             int32_t e = (int32_t)(((uint32_t)m[4 + 4 * i] << 24) | ((uint32_t)m[5 + 4 * i] << 16) |
                                   ((uint32_t)m[6 + 4 * i] << 8) | m[7 + 4 * i]);
-            if (e == 5) v->hextile = 1;
+            if (v->updates == 0 && i < 24) kprintf("%s%d%s", i ? " " : "[vnc] encodings: ", (int)e, i + 1 == cnt || i == 23 ? "\n" : "");
+            if (!picked && (e == 16 || e == 6 || e == 5 || e == 0)) { v->enc = e; picked = 1; }
             if (e == -223) v->desktop_size = 1;
             if (e == -239) v->cursor = 1;
         }
@@ -316,17 +382,18 @@ static int vc_message(vclient_t *v) {
         if (n < 6) return 0;
         pointer_event(m[1], (m[2] << 8) | m[3], (m[4] << 8) | m[5]);
         return 6;
-    case 6: {                                              /* ClientCutText   */
+    case 6: {                                              /* ClientCutText: the Mac's clipboard */
         if (n < 8) return 0;
         uint32_t len = ((uint32_t)m[4] << 24) | ((uint32_t)m[5] << 16) | ((uint32_t)m[6] << 8) | m[7];
-        if (len > 100000) return -1;
-        if ((uint32_t)n < 8 + len) {
-            if (8 + len > sizeof v->in) {                  /* bigger than us: skip it */
-                v->inlen = 0; return 0;
-            }
-            return 0;
-        }
-        return (int)(8 + len);
+        if (len > 4u << 20) return -1;
+        if ((uint32_t)n >= 8 + len) { clip_from_viewer((const char *)m + 8, (int)len); v->cut_sent = clip_gen(); return (int)(8 + len); }
+        /* bigger than what's here: the rest is gathered as it comes (vnc_poll) */
+        kfree(v->cut);
+        v->cut = kmalloc(len + 1);
+        if (!v->cut) return -1;
+        memcpy(v->cut, m + 8, (size_t)(n - 8));
+        v->cut_len = (uint32_t)(n - 8); v->cut_left = len - v->cut_len;
+        return n;
     }
     default:
         kprintf("[vnc] unknown message %u\n", m[0]);
@@ -340,12 +407,11 @@ static const char *arrow[] = {
     "X.....X     ", "X......X    ", "X.......X   ", "X........X  ", "X.........X ", "X......XXXXX",
     "X...X..X    ", "X..XX..X    ", "X.X  X..X   ", "XX   X..X   ", "X     X..X  ", "      X..X  ", "       XX   " };
 
-static void send_cursor_rect(vclient_t *v) {
-    int w = 12, h = 19, bpp = px_bytes(v);
-    uint8_t buf[12 + 12 * 19 * 4 + 2 * 19];
-    put16(buf, 0); put16(buf + 2, 0); put16(buf + 4, (uint16_t)w); put16(buf + 6, (uint16_t)h);
-    put32(buf + 8, (uint32_t)-239);
-    uint8_t *o = buf + 12;
+static uint8_t *cursor_rect(vclient_t *v, uint8_t *o) {
+    int w = 12, h = 19;
+    put16(o, 0); put16(o + 2, 0); put16(o + 4, (uint16_t)w); put16(o + 6, (uint16_t)h);
+    put32(o + 8, (uint32_t)-239);
+    o += 12;
     for (int y = 0; y < h; y++)
         for (int x = 0; x < w; x++) o = put_px(v, o, arrow[y][x] == '.' ? 0xFFFFFF : 0x000000);
     for (int y = 0; y < h; y++) {
@@ -353,142 +419,477 @@ static void send_cursor_rect(vclient_t *v) {
         for (int x = 0; x < w; x++) if (arrow[y][x] != ' ') { if (x < 8) m0 |= (uint8_t)(0x80 >> x); else m1 |= (uint8_t)(0x80 >> (x - 8)); }
         *o++ = m0; *o++ = m1;
     }
-    (void)bpp;
-    tcp_write(v->c, buf, (int)(o - buf));
     v->cursor_sent = 1;
+    return o;
 }
 
-static int tile_dirty(vclient_t *v, int tx, int ty) {
-    int x0 = tx * TILE, y0 = ty * TILE;
-    int w = scr_w - x0 < TILE ? scr_w - x0 : TILE, h = scr_h - y0 < TILE ? scr_h - y0 : TILE;
-    for (int y = 0; y < h; y++)
-        if (memcmp(g_front + (size_t)(y0 + y) * scr_w + x0, v->shadow + (size_t)(y0 + y) * scr_w + x0, (size_t)w * 4))
-            return 1;
-    return 0;
+static uint8_t *rect_header(uint8_t *o, int x, int y, int w, int h, int32_t enc) {
+    put16(o, (uint16_t)x); put16(o + 2, (uint16_t)y); put16(o + 4, (uint16_t)w); put16(o + 6, (uint16_t)h);
+    put32(o + 8, (uint32_t)enc);
+    return o + 12;
 }
 
-static void add_rect(vclient_t *v, int x, int y, int w, int h) {
-    if (v->nrects == v->rect_cap) {
-        int cap = v->rect_cap ? v->rect_cap * 2 : 256;
-        void *n = kmalloc((uint64_t)cap * sizeof *v->rects);
-        if (!n) return;
-        if (v->rects) { memcpy(n, v->rects, (size_t)v->nrects * sizeof *v->rects); kfree(v->rects); }
-        v->rects = n; v->rect_cap = cap;
+/* ---- Raw and Hextile --------------------------------------------------------------------- */
+static uint8_t *enc_raw(vclient_t *v, uint8_t *o, int rx, int ry, int rw, int rh) {
+    for (int y = 0; y < rh; y++) {
+        const uint32_t *s = g_front + (size_t)(ry + y) * scr_w + rx;
+        if (v->native) { memcpy(o, s, (size_t)rw * 4); o += rw * 4; }
+        else for (int x = 0; x < rw; x++) o = put_px(v, o, s[x]);
     }
-    v->rects[v->nrects].x = (uint16_t)x; v->rects[v->nrects].y = (uint16_t)y;
-    v->rects[v->nrects].w = (uint16_t)w; v->rects[v->nrects].h = (uint16_t)h;
-    v->nrects++;
+    return o;
 }
 
-/* Decide what changed and start sending it. */
-static void vc_begin_update(vclient_t *v) {
-    if (v->sw != scr_w || v->sh != scr_h || !v->shadow) {
-        if (v->shadow) kfree(v->shadow);
-        v->shadow = kmalloc((uint64_t)scr_w * scr_h * 4);
-        if (!v->shadow) return;
-        v->sw = scr_w; v->sh = scr_h;
-        v->full = 1;
-    }
-    int resize = 0;
-    if (v->size_sent && (v->size_sent != ((scr_w << 16) | scr_h))) resize = v->desktop_size;
-    v->nrects = 0;
-    int tw = (scr_w + TILE - 1) / TILE, th = (scr_h + TILE - 1) / TILE;
-    if (!v->full && v->gen == g_front_gen && v->cursor_sent == v->cursor && !resize) return;
-    uint32_t gen = g_front_gen;
-    for (int ty = 0; ty < th; ty++) {
-        int run = -1;
-        for (int tx = 0; tx <= tw; tx++) {
-            int d = tx < tw && (v->full || tile_dirty(v, tx, ty));
-            if (d && run < 0) run = tx;
-            if (!d && run >= 0) {
-                int x = run * TILE, y = ty * TILE;
-                int w = (tx * TILE > scr_w ? scr_w : tx * TILE) - x;
-                int h = scr_h - y < TILE ? scr_h - y : TILE;
-                add_rect(v, x, y, w, h);
-                run = -1;
+static uint8_t *enc_hextile(vclient_t *v, uint8_t *o, int rx, int ry, int rw, int rh) {
+    for (int ty = ry; ty < ry + rh; ty += TILE)
+        for (int tx = rx; tx < rx + rw; tx += TILE) {
+            int tw = rx + rw - tx < TILE ? rx + rw - tx : TILE, th = ry + rh - ty < TILE ? ry + rh - ty : TILE;
+            const uint32_t *s = g_front + (size_t)ty * scr_w + tx;
+            uint32_t first = s[0];
+            int solid = 1;
+            for (int y = 0; y < th && solid; y++)
+                for (int x = 0; x < tw; x++) if (s[(size_t)y * scr_w + x] != first) { solid = 0; break; }
+            if (solid) { *o++ = 2; o = put_px(v, o, first); continue; }
+            *o++ = 1;
+            for (int y = 0; y < th; y++) {
+                if (v->native) { memcpy(o, s + (size_t)y * scr_w, (size_t)tw * 4); o += tw * 4; }
+                else for (int x = 0; x < tw; x++) o = put_px(v, o, s[(size_t)y * scr_w + x]);
             }
         }
+    return o;
+}
+
+/* ---- ZRLE --------------------------------------------------------------------------------- */
+static inline uint8_t *put_cpx(vclient_t *v, uint8_t *o, uint32_t c) {
+    if (v->native) {
+        o[0] = (uint8_t)c; o[1] = (uint8_t)(c >> 8); o[2] = (uint8_t)(c >> 16);
+        if (v->cpix == 4) { o[3] = 0; return o + 4; }
+        return o + 3;
     }
+    if (v->cpix != 3) return put_px(v, o, c);
+    uint32_t r = (c >> 16) & 255, g = (c >> 8) & 255, b = c & 255;
+    uint32_t p = ((r * (uint32_t)v->rmax / 255) << v->rsh) | ((g * (uint32_t)v->gmax / 255) << v->gsh) |
+                 ((b * (uint32_t)v->bmax / 255) << v->bsh);
+    if (!((v->rmax << v->rsh) < (1 << 24) && (v->gmax << v->gsh) < (1 << 24) && (v->bmax << v->bsh) < (1 << 24))) p >>= 8;
+    if (v->big) { o[0] = (uint8_t)(p >> 16); o[1] = (uint8_t)(p >> 8); o[2] = (uint8_t)p; }
+    else        { o[0] = (uint8_t)p; o[1] = (uint8_t)(p >> 8); o[2] = (uint8_t)(p >> 16); }
+    return o + 3;
+}
+
+static inline int rle_len_bytes(int n) { return (n - 1) / 255 + 1; }
+static inline uint8_t *put_rle_len(uint8_t *o, int n) {
+    n--;
+    while (n >= 255) { *o++ = 255; n -= 255; }
+    *o++ = (uint8_t)n;
+    return o;
+}
+
+/* A tile's palette: up to 127 colours in a small hash, stamped per tile so
+ * it never needs clearing. */
+static uint32_t pal_key[256], pal_stamp[256], stamp;
+static uint8_t  pal_idx[256];
+static uint32_t pal[128];
+static int      npal;
+
+static inline int pal_find(uint32_t c) {
+    uint32_t h = (c * 0x9E3779B1u) >> 24;
+    while (pal_stamp[h] == stamp) {
+        if (pal_key[h] == c) return pal_idx[h];
+        h = (h + 1) & 255;
+    }
+    return -1;
+}
+static inline int pal_add(uint32_t c) {           /* -1 once it is full    */
+    uint32_t h = (c * 0x9E3779B1u) >> 24;
+    while (pal_stamp[h] == stamp) {
+        if (pal_key[h] == c) return pal_idx[h];
+        h = (h + 1) & 255;
+    }
+    if (npal >= 127) return -1;
+    pal_stamp[h] = stamp; pal_key[h] = c; pal_idx[h] = (uint8_t)npal;
+    pal[npal] = c;
+    return npal++;
+}
+
+static uint8_t *zrle_tile(vclient_t *v, uint8_t *o, const uint32_t *s, int stride, int tw, int th) {
+    int cp = v->cpix;
+    /* One pass: the runs, and the palette while it lasts. */
+    stamp++;
+    npal = 0;
+    int many = 0;
+    long plain = 0, palrle = 0;
+    uint32_t prev = s[0] & 0xFFFFFFu;
+    int run = 0;
+    pal_add(prev);
+    for (int y = 0; y < th; y++) {
+        const uint32_t *row = s + (size_t)y * stride;
+        for (int x = 0; x < tw; x++) {
+            uint32_t c = row[x] & 0xFFFFFFu;
+            if (c == prev) { run++; continue; }
+            plain += cp + rle_len_bytes(run);
+            palrle += run == 1 ? 1 : 1 + rle_len_bytes(run);
+            prev = c; run = 1;
+            if (!many && pal_add(c) < 0) many = 1;
+        }
+    }
+    plain += cp + rle_len_bytes(run);
+    palrle += run == 1 ? 1 : 1 + rle_len_bytes(run);
+
+    if (!many && npal == 1) { *o++ = 1; return put_cpx(v, o, pal[0]); }
+    long best = (long)tw * th * cp;                 /* raw                   */
+    int mode = 0;
+    if (plain < best) { best = plain; mode = 128; }
+    int bits = 0;
+    if (!many) {
+        long pr = (long)npal * cp + palrle;
+        if (pr < best) { best = pr; mode = 130; }
+        if (npal <= 16) {
+            bits = npal == 2 ? 1 : npal <= 4 ? 2 : 4;
+            long pk = (long)npal * cp + (long)th * ((tw * bits + 7) / 8);
+            if (pk <= best) { best = pk; mode = 2; }
+        }
+    }
+
+    if (mode == 0) {                                  /* raw CPIXELs           */
+        *o++ = 0;
+        for (int y = 0; y < th; y++) {
+            const uint32_t *row = s + (size_t)y * stride;
+            if (v->native && cp == 4) { memcpy(o, row, (size_t)tw * 4); o += tw * 4; }
+            else if (v->native) {
+                for (int x = 0; x < tw; x++) {
+                    uint32_t c = row[x];
+                    o[0] = (uint8_t)c; o[1] = (uint8_t)(c >> 8); o[2] = (uint8_t)(c >> 16); o += 3;
+                }
+            } else for (int x = 0; x < tw; x++) o = put_cpx(v, o, row[x]);
+        }
+        return o;
+    }
+    if (mode == 2) {                                  /* packed palette        */
+        *o++ = (uint8_t)npal;
+        for (int i = 0; i < npal; i++) o = put_cpx(v, o, pal[i]);
+        uint32_t lc = pal[0]; int li = 0;
+        for (int y = 0; y < th; y++) {
+            const uint32_t *row = s + (size_t)y * stride;
+            uint32_t acc = 0; int nb = 0;
+            for (int x = 0; x < tw; x++) {
+                uint32_t c = row[x] & 0xFFFFFFu;
+                if (c != lc) { lc = c; li = pal_find(c); }
+                acc = (acc << bits) | (uint32_t)li; nb += bits;
+                if (nb == 8) { *o++ = (uint8_t)acc; acc = 0; nb = 0; }
+            }
+            if (nb) *o++ = (uint8_t)(acc << (8 - nb));
+        }
+        return o;
+    }
+    /* runs: plain (128) or through the palette (128 + n) */
+    *o++ = (uint8_t)(mode == 128 ? 128 : 128 + npal);
+    if (mode != 128) for (int i = 0; i < npal; i++) o = put_cpx(v, o, pal[i]);
+    prev = s[0] & 0xFFFFFFu; run = 0;
+    for (int y = 0; y < th; y++) {
+        const uint32_t *row = s + (size_t)y * stride;
+        for (int x = 0; x < tw; x++) {
+            uint32_t c = row[x] & 0xFFFFFFu;
+            if (c == prev) { run++; continue; }
+            if (mode == 128) { o = put_cpx(v, o, prev); o = put_rle_len(o, run); }
+            else if (run == 1) *o++ = (uint8_t)pal_find(prev);
+            else { *o++ = (uint8_t)(128 | pal_find(prev)); o = put_rle_len(o, run); }
+            prev = c; run = 1;
+        }
+    }
+    if (mode == 128) { o = put_cpx(v, o, prev); o = put_rle_len(o, run); }
+    else if (run == 1) *o++ = (uint8_t)pal_find(prev);
+    else { *o++ = (uint8_t)(128 | pal_find(prev)); o = put_rle_len(o, run); }
+    return o;
+}
+
+static uint8_t *zscratch;
+static int zscratch_cap;
+static uint32_t *zband;                           /* one band, tile after tile */
+
+/* The rect's ZRLE data, then wrapped as zlib stored blocks behind its length.
+ * Each 64-line band is first copied out row by row, tile after tile: read
+ * in place, a tile's rows are 4 KB apart and every one is a cache miss. */
+static uint8_t *enc_zrle(vclient_t *v, uint8_t *o, int rx, int ry, int rw, int rh) {
+    uint8_t *z = zscratch;
+    for (int ty = ry; ty < ry + rh; ty += 64) {
+        int th = ry + rh - ty < 64 ? ry + rh - ty : 64;
+        for (int r = 0; r < th; r++) {
+            const uint32_t *row = g_front + (size_t)(ty + r) * scr_w + rx;
+            for (int tx = 0; tx < rw; tx += 64) {
+                int tw = rw - tx < 64 ? rw - tx : 64;
+                memcpy(zband + (size_t)tx * th + (size_t)r * tw, row + tx, (size_t)tw * 4);
+            }
+        }
+        for (int tx = 0; tx < rw; tx += 64) {
+            int tw = rw - tx < 64 ? rw - tx : 64;
+            z = zrle_tile(v, z, zband + (size_t)tx * th, tw, tw, th);
+        }
+    }
+    int n = (int)(z - zscratch);
+    uint8_t *len_at = o;
+    o += 4;
+    uint8_t *start = o;
+    if (!v->z_started) { *o++ = 0x78; *o++ = 0x01; v->z_started = 1; }
+    for (int at = 0; at < n; ) {
+        int k = n - at > 65535 ? 65535 : n - at;
+        *o++ = 0;                                     /* BFINAL 0, stored      */
+        o[0] = (uint8_t)k; o[1] = (uint8_t)(k >> 8); o[2] = (uint8_t)~k; o[3] = (uint8_t)(~k >> 8);
+        o += 4;
+        memcpy(o, zscratch + at, (size_t)k);
+        o += k; at += k;
+    }
+    put32(len_at, (uint32_t)(o - start));
+    return o;
+}
+
+/* ---- zlib ---------------------------------------------------------------------------------
+ *  Encoding 6: the rect's pixels, as the viewer asked for them, through one
+ *  deflate stream per connection. It is what Screen Sharing asks for first.
+ *
+ *  The compressor is made for screens, not files, and for a 1 GHz core: for
+ *  each pixel it looks at two places only -- the pixel before it (a run of
+ *  one colour) and the one above it (a row like the last) -- takes the
+ *  longer match as a deflate back-reference, and writes everything with
+ *  deflate's fixed Huffman codes. A flat screen comes to a few kilobytes. A
+ *  rect that doesn't shrink (a photo, a video) goes as stored blocks.
+ *  Every rect ends in a sync flush, so it ends on a byte. */
+static uint16_t fl_code[288];                   /* fixed literal/length codes, bit-reversed */
+static uint8_t  fl_len[288];
+static uint16_t len_sym[259];                   /* match length -> symbol (257..285) */
+static const uint16_t lbase[29] = { 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59,
+                                    67, 83, 99, 115, 131, 163, 195, 227, 258 };
+static const uint8_t  lext[29]  = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0 };
+static const uint16_t dbase[30] = { 1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769,
+                                    1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577 };
+static const uint8_t  dext[30]  = { 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13 };
+
+static uint32_t rev(uint32_t c, int n) { uint32_t r = 0; for (int i = 0; i < n; i++) r |= ((c >> i) & 1) << (n - 1 - i); return r; }
+
+static void zl_tables(void) {
+    for (int v = 0; v < 288; v++) {
+        uint32_t c; int n;
+        if (v < 144)      { c = 0x30 + (uint32_t)v;          n = 8; }
+        else if (v < 256) { c = 0x190 + (uint32_t)(v - 144); n = 9; }
+        else if (v < 280) { c = (uint32_t)(v - 256);         n = 7; }
+        else              { c = 0xC0 + (uint32_t)(v - 280);  n = 8; }
+        fl_code[v] = (uint16_t)rev(c, n); fl_len[v] = (uint8_t)n;
+    }
+    for (int l = 3; l <= 258; l++) {
+        int i = 28;
+        while (lbase[i] > l) i--;
+        len_sym[l] = (uint16_t)i;
+    }
+}
+
+typedef struct { uint8_t *o; uint64_t acc; int n; } bits_t;
+typedef uint32_t u32u __attribute__((aligned(1), may_alias));
+static inline void bput(bits_t *b, uint32_t v, int n) {
+    b->acc |= (uint64_t)v << b->n;
+    b->n += n;
+    if (b->n >= 32) { *(u32u *)b->o = (uint32_t)b->acc; b->o += 4; b->acc >>= 32; b->n -= 32; }
+}
+static inline void blit_(bits_t *b, int sym) { bput(b, fl_code[sym], fl_len[sym]); }
+static void balign(bits_t *b) {
+    while (b->n > 0) { *b->o++ = (uint8_t)b->acc; b->acc >>= 8; b->n -= 8; }
+    b->n = 0; b->acc = 0;
+}
+
+/* A back-reference of len bytes (any length; split at 258) from dist bytes back. */
+static void bmatch(bits_t *b, int len, int dsym, uint32_t dx) {
+    while (len > 0) {
+        int c = len > 258 ? 258 : len;
+        if (len - c > 0 && len - c < 3) c = len - 3;
+        int i = len_sym[c];
+        blit_(b, 257 + i);
+        if (lext[i]) bput(b, (uint32_t)(c - lbase[i]), lext[i]);
+        bput(b, rev((uint32_t)dsym, 5), 5);
+        if (dext[dsym]) bput(b, dx, dext[dsym]);
+        len -= c;
+    }
+}
+
+static int dist_sym(int d, uint32_t *extra) {
+    int j = 29;
+    while (dbase[j] > d) j--;
+    *extra = (uint32_t)(d - dbase[j]);
+    return j;
+}
+
+/* The rect deflated into o, as long as it stays under `limit`; NULL if not. */
+static uint8_t *zl_deflate(uint8_t *o, uint8_t *limit, int rx, int ry, int rw, int rh) {
+    bits_t b = { o, 0, 0 };
+    bput(&b, 2, 3);                                   /* BFINAL 0, fixed Huffman */
+    uint32_t x1, xu;
+    int d1 = dist_sym(4, &x1);
+    int du = rw * 4 <= 32768 ? dist_sym(rw * 4, &xu) : -1;
+    const uint32_t M = 0xFFFFFF;
+    for (int y = 0; y < rh; y++) {
+        const uint32_t *row = g_front + (size_t)(ry + y) * scr_w + rx;
+        const uint32_t *up = y && du >= 0 ? row - scr_w : 0;
+        for (int x = 0; x < rw; ) {
+            int n1 = 0, n2 = 0;
+            if (x) { uint32_t p = row[x - 1] & M; while (x + n1 < rw && (row[x + n1] & M) == p) n1++; }
+            if (up) while (x + n2 < rw && ((row[x + n2] ^ up[x + n2]) & M) == 0) n2++;
+            if (!n1 && !n2) {
+                uint32_t p = row[x];
+                blit_(&b, (int)(p & 255)); blit_(&b, (int)((p >> 8) & 255)); blit_(&b, (int)((p >> 16) & 255)); blit_(&b, 0);
+                x++;
+                continue;
+            }
+            if (n1 >= n2) { bmatch(&b, n1 * 4, d1, x1); x += n1; }
+            else          { bmatch(&b, n2 * 4, du, xu); x += n2; }
+        }
+        /* A photo or a video doesn't shrink: tell after a few rows, not at the end. */
+        long made = (long)(b.o - o), seen = (long)(y + 1) * rw * 4;
+        if (b.o > limit || (y >= 3 && made * 10 > seen * 9)) return 0;
+    }
+    blit_(&b, 256);                                   /* end of block           */
+    bput(&b, 0, 3);                                   /* sync flush: an empty stored block */
+    balign(&b);
+    b.o[0] = 0; b.o[1] = 0; b.o[2] = 0xFF; b.o[3] = 0xFF;
+    return b.o + 4;
+}
+
+/* The rect's pixels as stored blocks, row after row. */
+static uint8_t *zl_stored(vclient_t *v, uint8_t *o, int rx, int ry, int rw, int rh) {
+    int bpp = px_bytes(v), rowb = rw * bpp, total = rowb * rh, y = 0, in_row = 0;
+    while (total > 0) {
+        int k = total > 65535 ? 65535 : total;
+        *o++ = 0;
+        o[0] = (uint8_t)k; o[1] = (uint8_t)(k >> 8); o[2] = (uint8_t)~k; o[3] = (uint8_t)(~k >> 8);
+        o += 4;
+        total -= k;
+        while (k > 0) {                               /* fill the block from the rows */
+            const uint32_t *s = g_front + (size_t)(ry + y) * scr_w + rx;
+            int take = rowb - in_row < k ? rowb - in_row : k;
+            if (v->native) memcpy(o, (const uint8_t *)s + in_row, (size_t)take);
+            else {
+                uint8_t px[4];
+                for (int i = 0; i < take; i++) { put_px(v, px, s[(in_row + i) / bpp]); o[i] = px[(in_row + i) % bpp]; }
+            }
+            o += take; k -= take; in_row += take;
+            if (in_row == rowb) { in_row = 0; y++; }
+        }
+    }
+    return o;
+}
+
+static uint8_t *enc_zlib(vclient_t *v, uint8_t *o, int rx, int ry, int rw, int rh) {
+    uint8_t *len_at = o;
+    o += 4;
+    uint8_t *start = o;
+    if (!v->zl_started) { *o++ = 0x78; *o++ = 0x01; v->zl_started = 1; }
+    uint8_t *e = v->native ? zl_deflate(o, o + rw * rh * 4 - 64, rx, ry, rw, rh) : 0;
+    o = e ? e : zl_stored(v, o, rx, ry, rw, rh);
+    put32(len_at, (uint32_t)(o - start));
+    return o;
+}
+
+/* ---- what changed ------------------------------------------------------------------------- */
+typedef struct { uint16_t x, y, w, h; } vrect_t;
+static vrect_t rects[2048];
+
+static inline int tile_owed(vclient_t *v, int tx, int ty) {
+    return v->full || (int32_t)(g_tile_gen[ty * scr_tw + tx] - v->gen) > 0;
+}
+
+/* ZRLE: per 64-line band, runs of 16-pixel columns with anything owed, each
+ * cut down to the tile rows that have it. Hextile and Raw: runs of tiles,
+ * a tile row at a time. */
+static int collect(vclient_t *v) {
+    int n = 0, max = (int)(sizeof rects / sizeof rects[0]);
+    int band = v->enc == 16 || v->enc == 6 ? 4 : 1;
+    for (int b0 = 0; b0 < scr_th; b0 += band) {
+        int b1 = b0 + band < scr_th ? b0 + band : scr_th;
+        int run = -1, rlo = 0, rhi = 0;
+        for (int tx = 0; tx <= scr_tw; tx++) {
+            int lo = -1, hi = -1;
+            if (tx < scr_tw)
+                for (int ty = b0; ty < b1; ty++) if (tile_owed(v, tx, ty)) { if (lo < 0) lo = ty; hi = ty; }
+            if (lo >= 0) {
+                if (run < 0) { run = tx; rlo = lo; rhi = hi; }
+                else { if (lo < rlo) rlo = lo; if (hi > rhi) rhi = hi; }
+                continue;
+            }
+            if (run < 0) continue;
+            if (n < max) {
+                int x = run * SCR_TILE, y = rlo * SCR_TILE;
+                int x1 = tx * SCR_TILE < scr_w ? tx * SCR_TILE : scr_w;
+                int y1 = (rhi + 1) * SCR_TILE < scr_h ? (rhi + 1) * SCR_TILE : scr_h;
+                rects[n].x = (uint16_t)x; rects[n].y = (uint16_t)y;
+                rects[n].w = (uint16_t)(x1 - x); rects[n].h = (uint16_t)(y1 - y);
+                n++;
+            }
+            run = -1;
+        }
+    }
+    return n;
+}
+
+/* Decide what changed and encode all of it into v->out. */
+static void vc_begin_update(vclient_t *v) {
+    int resize = 0;
+    if (v->size_sent && (v->size_sent != ((scr_w << 16) | scr_h))) resize = v->desktop_size;
+    if (!v->full && v->gen == g_front_gen && v->cursor_sent == v->cursor && !resize) return;
+    uint32_t gen = g_front_gen;
+    int n = collect(v);
+    int extra = (v->cursor && !v->cursor_sent) + resize;
     v->gen = gen;
     v->full = 0;
-    int extra = (v->cursor && !v->cursor_sent) + resize;
-    if (!v->nrects && !extra) return;
-    /* What the viewer will have once this is through. */
-    for (int i = 0; i < v->nrects; i++)
-        for (int y = 0; y < v->rects[i].h; y++) {
-            size_t o = (size_t)(v->rects[i].y + y) * scr_w + v->rects[i].x;
-            memcpy(v->shadow + o, g_front + o, (size_t)v->rects[i].w * 4);
-        }
-    uint8_t h[4] = { 0, 0 };
-    put16(h + 2, (uint16_t)(v->nrects + extra));
-    tcp_write(v->c, h, 4);
-    if (resize) {
-        uint8_t r[12]; put16(r, 0); put16(r + 2, 0); put16(r + 4, (uint16_t)scr_w); put16(r + 6, (uint16_t)scr_h);
-        put32(r + 8, (uint32_t)-223); tcp_write(v->c, r, 12);
+    if (!n && !extra) return;
+
+    /* At worst every pixel raw, plus headers, stored-block framing and the cursor. */
+    int need = scr_w * scr_h * 4 + (scr_w * scr_h * 4 / 65535 + 1) * 5 + n * 32 + 8192;
+    if (v->out_cap < need) {
+        if (v->out) kfree(v->out);
+        v->out = kmalloc((uint64_t)need);
+        v->out_cap = v->out ? need : 0;
+        if (!v->out) { v->full = 1; return; }
     }
-    if (v->cursor && !v->cursor_sent) send_cursor_rect(v);
+    if (v->enc == 16 && zscratch_cap < scr_w * scr_h * 4 + 4096) {
+        if (zscratch) kfree(zscratch);
+        if (zband) kfree(zband);
+        zscratch_cap = scr_w * scr_h * 4 + 4096;
+        zscratch = kmalloc((uint64_t)zscratch_cap);
+        zband = kmalloc((uint64_t)scr_w * 64 * 4);
+        if (!zscratch || !zband) { zscratch_cap = 0; v->enc = 0; }
+    }
+    uint8_t *o = v->out;
+    o[0] = 0; o[1] = 0; put16(o + 2, (uint16_t)(n + extra));
+    o += 4;
+    if (resize) o = rect_header(o, 0, 0, scr_w, scr_h, -223);
+    if (v->cursor && !v->cursor_sent) o = cursor_rect(v, o);
     v->size_sent = (scr_w << 16) | scr_h;
-    v->cur = 0; v->cur_tile = -1;
+    for (int i = 0; i < n; i++) {
+        int rx = rects[i].x, ry = rects[i].y, rw = rects[i].w, rh = rects[i].h;
+        if (v->enc == 16)     { o = rect_header(o, rx, ry, rw, rh, 16); o = enc_zrle(v, o, rx, ry, rw, rh); }
+        else if (v->enc == 6) { o = rect_header(o, rx, ry, rw, rh, 6);  o = enc_zlib(v, o, rx, ry, rw, rh); }
+        else if (v->enc == 5) { o = rect_header(o, rx, ry, rw, rh, 5);  o = enc_hextile(v, o, rx, ry, rw, rh); }
+        else                 { o = rect_header(o, rx, ry, rw, rh, 0);  o = enc_raw(v, o, rx, ry, rw, rh); }
+    }
+    v->out_len = (int)(o - v->out);
+    v->p_updates++; v->p_bytes += (uint64_t)v->out_len;
+    v->out_pos = 0;
+    v->out_rects = n;
     v->want = 0;
     v->updates++;
 }
 
 /* Stream as much of the current update as the send ring will take. */
 static void vc_pump(vclient_t *v) {
-    static uint8_t buf[4 + 64 * (1 + TILE * TILE * 4) + 64];
-    int bpp = px_bytes(v);
-    while (v->cur < v->nrects) {
-        int rx = v->rects[v->cur].x, ry = v->rects[v->cur].y, rw = v->rects[v->cur].w, rh = v->rects[v->cur].h;
-        if (v->cur_tile < 0) {                             /* the rect's header */
-            if (tcp_space(v->c) < 12) return;
-            uint8_t r[12];
-            put16(r, (uint16_t)rx); put16(r + 2, (uint16_t)ry); put16(r + 4, (uint16_t)rw); put16(r + 6, (uint16_t)rh);
-            put32(r + 8, v->hextile ? 5u : 0u);
-            tcp_write(v->c, r, 12);
-            v->cur_tile = 0;
-        }
-        if (!v->hextile) {                                 /* Raw: whole rect   */
-            int need = rw * rh * bpp;
-            if (tcp_space(v->c) < need) return;
-            uint8_t *o = buf;
-            for (int y = 0; y < rh; y++) {
-                const uint32_t *s = v->shadow + (size_t)(ry + y) * scr_w + rx;
-                if (v->native) { memcpy(o, s, (size_t)rw * 4); o += rw * 4; }
-                else for (int x = 0; x < rw; x++) o = put_px(v, o, s[x]);
-            }
-            tcp_write(v->c, buf, (int)(o - buf));
-        } else {                                           /* Hextile, a tile at a time */
-            int ntiles = (rw + TILE - 1) / TILE;
-            while (v->cur_tile < ntiles) {
-                if (tcp_space(v->c) < 1 + TILE * TILE * 4) return;
-                int tx = rx + v->cur_tile * TILE;
-                int tw = rx + rw - tx < TILE ? rx + rw - tx : TILE;
-                const uint32_t *s = v->shadow + (size_t)ry * scr_w + tx;
-                uint32_t first = s[0];
-                int solid = 1;
-                for (int y = 0; y < rh && solid; y++)
-                    for (int x = 0; x < tw; x++) if (s[(size_t)y * scr_w + x] != first) { solid = 0; break; }
-                uint8_t *o = buf;
-                if (solid) { *o++ = 2; o = put_px(v, o, first); }
-                else {
-                    *o++ = 1;
-                    for (int y = 0; y < rh; y++) {
-                        if (v->native) { memcpy(o, s + (size_t)y * scr_w, (size_t)tw * 4); o += tw * 4; }
-                        else for (int x = 0; x < tw; x++) o = put_px(v, o, s[(size_t)y * scr_w + x]);
-                    }
-                }
-                tcp_write(v->c, buf, (int)(o - buf));
-                v->cur_tile++;
-            }
-        }
-        v->cur++;
-        v->cur_tile = -1;
+    while (v->out_pos < v->out_len) {
+        int room = tcp_space(v->c);
+        if (room <= 0) return;
+        int k = v->out_len - v->out_pos < room ? v->out_len - v->out_pos : room;
+        int w = tcp_write(v->c, v->out + v->out_pos, k);
+        if (w <= 0) return;
+        v->out_pos += w;
     }
 }
 
 int vnc_init(uint16_t port) {
     vnc_port = port;
     if (!vnc_des_selftest()) { kprintf("[vnc] DES self-test failed: no VNC\n"); return -1; }
+    zl_tables();
     tcp_listen(port);
     kprintf("[vnc] screen sharing on port %u (password \"%s\")\n", port, g_vnc_password);
     return 0;
@@ -511,7 +912,15 @@ void vnc_poll(void) {
         if (!tcp_open(v->c) || tcp_peer_closed(v->c)) { vc_drop(v, "closed"); continue; }
         int n = tcp_read(v->c, v->in + v->inlen, (int)sizeof v->in - v->inlen);
         if (n > 0) v->inlen += n;
+        if (v->cut_left && v->inlen) {                    /* the rest of a long clipboard */
+            uint32_t k = v->cut_left < (uint32_t)v->inlen ? v->cut_left : (uint32_t)v->inlen;
+            memcpy(v->cut + v->cut_len, v->in, k);
+            v->cut_len += k; v->cut_left -= k;
+            memmove(v->in, v->in + k, (size_t)v->inlen - k); v->inlen -= (int)k;
+            if (!v->cut_left) { clip_from_viewer(v->cut, (int)v->cut_len); v->cut_sent = clip_gen(); kfree(v->cut); v->cut = 0; }
+        }
         for (;;) {
+            if (v->cut_left) break;
             int used = vc_message(v);
             if (used < 0) { if (v->c) vc_drop(v, "protocol"); else memset(v, 0, sizeof *v); break; }
             if (used == 0) break;
@@ -523,7 +932,30 @@ void vnc_poll(void) {
             if (now_ms() - v->t_conn > 60000) vc_drop(v, "never logged in");
             continue;
         }
-        if (v->cur < v->nrects) vc_pump(v);
-        else if (v->want && tcp_unsent(v->c) < 128 * 1024) { vc_begin_update(v); vc_pump(v); }
+        /* something copied on the Pi: to the viewer, between updates */
+        uint32_t cg = clip_gen();
+        int cn; const char *ct = clip_get(&cn);
+        if (cn > 60000) cn = 60000;
+        if (cg && cg != v->cut_sent && v->out_pos >= v->out_len && tcp_space(v->c) >= 8 + cn) {
+            uint8_t hdr[8] = { 3, 0, 0, 0, (uint8_t)(cn >> 24), (uint8_t)(cn >> 16), (uint8_t)(cn >> 8), (uint8_t)cn };
+            tcp_write(v->c, hdr, 8);
+            if (cn) tcp_write(v->c, ct, cn);
+            v->cut_sent = cg;
+        }
+        uint64_t t0 = now_us();
+        if (v->out_pos < v->out_len) vc_pump(v);
+        else if (v->want) {
+            uint32_t u = v->updates;
+            vc_begin_update(v);
+            uint64_t t1 = now_us();
+            if (v->updates != u) {
+                g_perf.vnc_updates++; g_perf.vnc_rects += (uint32_t)v->out_rects;
+                g_perf.vnc_scan_us += t1 - t0;
+                if (t1 - t0 > g_perf.vnc_scan_max) g_perf.vnc_scan_max = t1 - t0;
+            }
+            t0 = t1;
+            vc_pump(v);
+        }
+        g_perf.vnc_pump_us += now_us() - t0;
     }
 }

@@ -33,10 +33,38 @@ for a in "$@"; do
     esac
 done
 
-exec "$QEMU" -M virt,gic-version=$GIC,highmem=off "${ACCEL[@]}" -smp 1 -m 1G \
+# A disk standing in for the Pi's microSD card (sdcard.c, store.c): 2 GiB,
+# sparse, with the card image's partition table, so the store lands past it
+# as it does on the Pi. It keeps what Packages installs between runs.
+CARD="$ROOT/build/mini/qemu-card.img"
+# The card's FAT partition (fs.c: /Code, /Notes, /System) comes from the real
+# card image, so QEMU's has the same BOLTOS partition the Pi's does; a card
+# made before that had an empty partition and gets it now, keeping its store.
+if [ -f "$CARD" ] && [ -f "$ROOT/build/mini/sdcard.img" ] && \
+   [ "$(dd if="$CARD" bs=512 skip=2048 count=1 2>/dev/null | head -c 90 | tail -c 8)" != "FAT32   " ]; then
+    dd if="$ROOT/build/mini/sdcard.img" of="$CARD" bs=1m count=129 conv=notrunc 2>/dev/null
+fi
+if [ ! -f "$CARD" ] && [ -f "$ROOT/build/mini/sdcard.img" ]; then
+    cp "$ROOT/build/mini/sdcard.img" "$CARD"
+    python3 -c "import sys; open(sys.argv[1], 'r+b').truncate(2 << 30)" "$CARD"
+fi
+if [ ! -f "$CARD" ]; then
+    python3 - "$CARD" <<'PY'
+import struct, sys
+with open(sys.argv[1], "wb") as f:
+    mbr = bytearray(512)
+    mbr[446:462] = struct.pack("<BBBBBBBBII", 0, 0, 0, 0, 0x0C, 0, 0, 0, 2048, 128 * 2048)
+    mbr[510:512] = b"\x55\xaa"
+    f.write(mbr)
+    f.truncate(2 << 30)
+PY
+fi
+
+exec "$QEMU" -M virt,gic-version=$GIC,highmem=off "${ACCEL[@]}" -smp 4 -m 1G \
+    -drive if=none,file="$CARD",format=raw,id=card -device virtio-blk-device,drive=card \
     -kernel "$KERNEL" \
     -device ramfb "${DISPLAY_ARGS[@]}" \
     -device virtio-keyboard-device -device virtio-tablet-device \
     -netdev user,id=n0,hostfwd=tcp:127.0.0.1:5901-:5900,hostfwd=tcp:127.0.0.1:8080-:80 \
     -device virtio-net-device,netdev=n0 \
-    -serial stdio "${EXTRA[@]}"
+    -serial stdio ${EXTRA[@]+"${EXTRA[@]}"}

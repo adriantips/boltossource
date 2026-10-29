@@ -32,8 +32,8 @@ static void fmt_rate(char *o, int cap, uint32_t b) {
 }
 
 static void block(int x, int y, int w, int h, const char *title) {
-    gfx_rrect(x, y, w, h, S(14), th.dark ? 0xFFFFFF : 0x000000, th.dark ? 12 : 10);
-    text_l(x + S(16), y + S(20), title, FONT_SEMIBOLD, S(12), th.sub);
+    ui_card(0, x, y, w, h, S(6));
+    text_l(x + S(16), y + S(20), title, FONT_SEMIBOLD, S(12), th.faint);
 }
 
 static void m_draw(int x, int y, int w, int h) {
@@ -54,7 +54,7 @@ static void m_draw(int x, int y, int w, int h) {
     int n = shell_cpu_history(hist, 120);
     int gx = x0 + S(16), gw = cw - S(32), gy = y0 + ch - S(16), gh = ch - S(104);
     if (gh > S(20)) {
-        gfx_fill(gx, gy, gw, 1, th.faint);
+        gfx_fill(gx, gy, gw, 1, th.line);
         for (int i = 1; i < n; i++) {
             float ax = (float)gx + (float)gw * (float)(120 - n + i - 1) / 119.0f;
             float bx = (float)gx + (float)gw * (float)(120 - n + i) / 119.0f;
@@ -69,10 +69,10 @@ static void m_draw(int x, int y, int w, int h) {
     snprintf(b, sizeof b, "%lu MiB", (unsigned long)(g_ram_size >> 20));
     font_draw(FONT_DISPLAY, S(44), x1 + S(16), y0 + S(40) + font_ascent(FONT_DISPLAY, S(44)), b, -1, th.text, 255);
     int bw = cw - S(32), by = y0 + S(110);
-    gfx_rrect(x1 + S(16), by, bw, S(8), S(4), th.faint, 80);
+    gfx_fill(x1 + S(16), by, bw, S(6), th.line);
     int fill = total ? (int)((uint64_t)bw * used / total) : 0;
     if (fill < S(8)) fill = S(8);
-    gfx_rrect(x1 + S(16), by, fill, S(8), S(4), th.accent, 255);
+    gfx_fill(x1 + S(16), by, fill, S(6), th.accent);
     snprintf(b, sizeof b, "Kernel heap: %lu of %lu MiB in use", (unsigned long)(used >> 20), (unsigned long)(total >> 20));
     text_l(x1 + S(16), by + S(26), b, FONT_REGULAR, S(13), th.sub);
     char up[32]; mini_uptime_str(up, sizeof up);
@@ -127,4 +127,4 @@ static int m_tick(void) {
     return 0;
 }
 
-const app_t app_monitor = { "Monitor", 0x2E9C7E, G_MONITOR, 0, m_key, 0, m_draw, m_tick };
+const app_t app_monitor = { "Monitor", 0x2E9C7E, G_MONITOR, 0, m_key, 0, m_draw, m_tick, 0 };

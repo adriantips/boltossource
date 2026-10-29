@@ -13,15 +13,21 @@
  *    VNC (5900)    the screen itself (vnc.c).
  *    HTTP (80)     a page that says how to connect and sets the Pi's clock
  *                  from the Mac's; and the small endpoints pi.py uses:
- *                  /time, /reboot, /log, /screen.bmp.
+ *                  /time, /reboot, /log, /screen.bmp; and for measuring
+ *                  speed, /perf, /bench and /anim (MINI.md, "How fast").
  *
  *  Under QEMU the same services run on the virtio card, which QEMU's DHCP
  *  makes 10.0.2.15 and its port forwards localhost:5901 and :8080 on the Mac.
  * ===========================================================================*/
 #include <stdint.h>
 #include "mini.h"
+#include "fs.h"
+#include "rt.h"
 #include "wlan.h"
 #include "bt.h"
+#include "pkg.h"
+#include "store.h"
+#include "crypto.h"
 #include "kprintf.h"
 #include "kheap.h"
 #include "string.h"
@@ -323,6 +329,121 @@ static void http_shot(tcb_t *c) {
     shot.c = c; shot.row = scr_h - 1;
 }
 
+/* ---- uploads (development) --------------------------------------------------------
+ *  POST /pkg: a .bpk, installed as if it had come from boltos.dev.
+ *  POST /store?name=<name>: a file straight into the SD card's store (a
+ *  language model, say, over the Mac's link instead of Wi-Fi).
+ *  The body comes over many polls; the reply says how it went.            */
+static struct {
+    tcb_t *c; int kind;                   /* 1 a package, 2 a store file, 3 a file on the card */
+    uint64_t len, got, written;
+    uint8_t *buf; uint32_t blen, cap;
+    const store_entry_t *e; char name[48];
+    sha256_ctx sha; uint64_t t0;
+    char fpath[256];
+} up;
+
+/* %xx and + in a query */
+static void url_decode(const char *q, char *out, int cap) {
+    int k = 0;
+    for (; *q && *q != '&' && k < cap - 1; q++) {
+        if (*q == '+') out[k++] = ' ';
+        else if (*q == '%' && q[1] && q[2]) { char hx[3] = { q[1], q[2], 0 }; out[k++] = (char)strtol(hx, 0, 16); q += 2; }
+        else out[k++] = *q;
+    }
+    out[k] = 0;
+}
+
+static void up_finish(const char *msg) {
+    char b[256];
+    snprintf(b, sizeof b, "%s\n", msg);
+    http_text(up.c, 200, b);
+    tcp_close(up.c);
+    if (up.buf) kfree(up.buf);
+    memset(&up, 0, sizeof up);
+}
+
+static int up_flush(void) {
+    if (!up.blen) return 0;
+    if (store_write(up.e, up.written, up.buf, up.blen)) return -1;
+    up.written += up.blen; up.blen = 0;
+    return 0;
+}
+
+static void up_take(const uint8_t *p, uint32_t n) {
+    while (n && up.got < up.len) {
+        uint32_t k = up.cap - up.blen;
+        if (k > n) k = n;
+        if (k > up.len - up.got) k = (uint32_t)(up.len - up.got);
+        memcpy(up.buf + up.blen, p, k);
+        if (up.kind == 2) sha256_update(&up.sha, p, k);
+        up.blen += k; up.got += k; p += k; n -= k;
+        if (up.kind == 2 && up.blen == up.cap && up_flush()) { up_finish("the card won't take a write"); return; }
+    }
+}
+
+static void up_pump(void) {
+    if (!up.c) return;
+    uint8_t b[16384];
+    for (int i = 0; i < 64 && up.got < up.len; i++) {
+        int n = tcp_read(up.c, b, sizeof b);
+        if (n <= 0) break;
+        up_take(b, (uint32_t)n);
+        if (!up.c) return;
+    }
+    if (up.got >= up.len) {
+        char msg[200];
+        if (up.kind == 1) {
+            pkg_install_file(up.buf, (uint32_t)up.len, msg, sizeof msg);
+        } else if (up.kind == 3) {
+            char dirp[256]; snprintf(dirp, sizeof dirp, "%s", up.fpath);
+            char *sl = strrchr(dirp, '/');
+            if (sl && sl != dirp) { *sl = 0; fs_mkdir(dirp); }
+            if (fs_write(up.fpath, up.buf, (uint32_t)up.len)) snprintf(msg, sizeof msg, "can't write %s: %s", up.fpath, fs_why());
+            else snprintf(msg, sizeof msg, "wrote %s, %lu bytes", up.fpath, (unsigned long)up.len);
+        } else {
+            uint8_t sum[32];
+            sha256_final(&up.sha, sum);
+            if (up_flush() || store_progress(up.name, up.len, 1, sum)) snprintf(msg, sizeof msg, "the card won't take a write");
+            else snprintf(msg, sizeof msg, "stored %s, %lu bytes in %lu ms", up.name, (unsigned long)up.len,
+                          (unsigned long)(now_ms() - up.t0));
+        }
+        up_finish(msg);
+        return;
+    }
+    if (!tcp_open(up.c)) { kprintf("[http] upload cut off at %lu bytes\n", (unsigned long)up.got); tcp_abort(up.c); if (up.buf) kfree(up.buf); memset(&up, 0, sizeof up); }
+}
+
+/* The request's headers are in; what's after them is the body's start. */
+static int up_begin(int i, const char *path) {
+    char *r = http[i].req;
+    const char *cl = strcasestr(r, "\r\nContent-Length:");
+    char *body = strstr(r, "\r\n\r\n");
+    if (up.c || !cl || !body) return -1;
+    memset(&up, 0, sizeof up);
+    up.len = strtoull(cl + 17, 0, 10);
+    up.c = http[i].c; up.t0 = now_ms();
+    if (!strncmp(path, "/fs?path=", 9)) {
+        up.kind = 3; up.cap = (uint32_t)up.len;
+        url_decode(path + 9, up.fpath, sizeof up.fpath);
+        if (up.len > (8u << 20) || !(up.buf = kmalloc(up.cap + 1))) { up_finish("too big"); return 0; }
+    } else if (!strcmp(path, "/pkg")) {
+        up.kind = 1; up.cap = (uint32_t)up.len;
+        if (up.len > (16u << 20) || !(up.buf = kmalloc(up.cap + 1))) { up_finish("too big"); return 0; }
+    } else {
+        up.kind = 2; up.cap = 256u << 10;              /* a short write: the link keeps up */
+        snprintf(up.name, sizeof up.name, "%s", path + 12);
+        if (store_open(1) != 0) { up_finish(store_why()); return 0; }
+        up.e = store_create(up.name, up.len);
+        if (!up.e || !(up.buf = kmalloc(up.cap))) { up_finish(up.e ? "out of memory" : store_why()); return 0; }
+        sha256_init(&up.sha);
+    }
+    body += 4;
+    up_take((const uint8_t *)body, (uint32_t)(http[i].len - (body - r)));
+    http[i].c = 0;
+    return 0;
+}
+
 static int query_int(const char *q, const char *key, long *out) {
     const char *p = strstr(q, key);
     if (!p) return 0;
@@ -342,7 +463,11 @@ static void http_handle(int i) {
     while (r[k] && r[k] != ' ' && j < 255) path[j++] = r[k++];
     path[j] = 0;
 
-    if (strcmp(path, "/") == 0) http_page(c);
+    if (!strcmp(method, "POST") && (!strcmp(path, "/pkg") || !strncmp(path, "/store?name=", 12) || !strncmp(path, "/fs?path=", 9))) {
+        if (up_begin(i, path) == 0) return;
+        http_text(c, 503, "busy, or no Content-Length\n");
+    }
+    else if (strcmp(path, "/") == 0) http_page(c);
     else if (strncmp(path, "/time", 5) == 0) {
         long t = 0, tz = 0;
         if (query_int(path, "t=", &t) && t > 1600000000L) {
@@ -358,7 +483,8 @@ static void http_handle(int i) {
     } else if (strncmp(path, "/keys?", 6) == 0) {
         /* Development: type at the shell. Text as it is, and {enter} {tab} {esc}
          * {bs} {up} {down} {left} {right} {pgdn} {pgup} {home} {end} {s-tab}
-         * {s-left} {s-right} {c-l} {f1}..{f6}, %XX and + as in a URL. */
+         * {s-left} {s-right} {s-up} {s-down} {del} {c-x} {c-s-x} {a-up} {f1}..{f8},
+         * %XX and + as in a URL. */
         char t[300]; int n = 0;
         for (const char *p = path + 6; *p && n < (int)sizeof t - 1; p++) {
             if (*p == '%' && p[1] && p[2]) { char h[3] = { p[1], p[2], 0 }; t[n++] = (char)strtol(h, 0, 16); p += 2; }
@@ -371,13 +497,20 @@ static void http_handle(int i) {
             { "right", KEY_RIGHT, 0 }, { "s-left", KEY_LEFT, MOD_SHIFT }, { "s-right", KEY_RIGHT, MOD_SHIFT },
             { "pgdn", KEY_PGDN, 0 }, { "pgup", KEY_PGUP, 0 }, { "home", KEY_HOME, 0 }, { "end", KEY_END, 0 },
             { "f1", KEY_F1, 0 }, { "f2", KEY_F2, 0 }, { "f3", KEY_F3, 0 }, { "f4", KEY_F4, 0 }, { "f5", KEY_F5, 0 }, { "f6", KEY_F6, 0 },
+            { "f7", KEY_F7, 0 }, { "f8", KEY_F8, 0 }, { "s-f5", KEY_F5, MOD_SHIFT }, { "del", KEY_DELETE, 0 },
+            { "s-up", KEY_UP, MOD_SHIFT }, { "s-down", KEY_DOWN, MOD_SHIFT }, { "s-home", KEY_HOME, MOD_SHIFT },
+            { "s-end", KEY_END, MOD_SHIFT }, { "c-home", KEY_HOME, MOD_CTRL }, { "c-end", KEY_END, MOD_CTRL },
         };
         for (char *p = t; *p; p++) {
             if (*p == '{') {
                 char *e = strchr(p, '}');
                 if (e) {
                     *e = 0;
-                    if (!strcmp(p + 1, "c-l")) input_key(KEY_CHAR, 'l', MOD_CTRL, SRC_SERIAL);
+                    /* {c-x}, {c-s-x}: a letter with Ctrl (and Shift); {s-up} and friends */
+                    if (!strncmp(p + 1, "c-s-", 4) && p[5] && !p[6]) input_key(KEY_CHAR, (unsigned char)p[5], MOD_CTRL | MOD_SHIFT, SRC_SERIAL);
+                    else if (!strncmp(p + 1, "c-", 2) && p[3] && !p[4]) input_key(KEY_CHAR, (unsigned char)p[3], MOD_CTRL, SRC_SERIAL);
+                    else if (!strncmp(p + 1, "a-", 2) && !strcmp(p + 3, "up")) input_key(KEY_UP, 0, MOD_ALT, SRC_SERIAL);
+                    else if (!strncmp(p + 1, "a-", 2) && !strcmp(p + 3, "down")) input_key(KEY_DOWN, 0, MOD_ALT, SRC_SERIAL);
                     for (unsigned k = 0; k < sizeof named / sizeof named[0]; k++)
                         if (!strcmp(p + 1, named[k].name)) input_key(named[k].key, 0, named[k].mods, SRC_SERIAL);
                     p = e;
@@ -427,6 +560,77 @@ static void http_handle(int i) {
             http_text(c, 200, buf);
             kfree(buf);
         }
+    } else if (strncmp(path, "/bench", 6) == 0) {
+        int shell_bench(int n, char *out, int cap);
+        long nf = 30; query_int(path, "n=", &nf);
+        char buf[256];
+        shell_bench((int)nf, buf, sizeof buf);
+        http_text(c, 200, buf);
+    } else if (strncmp(path, "/anim", 5) == 0) {
+        void shell_anim(int mode, int ms);
+        long mode = 0, ms = 5000;
+        query_int(path, "mode=", &mode); query_int(path, "ms=", &ms);
+        shell_anim((int)mode, (int)ms);
+        http_text(c, 200, "ok\n");
+    } else if (!strcmp(path, "/pkg") || !strcmp(path, "/store")) {
+        char *buf = kmalloc(16384);
+        if (buf) { pkg_debug(buf, 16384); http_text(c, 200, buf); kfree(buf); }
+    } else if (!strncmp(path, "/app?", 5)) {
+        /* /app?<id>&<cmd>: the package's own dev hook; %20 and + are spaces */
+        char id[32] = "", cmd[256] = "";
+        const char *a = path + 5, *amp = strchr(a, '&');
+        snprintf(id, sizeof id, "%.*s", amp ? (int)(amp - a) : (int)strlen(a), a);
+        int k = 0;
+        for (const char *q = amp ? amp + 1 : ""; *q && k < (int)sizeof cmd - 1; q++) {
+            if (*q == '+') cmd[k++] = ' ';
+            else if (*q == '%' && q[1] && q[2]) { char hx[3] = { q[1], q[2], 0 }; cmd[k++] = (char)strtol(hx, 0, 16); q += 2; }
+            else cmd[k++] = *q;
+        }
+        cmd[k] = 0;
+        char *buf = kmalloc(65536);
+        if (buf) { pkg_dev(id, cmd, buf, 65536); http_text(c, 200, buf); kfree(buf); }
+    } else if (!strncmp(path, "/fs?", 4)) {
+        /* the card's files: ?path=/Code lists a folder or sends a file, ?rm=... removes,
+         * POST ?path=... writes (above), ?df the room */
+        char p[256];
+        if (!strncmp(path + 4, "rm=", 3)) { url_decode(path + 7, p, sizeof p); http_text(c, 200, fs_remove(p) ? fs_why() : "removed\n"); }
+        else if (!strcmp(path + 4, "df")) {
+            uint64_t fr, tot; char b[160];
+            if (fs_space(&fr, &tot)) snprintf(b, sizeof b, "%s\n", fs_why());
+            else snprintf(b, sizeof b, "%lu of %lu KiB free\n", (unsigned long)(fr >> 10), (unsigned long)(tot >> 10));
+            http_text(c, 200, b);
+        } else {
+            url_decode(!strncmp(path + 4, "path=", 5) ? path + 9 : "/", p, sizeof p);
+            fs_ent_t st;
+            if (fs_stat(p, &st)) http_text(c, 404, fs_why());
+            else if (st.dir) {
+                fs_ent_t *e = kmalloc(sizeof(fs_ent_t) * 256);
+                char *b = kmalloc(32768);
+                if (e && b) {
+                    int n = fs_list(p, e, 256), o = 0;
+                    for (int k2 = 0; k2 < n && o < 32000; k2++) {
+                        char d[24]; fs_date_str(e[k2].date, e[k2].time, d, sizeof d);
+                        o += snprintf(b + o, (size_t)(32768 - o), "%s %9u %s%s\n", d, e[k2].size, e[k2].name, e[k2].dir ? "/" : "");
+                    }
+                    if (n < 0) snprintf(b, 32768, "%s\n", fs_why()); else if (!n) snprintf(b, 32768, "(empty)\n");
+                    http_text(c, 200, b);
+                }
+                kfree(e); kfree(b);
+            } else {
+                char *d; uint32_t n;
+                if (fs_read(p, &d, &n)) http_text(c, 500, fs_why());
+                else { http_text(c, 200, d); kfree(d); }
+            }
+        }
+    } else if (!strncmp(path, "/run?", 5)) {
+        char cmd[256], *buf = kmalloc(32768);
+        url_decode(path + 5, cmd, sizeof cmd);
+        /* url_decode stops at '&': keep "file=..." whole */
+        if (buf) { run_dev(cmd, buf, 32768); http_text(c, 200, buf); kfree(buf); }
+    } else if (strcmp(path, "/perf") == 0) {
+        char buf[2048];
+        perf_report(buf, sizeof buf);
+        http_text(c, 200, buf);
     } else if (strcmp(path, "/log?prev") == 0) {
         char *buf = kmalloc(256 * 1024);
         if (buf) { klog_previous(buf, 256 * 1024); http_text(c, 200, buf); kfree(buf); }
@@ -455,6 +659,12 @@ static void http_handle(int i) {
 }
 
 static void http_poll(void) {
+    /* A handler that waits (an /app command, a fetch) keeps the network
+     * turning, which comes back here: the same request would be handled
+     * again inside itself. While one is running, the others wait. */
+    static int busy;
+    if (busy) { shot_pump(); return; }
+    busy = 1;
     tcb_t *nc;
     while ((nc = tcp_accept(80))) {
         int slot = -1;
@@ -471,6 +681,8 @@ static void http_poll(void) {
         else if (!tcp_open(http[i].c) || now_ms() - http[i].t0 > 5000) { tcp_abort(http[i].c); http[i].c = 0; }
     }
     shot_pump();
+    up_pump();
+    busy = 0;
 }
 
 /* ---- the services, together --------------------------------------------------------- */

@@ -75,6 +75,7 @@ static void change(int dir) {
         int tz = clock_tz_minutes() + dir * 60;
         if (tz >= -12 * 60 && tz <= 14 * 60) clock_set_tz_minutes(tz);
     }
+    if (page == P_LOOK || (page == P_TIME && item == 2)) shell_settings_save();
 }
 
 static void wifi_activate(void) {
@@ -203,7 +204,7 @@ static void bars(int x, int cy, int rssi, uint32_t c) {
     int n = rssi >= -55 ? 4 : rssi >= -67 ? 3 : rssi >= -75 ? 2 : 1;
     for (int i = 0; i < 4; i++) {
         int bh = S(4) + i * S(3);
-        gfx_rrect(x + i * S(5), cy + S(7) - bh, S(3), bh, S(1), c, i < n ? 255 : 60);
+        gfx_fill(x + i * S(5), cy + S(7) - bh, S(3), bh, i < n ? c : th.line);
     }
 }
 
@@ -257,12 +258,12 @@ static void draw_wifi(int hy, int bottom, int sel) {
     if (!k && !wifi_scanning()) text_l(pane_x + S(14), ly + S(10), "No networks in range.", FONT_REGULAR, S(13), th.sub);
 }
 
-/* An on/off switch, as on a phone: a pill with a knob, right-aligned in a row. */
+/* An on/off switch, right-aligned in a row: a flat track and a square knob. */
 static void toggle(int x, int y, int on, int busy) {
-    int w = S(44), hh = S(26), tx = x - w, ty = y + (S(38) - hh) / 2;
-    gfx_rrect(tx, ty, w, hh, hh / 2, on ? th.accent : th.faint, on ? 255 : 110);
-    int kx = on ? tx + w - hh + S(2) : tx + S(2);
-    gfx_circle((float)(kx + (hh - S(4)) / 2), (float)(ty + hh / 2), (float)(hh - S(4)) / 2, 0xFFFFFF, busy ? 160 : 255);
+    int w = S(38), hh = S(20), tx = x - w, ty = y + (S(36) - hh) / 2;
+    gfx_rrect(tx, ty, w, hh, S(4), on ? th.accent : th.line, 255);
+    int k = hh - S(6), kx = on ? tx + w - k - S(3) : tx + S(3);
+    gfx_rrect(kx, ty + S(3), k, k, S(2), on ? 0xFFFFFF : th.faint, busy ? 150 : 255);
 }
 
 /* The rows below the switch: "My Devices", then "Other Devices", each with a small
@@ -377,12 +378,15 @@ static void s_draw(int x, int y, int w, int h) {
     list_x = x + S(16); list_y = y + S(16); list_w = S(220); row_h = S(44);
     for (int i = 0; i < NPAGES; i++) {
         int ry = list_y + i * row_h;
-        if (i == page) gfx_rrect(list_x, ry, list_w, row_h - S(6), S(10), th.accent, in_page ? 40 : 90);
+        if (i == page) {
+            gfx_rrect(list_x, ry, list_w, row_h - S(6), S(4), in_page ? th.surface : th.sel, 255);
+            gfx_fill(list_x, ry + S(10), S(2), row_h - S(26), in_page ? th.faint : th.accent);
+        }
         ui_glyph(page_glyph[i], list_x + S(22), ry + (row_h - S(6)) / 2, S(i == P_LOOK ? 9 : 20), i == page ? th.text : th.sub);
         text_l(list_x + S(42), ry + (row_h - S(6)) / 2, pages[i], i == page ? FONT_SEMIBOLD : FONT_MEDIUM, S(14),
                i == page ? th.text : th.sub);
     }
-    gfx_fill(list_x + list_w + S(16), y + S(16), 1, h - S(32), th.faint);
+    gfx_fill(list_x + list_w + S(16), y, 1, h, th.line);
 
     /* the page */
     pane_x = list_x + list_w + S(40); pane_w = x + w - S(28) - pane_x;
@@ -393,14 +397,20 @@ static void s_draw(int x, int y, int w, int h) {
     case P_WIFI: draw_wifi(hy, y + h, sel); break;
     case P_BT:   draw_bt(hy, y + h, sel); break;
     case P_LOOK:
-        heading(pane_x, hy, "Appearance", "The wallpaper and the colour that marks what is chosen.");
-        ui_row(pane_x, pane_y, pane_w, "Wallpaper", wallpaper_names[th.wallpaper], sel == 0);
+        heading(pane_x, hy, "Appearance", "The theme, and the colour that marks what is chosen.");
+        ui_row(pane_x, pane_y, pane_w, "Theme", wallpaper_names[th.wallpaper], sel == 0);
         ui_row(pane_x, pane_y + S(46), pane_w, "Accent", accent_names[th.accent_i], sel == 1);
         for (int i = 0; i < 3; i++) {                      /* little previews     */
             int px = pane_x + i * S(94), py = pane_y + S(120);
-            static const uint32_t prev[3][2] = { { 0x1B2440, 0x4A3A7A }, { 0xDCE4F5, 0xF5D8E6 }, { 0x07090F, 0x1E2A5A } };
-            gfx_rrect_vgrad(px, py, S(80), S(52), S(10), prev[i][0], prev[i][1], 255);
-            if (i == th.wallpaper) gfx_rrect_stroke(px - S(3), py - S(3), S(86), S(58), S(12), S(2), th.accent, 255);
+            static const uint32_t prev[3][3] = { { 0x17181B, 0x101113, 0x2C2E33 }, { 0xF2F3F5, 0xFFFFFF, 0xD7DAE0 },
+                                                 { 0x000000, 0x0B0B0C, 0x26272B } };    /* page, bar, line */
+            gfx_rrect(px, py, S(80), S(52), S(4), i == th.wallpaper ? th.accent : th.line, 255);
+            gfx_rrect(px + 1, py + 1, S(80) - 2, S(52) - 2, S(3), prev[i][0], 255);
+            gfx_fill(px + 1, py + 1, S(80) - 2, S(9), prev[i][1]);
+            gfx_fill(px + 1, py + 1 + S(9), S(80) - 2, 1, prev[i][2]);
+            gfx_fill(px + S(8), py + S(22), S(26), S(3), th.accent);
+            gfx_fill(px + S(8), py + S(30), S(40), S(3), prev[i][2]);
+            gfx_fill(px + S(8), py + S(38), S(32), S(3), prev[i][2]);
             text_c(px + S(40), py + S(66), wallpaper_names[i], FONT_MEDIUM, S(11), th.sub);
         }
         text_l(pane_x, pane_y + S(214), "Left and right change the chosen row.", FONT_REGULAR, S(12), th.faint);
@@ -500,4 +510,4 @@ static void s_draw(int x, int y, int w, int h) {
     }
 }
 
-const app_t app_settings = { "Settings", 0x6B7280, G_SETTINGS, s_open, s_key, s_pointer, s_draw, s_tick };
+const app_t app_settings = { "Settings", 0x6B7280, G_SETTINGS, s_open, s_key, s_pointer, s_draw, s_tick, 0 };

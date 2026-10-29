@@ -1,15 +1,20 @@
 /* ===========================================================================
  *  BoltOS Mini  -  mini/shell.c
  *
- *  Home, and the frame of every app. Home is a clock and a row of six apps
- *  on a soft wallpaper: arrows and Return, the number keys, or a click open
- *  one; Esc or the Windows/Command key comes back. An open app gets the whole
- *  screen with a slim title above it.
+ *  Home, and the frame of every app. A bar runs along the top: BoltOS (Home)
+ *  and the apps by number on the left, the network, the processor and
+ *  the clock on the right. Home is the time, a few facts about the machine
+ *  and a row of the apps; an open app gets everything under the bar.
+ *  Arrows and Return, the number keys, F1-F9 or a click open an app; Esc or
+ *  the Windows/Command key comes back.
  *
- *  Frames are drawn only when something changed -- a key, a pointer move,
- *  a toast fading, the minute turning -- and always whole, into the back
- *  buffer, which screen_present then copies to the front in one go. The
- *  wallpaper and its blurred twin (what glass shows) are made once.
+ *  The look is flat on purpose: solid colours, hairlines, small radii, no
+ *  blur and no shadows. It is also what keeps a frame cheap on a 1 GHz A53,
+ *  and a screen that is mostly one colour is what goes fastest to a viewer.
+ *
+ *  Frames are drawn only when something changed -- a key, a click, a toast,
+ *  the minute turning -- and always whole, into the back buffer;
+ *  screen_present copies only the tiles that differ to the front.
  * ===========================================================================*/
 #include <stdint.h>
 #include "ui.h"
@@ -19,120 +24,68 @@
 #include "stdio.h"
 #include "math.h"
 
-static const app_t *const apps[] = { &app_browser, &app_terminal, &app_monitor, &app_notes, &app_clock, &app_settings };
-#define NAPPS 6
+/* The built-in apps, then whatever Packages has installed (shell_add_app). */
+#define MAX_APPS 10
+static const app_t *apps[MAX_APPS] = { &app_browser, &app_code, &app_terminal, &app_monitor, &app_notes, &app_clock,
+                                       &app_settings, &app_packages };
+static int napps = 8;
+#define NAPPS napps
 
 theme_t th;
-const char *const wallpaper_names[3] = { "Dusk", "Dawn", "Midnight" };
-const char *const accent_names[6] = { "Violet", "Blue", "Teal", "Green", "Orange", "Pink" };
-static const uint32_t accents[6] = { 0x8B7CF6, 0x4F8DF7, 0x2BB5B0, 0x4CC27A, 0xF29A4A, 0xEC6FA8 };
+const char *const wallpaper_names[3] = { "Dark", "Light", "Black" };
+const char *const accent_names[6] = { "Blue", "Teal", "Green", "Amber", "Red", "Violet" };
+static const uint32_t accents[6] = { 0x4C8DF6, 0x26A69A, 0x4CAF6A, 0xE0A030, 0xE5534B, 0x8C7CF0 };
 
-static surface_t wall, wall_blur;
-static int theme_gen;                    /* bumped by theme_set: glass recaptures */
 static const app_t *cur;                 /* NULL: home                          */
-static int sel;                          /* home: the selected tile             */
+static int sel;                          /* home: the selected app              */
 static int dirty = 1;
 static uint64_t last_frame;
-static int pointer_x = -1, pointer_y = -1, pointer_src, pointer_btn;
+static int pointer_x = -1, pointer_y = -1, pointer_btn;
 
-/* ---- the wallpaper ------------------------------------------------------------------
- *  Computed, not stored: a vertical gradient with four soft lights in it,
- *  worked out at a quarter of the resolution (it has no detail to lose) and
- *  stretched up. Then a blurred copy, for glass to show.                     */
-typedef struct { float x, y, r; uint32_t c; float k; } light_t;
-typedef struct { uint32_t top, bot; light_t l[4]; } paper_t;
-static const paper_t papers[3] = {
-    { 0x101A2E, 0x2A1E44, { { .18f, .30f, .55f, 0x5B4BC4, .55f }, { .82f, .22f, .45f, 0x2C6FB8, .45f },
-                            { .70f, .95f, .60f, 0xB0507A, .35f }, { .30f, .90f, .40f, 0x2A8C9A, .25f } } },
-    { 0xE9EEF7, 0xF6E6EE, { { .20f, .25f, .55f, 0xB9C8F5, .70f }, { .85f, .30f, .50f, 0xF4C9DE, .65f },
-                            { .55f, .95f, .60f, 0xC9E8E0, .55f }, { .10f, .90f, .40f, 0xF7DCC0, .45f } } },
-    { 0x07090F, 0x0D1020, { { .25f, .20f, .50f, 0x1E2A5A, .55f }, { .80f, .75f, .55f, 0x2A1B4A, .50f },
-                            { .55f, .40f, .35f, 0x123A4A, .30f }, { .10f, .95f, .30f, 0x1A1A3A, .30f } } },
+/* ---- the theme ---------------------------------------------------------------------------------- */
+typedef struct { uint32_t bg, bar, surface, line, text, sub, faint; } palette_t;
+static const palette_t palettes[3] = {
+    { 0x17181B, 0x101113, 0x1E1F23, 0x2C2E33, 0xE8E9EC, 0xA2A5AD, 0x6A6E78 },     /* Dark  */
+    { 0xF2F3F5, 0xFFFFFF, 0xFFFFFF, 0xD7DAE0, 0x1B1D21, 0x4F545D, 0x878C96 },     /* Light */
+    { 0x000000, 0x0B0B0C, 0x101113, 0x26272B, 0xE6E6E6, 0x9A9CA3, 0x62656C },     /* Black */
 };
-
-static void make_wallpaper(void) {
-    int w = scr_w, h = scr_h, qw = (w + 3) / 4, qh = (h + 3) / 4;
-    uint32_t *q = kmalloc((uint64_t)qw * qh * 4);
-    if (!wall.px || wall.w != w || wall.h != h) {
-        if (wall.px) kfree(wall.px);
-        if (wall_blur.px) kfree(wall_blur.px);
-        wall.px = kmalloc((uint64_t)w * h * 4); wall.w = w; wall.h = h; wall.stride = w;
-        wall_blur.px = kmalloc((uint64_t)w * h * 4); wall_blur.w = w; wall_blur.h = h; wall_blur.stride = w;
-    }
-    const paper_t *p = &papers[th.wallpaper];
-    float aspect = (float)w / (float)h;
-    for (int y = 0; y < qh; y++) {
-        float fy = (float)y / (float)(qh - 1);
-        float r = (float)((p->top >> 16) & 255) * (1 - fy) + (float)((p->bot >> 16) & 255) * fy;
-        float g = (float)((p->top >> 8) & 255) * (1 - fy) + (float)((p->bot >> 8) & 255) * fy;
-        float b = (float)(p->top & 255) * (1 - fy) + (float)(p->bot & 255) * fy;
-        for (int x = 0; x < qw; x++) {
-            float fx = (float)x / (float)(qw - 1);
-            float rr = r, gg = g, bb = b;
-            for (int i = 0; i < 4; i++) {
-                const light_t *l = &p->l[i];
-                float dx = (fx - l->x) * aspect, dy = fy - l->y;
-                float d2 = (dx * dx + dy * dy) / (l->r * l->r);
-                float a = l->k * expf(-d2 * 2.2f);
-                rr += ((float)((l->c >> 16) & 255) - rr) * a;
-                gg += ((float)((l->c >> 8) & 255) - gg) * a;
-                bb += ((float)(l->c & 255) - bb) * a;
-            }
-            int R = (int)rr, G = (int)gg, B = (int)bb;
-            R = R < 0 ? 0 : R > 255 ? 255 : R; G = G < 0 ? 0 : G > 255 ? 255 : G; B = B < 0 ? 0 : B > 255 ? 255 : B;
-            q[y * qw + x] = 0xFF000000u | (uint32_t)R << 16 | (uint32_t)G << 8 | (uint32_t)B;
-        }
-    }
-    gfx_bind(&wall, 0, 0, 0, 0, w, h);
-    gfx_image(0, 0, w, h, q, qw, qh, 255);
-    kfree(q);
-    glass_t g = { .tint = th.dark ? 0x101018 : 0xFFFFFF, .tint_a = th.dark ? 70 : 90, .sat = 120,
-                  .blur = S(28), .lift = th.dark ? 6 : 0 };
-    gfx_blur_surface(&wall, &wall_blur, &g);
-}
 
 void theme_set(int wp, int ac) {
     th.wallpaper = wp < 0 ? 0 : wp > 2 ? 2 : wp;
     th.accent_i = ac < 0 ? 0 : ac > 5 ? 5 : ac;
     th.accent = accents[th.accent_i];
     th.dark = th.wallpaper != 1;
-    if (th.dark) { th.text = 0xF4F4F8; th.sub = 0xB4B6C4; th.faint = 0x7C7F92; th.panel = 0x1A1C28; th.panel_a = 110; }
-    else         { th.text = 0x1C1C24; th.sub = 0x55586A; th.faint = 0x8A8D9C; th.panel = 0xFFFFFF; th.panel_a = 120; }
-    if (scr_w) make_wallpaper();
-    theme_gen++;
+    const palette_t *p = &palettes[th.wallpaper];
+    th.bg = p->bg; th.bar = p->bar; th.surface = p->surface; th.line = p->line;
+    th.text = p->text; th.sub = p->sub; th.faint = p->faint;
+    th.panel = p->surface; th.panel_a = 255;
+    th.sel = gfx_lerp(p->surface, th.accent, th.dark ? 20 : 14, 100);
     dirty = 1;
 }
 
-/* ---- drawing helpers ---------------------------------------------------------------- */
-/* Nothing that moves ever sits under a card -- only the wallpaper -- so each
- * card's frosting is captured once per place and theme, then just drawn. */
-static backdrop_t cards[4];
-static int card_key[4][5];
-
+/* ---- drawing helpers ---------------------------------------------------------------------- */
 void ui_card(int id, int x, int y, int w, int h, int r) {
-    if (id < 0 || id > 3) id = 3;
-    int k[5] = { x, y, w, h, theme_gen };
-    gfx_shadow(x, y, w, h, r, S(24), S(6), 0, th.dark ? 60 : 30);
-    if (!cards[id].valid || memcmp(k, card_key[id], sizeof k)) {
-        glass_t g = { .tint = th.panel, .tint_a = th.panel_a, .sat = 125, .blur = S(24), .lift = th.dark ? 4 : 6 };
-        gfx_backdrop_capture(&cards[id], x, y, w, h, &g);
-        memcpy(card_key[id], k, sizeof k);
-    }
-    gfx_backdrop_draw(&cards[id], x, y, w, h, r, 255);
-    gfx_rrect_stroke2(x, y, w, h, r, 0xFFFFFF, th.dark ? 46 : 150, th.dark ? 10 : 40);
+    (void)id;
+    if (r > S(6)) r = S(6);
+    gfx_rrect(x, y, w, h, r, th.line, 255);
+    gfx_rrect(x + 1, y + 1, w - 2, h - 2, r > 1 ? r - 1 : 0, th.surface, 255);
 }
 
 int ui_hit(int px, int py, int x, int y, int w, int h) { return px >= x && py >= y && px < x + w && py < y + h; }
 
 void ui_keycap(int x, int cy, const char *label) {
-    int w = font_width(FONT_MEDIUM, S(11), label, -1) + S(12), h = S(18);
-    gfx_rrect(x, cy - h / 2, w, h, S(5), th.dark ? 0xFFFFFF : 0x000000, th.dark ? 26 : 18);
-    text_l(x + S(6), cy, label, FONT_MEDIUM, S(11), th.sub);
+    int w = font_width(FONT_MONO, S(11), label, -1) + S(10), h = S(18);
+    gfx_rrect(x, cy - h / 2, w, h, S(3), th.line, 255);
+    gfx_rrect(x + 1, cy - h / 2 + 1, w - 2, h - 2, S(2), th.surface, 255);
+    text_l(x + S(5), cy, label, FONT_MONO, S(11), th.sub);
 }
 
 int ui_row(int x, int y, int w, const char *label, const char *value, int is_sel) {
-    int h = S(38);
-    if (is_sel) gfx_rrect(x, y, w, h, S(9), th.accent, th.dark ? 70 : 60);
+    int h = S(36);
+    if (is_sel) {
+        gfx_rrect(x, y, w, h, S(4), th.sel, 255);
+        gfx_fill(x, y + S(8), S(2), h - S(16), th.accent);
+    }
     text_l(x + S(14), y + h / 2, label, FONT_MEDIUM, S(14), th.text);
     if (value) text_r(x + w - S(14), y + h / 2, value, FONT_REGULAR, S(14), is_sel ? th.text : th.sub);
     return h;
@@ -222,6 +175,47 @@ void ui_glyph(int id, int cx, int cy, int sz, uint32_t c) {
         gfx_line(x - s * .02f, y + s * .34f, x + s * .18f, y + s * .16f, t, c, 255);
         gfx_line(x + s * .18f, y + s * .16f, x - s * .22f, y - s * .18f, t, c, 255);
         break;
+    case G_PACKAGE:                                         /* a box, its lid's seam and a strap */
+        gfx_rrect_stroke((int)(x - s * .32f), (int)(y - s * .26f), (int)(s * .64f), (int)(s * .54f), (int)(s * .05f), (int)t, c, 255);
+        gfx_line(x - s * .32f, y - s * .08f, x + s * .32f, y - s * .08f, t, c, 255);
+        gfx_line(x - s * .08f, y - s * .08f, x - s * .08f, y + s * .06f, t, c, 255);
+        gfx_line(x + s * .08f, y - s * .08f, x + s * .08f, y + s * .06f, t, c, 255);
+        gfx_line(x - s * .08f, y + s * .06f, x + s * .08f, y + s * .06f, t, c, 255);
+        break;
+    case G_CHAT:                                            /* a speech bubble with three dots */
+        gfx_rrect_stroke((int)(x - s * .34f), (int)(y - s * .28f), (int)(s * .68f), (int)(s * .46f), (int)(s * .10f), (int)t, c, 255);
+        gfx_line(x - s * .16f, y + s * .17f, x - s * .22f, y + s * .32f, t, c, 255);
+        gfx_line(x - s * .22f, y + s * .32f, x - s * .02f, y + s * .18f, t, c, 255);
+        for (int i = -1; i <= 1; i++) gfx_circle(x + s * .15f * (float)i, y - s * .05f, t * .9f, c, 255);
+        break;
+    case G_CODE:                                            /* </> */
+        gfx_line(x - s * .12f, y - s * .20f, x - s * .30f, y, t, c, 255);
+        gfx_line(x - s * .30f, y, x - s * .12f, y + s * .20f, t, c, 255);
+        gfx_line(x + s * .12f, y - s * .20f, x + s * .30f, y, t, c, 255);
+        gfx_line(x + s * .30f, y, x + s * .12f, y + s * .20f, t, c, 255);
+        gfx_line(x + s * .05f, y - s * .26f, x - s * .05f, y + s * .26f, t, c, 255);
+        break;
+    case G_FOLDER:                                          /* a tab and a body */
+        gfx_rrect_stroke((int)(x - s * .34f), (int)(y - s * .18f), (int)(s * .68f), (int)(s * .44f), (int)(s * .05f), (int)t, c, 255);
+        gfx_line(x - s * .34f, y - s * .18f, x - s * .30f, y - s * .28f, t, c, 255);
+        gfx_line(x - s * .30f, y - s * .28f, x - s * .06f, y - s * .28f, t, c, 255);
+        gfx_line(x - s * .06f, y - s * .28f, x, y - s * .18f, t, c, 255);
+        break;
+    case G_FILE:                                            /* a page with lines */
+        gfx_rrect_stroke((int)(x - s * .24f), (int)(y - s * .32f), (int)(s * .48f), (int)(s * .64f), (int)(s * .05f), (int)t, c, 255);
+        gfx_line(x - s * .12f, y - s * .10f, x + s * .12f, y - s * .10f, t * .8f, c, 255);
+        gfx_line(x - s * .12f, y + s * .04f, x + s * .12f, y + s * .04f, t * .8f, c, 255);
+        gfx_line(x - s * .12f, y + s * .18f, x + s * .04f, y + s * .18f, t * .8f, c, 255);
+        break;
+    case G_PLAY:                                            /* a triangle */
+        for (int i = 0; i <= (int)(s * .44f); i++) {
+            float yy = y - s * .22f + (float)i, half = (s * .22f - fabsf((float)i - s * .22f)) * 1.0f;
+            gfx_fill((int)(x - s * .14f), (int)yy, (int)(half * 1.4f) + 1, 1, c);
+        }
+        break;
+    case G_STOP:
+        gfx_rrect((int)(x - s * .18f), (int)(y - s * .18f), (int)(s * .36f), (int)(s * .36f), (int)(s * .04f), c, 255);
+        break;
     case G_LOCK:
         gfx_arc(x, y - s * .06f, s * .16f, t, -90, 90, c, 255);
         gfx_line(x - s * .16f, y - s * .06f, x - s * .16f, y + s * .02f, t, c, 255);
@@ -231,13 +225,12 @@ void ui_glyph(int id, int cx, int cy, int sz, uint32_t c) {
     }
 }
 
-void ui_tile(const app_t *a, int x, int y, int size, int lift) {
-    int r = size * 23 / 100;
-    gfx_shadow(x, y, size, size, r, S(14) + lift, S(5) + lift / 2, 0, th.dark ? 90 : 50);
-    uint32_t top = gfx_shade(a->tint, 118), bot = gfx_shade(a->tint, 82);
-    gfx_rrect_vgrad(x, y, size, size, r, top, bot, 255);
-    gfx_rrect_stroke2(x, y, size, size, r, 0xFFFFFF, 70, 0);
-    ui_glyph(a->glyph, x + size / 2, y + size / 2, size * 62 / 100, 0xFFFFFF);
+/* An app's mark: its glyph on a hairline square, no colour of its own. */
+void ui_tile(const app_t *a, int x, int y, int size, int on) {
+    int r = size > S(30) ? S(5) : S(3);
+    gfx_rrect(x, y, size, size, r, on ? th.accent : th.line, 255);
+    gfx_rrect(x + 1, y + 1, size - 2, size - 2, r - 1, on ? th.sel : th.surface, 255);
+    ui_glyph(a->glyph, x + size / 2, y + size / 2, size * 60 / 100, on ? th.accent : th.sub);
 }
 
 /* ---- the clock as text ------------------------------------------------------------------- */
@@ -286,143 +279,261 @@ int shell_mac_connected(void) {
     return (n && n->up && strcmp(n->name, "usb0") == 0) || vnc_clients() > 0;
 }
 
+/* ---- settings that outlive a restart --------------------------------------------------------------
+ *  The theme, the accent and the time zone go into a keep record (klog.c),
+ *  which fs.c copies to the card, so they come back after a power cut too. */
+typedef struct { int8_t wallpaper, accent; int16_t tz; } look_t;
+
+void shell_settings_save(void) {
+    look_t l = { (int8_t)th.wallpaper, (int8_t)th.accent_i, (int16_t)clock_tz_minutes() };
+    keep_put("look", &l, (int)sizeof l);
+}
+
+void shell_settings_restore(void) {
+    look_t l;
+    if (keep_get("look", &l, (int)sizeof l) != (int)sizeof l) return;
+    theme_set(l.wallpaper, l.accent);
+    if (l.tz >= -12 * 60 && l.tz <= 14 * 60) clock_set_tz_minutes(l.tz);
+    dirty = 1;
+}
+
+/* ---- the clipboard --------------------------------------------------------------------------------
+ *  One for every app. A viewer's clipboard (Screen Sharing sends the Mac's
+ *  when it changes) lands here, and what's copied on the Pi goes back to the
+ *  viewers (vnc.c asks clip_gen() to see whether there's something new). */
+static char *clip; static int clip_n, clip_cap;
+static uint32_t clip_g, clip_viewer_g;
+
+static void clip_store(const char *s, int n) {
+    if (n < 0) n = 0;
+    if (n + 1 > clip_cap) {
+        kfree(clip);
+        clip_cap = n + 1 < 256 ? 256 : n + 1;
+        clip = kmalloc((size_t)clip_cap);
+        if (!clip) { clip_cap = clip_n = 0; return; }
+    }
+    /* \r\n and lone \r become \n */
+    int o = 0;
+    for (int i = 0; i < n; i++) {
+        if (s[i] == '\r') { clip[o++] = '\n'; if (i + 1 < n && s[i + 1] == '\n') i++; }
+        else clip[o++] = s[i];
+    }
+    clip[o] = 0;
+    clip_n = o;
+}
+
+void clip_set(const char *s, int n) { clip_store(s, n); clip_g++; }
+void clip_from_viewer(const char *s, int n) { clip_store(s, n); clip_viewer_g = ++clip_g; }
+const char *clip_get(int *n) { if (n) *n = clip_n; return clip ? clip : ""; }
+/* what vnc.c sends a viewer: changed since `seen`, and not the viewer's own */
+uint32_t clip_gen(void) { return clip_g == clip_viewer_g ? 0 : clip_g; }
+
 /* ---- toasts -------------------------------------------------------------------------------- */
 static char toast_t[48], toast_d[64];
 static uint64_t toast_at;
+#define TOAST_MS 3000
 void shell_toast(const char *title, const char *detail) {
     snprintf(toast_t, sizeof toast_t, "%s", title ? title : "");
     snprintf(toast_d, sizeof toast_d, "%s", detail ? detail : "");
     toast_at = now_ms();
+    if (!toast_at) toast_at = 1;
     dirty = 1;
 }
 
-static int draw_toast(uint64_t now) {
-    if (!toast_at) return 0;
-    uint64_t age = now - toast_at;
-    if (age > 3200) { toast_at = 0; return 0; }
-    int a = age < 200 ? (int)(age * 255 / 200) : age > 2800 ? (int)((3200 - age) * 255 / 400) : 255;
-    int tw = font_width(FONT_SEMIBOLD, S(13), toast_t, -1), dw = font_width(FONT_REGULAR, S(13), toast_d, -1);
-    int w = tw + (toast_d[0] ? dw + S(10) : 0) + S(36), h = S(36);
-    int x = (scr_w - w) / 2, y = S(18) - (age < 200 ? (int)(S(10) * (200 - age) / 200) : 0);
-    gfx_shadow(x, y, w, h, h / 2, S(18), S(4), 0, a * 60 / 255);
-    gfx_rrect(x, y, w, h, h / 2, th.dark ? 0x22242E : 0xFFFFFF, a * 235 / 255);
-    gfx_circle((float)(x + S(16)), (float)(y + h / 2), (float)S(3), th.accent, a);
-    font_draw(FONT_SEMIBOLD, S(13), x + S(26), y + h / 2 + S(5), toast_t, -1, th.text, a);
-    if (toast_d[0]) font_draw(FONT_REGULAR, S(13), x + S(26) + tw + S(10), y + h / 2 + S(5), toast_d, -1, th.sub, a);
-    return 1;
+/* Under the bar, on the right; there for three seconds, no fading. */
+static void draw_toast(void) {
+    if (!toast_at) return;
+    int tw = font_width(FONT_SEMIBOLD, S(12), toast_t, -1), dw = font_width(FONT_REGULAR, S(12), toast_d, -1);
+    int w = tw + (toast_d[0] ? dw + S(10) : 0) + S(30), h = S(34);
+    int x = scr_w - w - S(12), y = S(28) + S(10);
+    gfx_rrect(x, y, w, h, S(4), th.line, 255);
+    gfx_rrect(x + 1, y + 1, w - 2, h - 2, S(3), th.surface, 255);
+    gfx_fill(x + 1, y + 1, S(3), h - 2, th.accent);
+    text_l(x + S(16), y + h / 2, toast_t, FONT_SEMIBOLD, S(12), th.text);
+    if (toast_d[0]) text_l(x + S(16) + tw + S(10), y + h / 2, toast_d, FONT_REGULAR, S(12), th.sub);
+}
+
+/* ---- the bar ------------------------------------------------------------------------------------ */
+#define BAR_H S(28)
+
+/* The bar's left side: "BoltOS" (Home), then "1 Browser", "2 Terminal"... */
+static int bar_item(int i, int *x) {                  /* i = -1 is Home; returns the width */
+    int bx = S(14);
+    const char *home = "BoltOS";
+    int hw = font_width(FONT_BOLD, S(12), home, -1) + S(16);
+    if (i < 0) { *x = bx - S(8); return hw; }
+    bx += hw - S(8) + S(10);
+    for (int k = 0; k < NAPPS; k++) {
+        int w = font_width(FONT_MONO, S(11), "1", -1) + S(6) + font_width(FONT_MEDIUM, S(12), apps[k]->name, -1) + S(16);
+        if (k == i) { *x = bx; return w; }
+        bx += w + S(2);
+    }
+    *x = bx; return 0;
+}
+
+static const netif_t *main_link(void) {
+    const netif_t *best = 0;
+    for (int i = 0; net_if(i); i++) {
+        const netif_t *n = net_if(i);
+        if (!n->up || !n->ip) continue;
+        if (!best || (!strcmp(best->name, "usb0") && strcmp(n->name, "usb0"))) best = n;
+    }
+    return best;
+}
+
+static void draw_bar(void) {
+    int h = BAR_H, cy = h / 2;
+    gfx_fill(0, 0, scr_w, h, th.bar);
+    gfx_fill(0, h, scr_w, 1, th.line);
+    int x, w = bar_item(-1, &x);
+    if (!cur) gfx_fill(x, h - S(2), w, S(2), th.accent);
+    text_l(x + S(8), cy, "BoltOS", FONT_BOLD, S(12), th.text);
+    for (int i = 0; i < NAPPS; i++) {
+        w = bar_item(i, &x);
+        int on = cur == apps[i];
+        if (on) { gfx_fill(x, 0, w, h, th.sel); gfx_fill(x, h - S(2), w, S(2), th.accent); }
+        char n[2] = { (char)('1' + i), 0 };
+        int nx = text_l(x + S(8), cy, n, FONT_MONO, S(11), on ? th.accent : th.faint);
+        (void)nx;
+        text_l(x + S(8) + font_width(FONT_MONO, S(11), "1", -1) + S(6), cy, apps[i]->name, FONT_MEDIUM, S(12),
+               on ? th.text : th.sub);
+    }
+
+    /* right: link, processor, clock -- the link's address is left out when
+     * the apps' names reach that far */
+    int left_end;
+    bar_item(NAPPS, &left_end);
+    char hm[16], date[96], b[64];
+    clock_text(hm, sizeof hm, date, sizeof date);
+    int rx = scr_w - S(14);
+    if (clock_known()) {
+        int y0, mo, d, hh, mi, s, wd;
+        clock_local(&y0, &mo, &d, &hh, &mi, &s, &wd);
+        static const char *const dn[7] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+        static const char *const mn[12] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+        snprintf(b, sizeof b, "%s %d %s", dn[wd], d, mn[mo - 1]);
+        rx -= text_r(rx, cy, hm, FONT_SEMIBOLD, S(12), th.text) + S(8);
+        rx -= text_r(rx, cy, b, FONT_MEDIUM, S(12), th.sub) + S(18);
+    } else rx -= text_r(rx, cy, "clock not set", FONT_MEDIUM, S(12), th.faint) + S(18);
+    snprintf(b, sizeof b, "cpu %2d%%", shell_cpu_load());
+    rx -= text_r(rx, cy, b, FONT_MONO, S(11), th.sub) + S(18);
+    const netif_t *n = main_link();
+    if (n) {
+        char ip[16]; net_fmt_ip(n->ip, ip);
+        snprintf(b, sizeof b, "%s %s", n->name, ip);
+        if (rx - font_width(FONT_MONO, S(11), b, -1) - S(10) < left_end + S(12)) snprintf(b, sizeof b, "%s", n->name);
+        int tw = text_r(rx, cy, b, FONT_MONO, S(11), th.sub);
+        gfx_fill(rx - tw - S(10), cy - S(3), S(6), S(6), 0x4CAF6A);
+    } else {
+        int tw = text_r(rx, cy, "offline", FONT_MONO, S(11), th.faint);
+        gfx_fill(rx - tw - S(10), cy - S(3), S(6), S(6), 0xE0A030);
+    }
 }
 
 /* ---- home ---------------------------------------------------------------------------------- */
-static int tile_size(void) { return S(74); }
-static void tile_pos(int i, int *x, int *y) {
-    int ts = tile_size(), gap = S(46);
-    int total = NAPPS * ts + (NAPPS - 1) * gap;
-    *x = (scr_w - total) / 2 + i * (ts + gap);
-    *y = scr_h - S(196);
+static void tile_rect(int i, int *x, int *y, int *w, int *h) {
+    int pad = S(40), gap = S(12);
+    *w = (scr_w - 2 * pad - (NAPPS - 1) * gap) / NAPPS;
+    *h = S(96);
+    *x = pad + i * (*w + gap);
+    *y = scr_h - S(44) - *h;
 }
 
-static void draw_status(void) {
-    const char *s; uint32_t dot;
-    netif_t *n = net_if(0);
-#ifdef MINI_RELEASE
-    netif_t *e = eth_netif();
-    char ipb[48];
-    if (e && e->up && e->ip) { char ip[16]; net_fmt_ip(e->ip, ip); snprintf(ipb, sizeof ipb, "Online " TXT_ENDASH " %s", ip); s = ipb; dot = 0x4CC27A; }
-    else if (e && e->up) { s = "Connecting" TXT_ELLIPSIS; dot = 0xF2B24A; }
-    else if (g_plat == PLAT_QEMU) { s = "Running in QEMU"; dot = th.accent; }
-    else { s = "No network " TXT_ENDASH " plug in the Ethernet cable"; dot = 0xF2B24A; }
-    (void)n;
-#else
-    if (vnc_clients() > 0) { s = "Screen shared with your Mac"; dot = 0x4CC27A; }
-    else if (n && n->up && !strcmp(n->name, "usb0")) { s = "Mac connected " TXT_ENDASH " 10.77.0.1"; dot = 0x4CC27A; }
-    else if (g_plat == PLAT_QEMU) { s = "Running in QEMU on your Mac"; dot = th.accent; }
-    else { s = "Waiting for the Mac"; dot = 0xF2B24A; }
-#endif
-    int w = font_width(FONT_MEDIUM, S(12), s, -1);
-    int x = scr_w - S(48) - w;
-    gfx_circle((float)(x - S(10)), (float)S(58), (float)S(3), dot, 255);
-    text_l(x, S(58), s, FONT_MEDIUM, S(12), th.sub);
-    int kb = usbh_keyboards();
-    if (kb) {
-        const char *k = kb == 1 ? "Keyboard" : "Keyboards";
-        int kw = font_width(FONT_MEDIUM, S(12), k, -1);
-        text_l(scr_w - S(48) - kw, S(80), k, FONT_MEDIUM, S(12), th.faint);
+static void draw_facts(int x, int y) {
+    char v[6][64];
+    const char *k[6] = { "host", "kernel", "cpu", "memory", "uptime", "input" };
+    snprintf(v[0], sizeof v[0], "%s", g_board_name);
+    snprintf(v[1], sizeof v[1], "BoltOS Mini %s", mini_version());
+    char *sp = strchr(v[1], ' '); sp = sp ? strchr(sp + 1, ' ') : 0; sp = sp ? strchr(sp + 1, ' ') : 0;
+    if (sp) *sp = 0;                                  /* "BoltOS Mini 1.0"     */
+    if (board_cpu_mhz()) snprintf(v[2], sizeof v[2], "4 x Cortex-A53, %u MHz", board_cpu_mhz());
+    else snprintf(v[2], sizeof v[2], "Cortex-A53 (QEMU)");
+    uint64_t used, total; kheap_usage(&used, &total);
+    snprintf(v[3], sizeof v[3], "%lu MiB, heap %lu / %lu MiB", (unsigned long)(g_ram_size >> 20),
+             (unsigned long)(used >> 20), (unsigned long)(total >> 20));
+    mini_uptime_str(v[4], sizeof v[4]);
+    int kb = usbh_keyboards(), ms = usbh_mice();
+    if (kb || ms) snprintf(v[5], sizeof v[5], "%d keyboard%s, %d mouse%s", kb, kb == 1 ? "" : "s", ms, ms == 1 ? "" : "s");
+    else snprintf(v[5], sizeof v[5], "%s", shell_mac_connected() ? "the Mac's keyboard" : "none yet");
+    int lh = S(20), kw = font_width(FONT_MONO, S(12), "memory  ", -1);
+    for (int i = 0; i < 6; i++) {
+        text_l(x, y + i * lh, k[i], FONT_MONO, S(12), th.faint);
+        text_l(x + kw, y + i * lh, v[i], FONT_MONO, S(12), th.sub);
     }
 }
 
-static void draw_home(uint64_t now) {
+static void draw_home(void) {
     char hm[16], date[96];
     clock_text(hm, sizeof hm, date, sizeof date);
-    if (clock_known()) font_draw(FONT_DISPLAY, S(92), S(48), S(48) + font_ascent(FONT_DISPLAY, S(92)), hm, -1, th.text, 255);
-    else font_draw(FONT_DISPLAY, S(64), S(48), S(48) + font_ascent(FONT_DISPLAY, S(64)), "BoltOS Mini", -1, th.text, 255);
-    int dy = clock_known() ? S(48) + S(92) + S(18) : S(48) + S(64) + S(20);
-    text_l(S(52), dy, date, FONT_MEDIUM, S(15), th.sub);
-    draw_status();
-
-    /* A shelf of glass under the tiles, barely there. */
-    int x0, y0; tile_pos(0, &x0, &y0);
-    int ts = tile_size(), pad = S(26);
-    int sw = NAPPS * ts + (NAPPS - 1) * S(46) + 2 * pad, sh = ts + S(64);
-    ui_card(0, x0 - pad, y0 - S(22), sw, sh, S(28));
-    for (int i = 0; i < NAPPS; i++) {
-        int x, y; tile_pos(i, &x, &y);
-        int lift = (i == sel) ? S(4) : 0;
-        if (i == sel) gfx_rrect(x - S(5), y - S(5) - lift, ts + S(10), ts + S(10), (ts + S(10)) * 25 / 100,
-                                th.dark ? 0xFFFFFF : 0x000000, th.dark ? 34 : 20);
-        ui_tile(apps[i], x, y - lift, ts, lift);
-        text_c(x + ts / 2, y + ts + S(16), apps[i]->name, i == sel ? FONT_SEMIBOLD : FONT_MEDIUM, S(12),
-               i == sel ? th.text : th.sub);
+    int x0 = S(40), top = BAR_H + S(40);
+    if (clock_known()) {
+        font_draw(FONT_DISPLAY, S(72), x0 - S(3), top + font_ascent(FONT_DISPLAY, S(72)), hm, -1, th.text, 255);
+        text_l(x0, top + S(72) + S(16), date, FONT_MEDIUM, S(14), th.sub);
+    } else {
+        font_draw(FONT_DISPLAY, S(44), x0 - S(2), top + font_ascent(FONT_DISPLAY, S(44)), "BoltOS Mini", -1, th.text, 255);
+        text_l(x0, top + S(44) + S(18), date, FONT_MEDIUM, S(14), th.sub);
     }
-    (void)now;
-    const char *hint = "Arrows and Return to open " TXT_BULLET " Esc comes back here";
-    text_c(scr_w / 2, scr_h - S(34), hint, FONT_REGULAR, S(11), th.faint);
+    draw_facts(scr_w / 2 + S(40), top + S(10));
+
+    int tx, ty, tw, tht;
+    tile_rect(0, &tx, &ty, &tw, &tht);
+    text_l(x0, ty - S(18), "Applications", FONT_SEMIBOLD, S(12), th.faint);
+    for (int i = 0; i < NAPPS; i++) {
+        tile_rect(i, &tx, &ty, &tw, &tht);
+        int on = i == sel;
+        gfx_rrect(tx, ty, tw, tht, S(6), on ? th.accent : th.line, 255);
+        gfx_rrect(tx + 1, ty + 1, tw - 2, tht - 2, S(5), on ? th.sel : th.surface, 255);
+        ui_glyph(apps[i]->glyph, tx + S(30), ty + S(30), S(28), on ? th.accent : th.sub);
+        char n[2] = { (char)('1' + i), 0 };
+        text_r(tx + tw - S(12), ty + S(18), n, FONT_MONO, S(11), th.faint);
+        text_fit_l(tx + S(16), ty + tht - S(20), apps[i]->name, tw - S(24), FONT_MEDIUM, S(13), th.text);
+    }
+    char hint[96];
+    snprintf(hint, sizeof hint, TXT_LARROW " " TXT_RARROW "  choose     Return  open     1-%d  jump     Esc  back to Home", NAPPS);
+    text_l(x0, scr_h - S(20), hint, FONT_REGULAR, S(11), th.faint);
 }
 
 /* ---- an app's frame ---------------------------------------------------------------------------- */
 static void app_area(int *x, int *y, int *w, int *h) {
-    *x = S(24); *y = S(64); *w = scr_w - S(48); *h = scr_h - S(64) - S(24);
+    *x = 0; *y = BAR_H + 1; *w = scr_w; *h = scr_h - BAR_H - 1;
 }
 
-static void draw_app(uint64_t now) {
+static void draw_app(void) {
     int ax, ay, aw, ah;
     app_area(&ax, &ay, &aw, &ah);
-    int isz = S(22);
-    ui_tile(cur, S(28), S(32) - isz / 2, isz, 0);
-    text_l(S(28) + isz + S(10), S(32), cur->name, FONT_SEMIBOLD, S(15), th.text);
-    char hm[16], date[96];
-    clock_text(hm, sizeof hm, date, sizeof date);
-    int rx = scr_w - S(28);
-    int kw = font_width(FONT_MEDIUM, S(11), "esc", -1) + S(12);
-    ui_keycap(rx - kw, S(32), "esc");
-    if (clock_known()) text_r(rx - kw - S(14), S(32), hm, FONT_MEDIUM, S(13), th.sub);
-    (void)now;
-    ui_card(1, ax, ay, aw, ah, S(20));
     gfx_clip_push(ax, ay, aw, ah);
     cur->draw(ax, ay, aw, ah);
     gfx_clip_pop();
 }
 
-/* ---- the pointer, when it is a USB mouse (VNC and QEMU show their own) ---------------------------- */
-static void draw_pointer(void) {
-    if (pointer_src != SRC_USB || pointer_x < 0) return;
-    float x = (float)pointer_x, y = (float)pointer_y, k = (float)S(1);
-    float px[] = { 0, 0, 4.2f, 7.0f, 9.2f, 6.6f, 11.5f }, py[] = { 0, 16.5f, 12.6f, 18.4f, 17.4f, 11.6f, 11.6f };
-    for (int i = 0; i < 7; i++) {
-        int j = (i + 1) % 7;
-        gfx_line(x + px[i] * k, y + py[i] * k, x + px[j] * k, y + py[j] * k, 2.6f * k, 0x000000, 160);
-    }
-    for (float r = 1; r < 11; r += 1.0f)
-        gfx_line(x + 1.2f * k, y + (2.2f + r) * k, x + (1.2f + r * 0.62f) * k, y + (2.2f + r) * k, 1.2f * k, 0xFFFFFF, 255);
-    for (int i = 0; i < 7; i++) {
-        int j = (i + 1) % 7;
-        gfx_line(x + px[i] * k, y + py[i] * k, x + px[j] * k, y + py[j] * k, 1.1f * k, 0xFFFFFF, 255);
+/* ---- input ---------------------------------------------------------------------------------------- */
+void shell_go_home(void) { cur = 0; dirty = 1; }
+
+/* An installed package's app joins the bar and Home, after the built-in ones. */
+int shell_add_app(const app_t *a) {
+    for (int i = 0; i < NAPPS; i++) if (apps[i] == a) return 0;
+    if (NAPPS >= MAX_APPS) return -1;
+    apps[napps++] = a;
+    dirty = 1;
+    return 0;
+}
+
+void shell_remove_app(const app_t *a) {
+    for (int i = 0; i < NAPPS; i++) {
+        if (apps[i] != a) continue;
+        if (cur == a) cur = 0;
+        for (int k = i; k + 1 < NAPPS; k++) apps[k] = apps[k + 1];
+        napps--;
+        if (sel >= NAPPS) sel = NAPPS - 1;
+        dirty = 1;
+        return;
     }
 }
 
-/* ---- input ---------------------------------------------------------------------------------------- */
-void shell_go_home(void) { cur = 0; dirty = 1; }
+const app_t *shell_current(void) { return cur; }
 void shell_open(const app_t *a) {
     cur = a; dirty = 1;
+    for (int i = 0; i < NAPPS; i++) if (apps[i] == a) sel = i;
     if (a->open) a->open();
 }
 
@@ -442,21 +553,30 @@ static void handle(const input_ev_t *e) {
     if (e->type == EV_POINTER) {
         int moved = e->x != pointer_x || e->y != pointer_y;
         int click = (e->buttons & 1) && !(pointer_btn & 1);
-        pointer_x = e->x; pointer_y = e->y; pointer_src = e->source; pointer_btn = e->buttons;
-        if (pointer_src == SRC_USB && moved) dirty = 1;
+        pointer_x = e->x; pointer_y = e->y; pointer_btn = e->buttons;
+        if (moved || e->source != SRC_USB) screen_pointer(e->x, e->y, e->source == SRC_USB);
+        if (e->y < BAR_H) {                           /* the bar: Home and the apps */
+            if (!click) return;
+            int x, w = bar_item(-1, &x);
+            if (ui_hit(e->x, e->y, x, 0, w, BAR_H)) { shell_go_home(); return; }
+            for (int i = 0; i < NAPPS; i++) {
+                w = bar_item(i, &x);
+                if (ui_hit(e->x, e->y, x, 0, w, BAR_H)) { if (cur != apps[i]) shell_open(apps[i]); return; }
+            }
+            return;
+        }
         if (!cur) {
             for (int i = 0; i < NAPPS; i++) {
-                int x, y; tile_pos(i, &x, &y);
-                if (ui_hit(e->x, e->y, x - S(10), y - S(10), tile_size() + S(20), tile_size() + S(40))) {
+                int x, y, w, h; tile_rect(i, &x, &y, &w, &h);
+                if (ui_hit(e->x, e->y, x, y, w, h)) {
                     if (sel != i) { sel = i; dirty = 1; }
                     if (click) shell_open(apps[i]);
                 }
             }
         } else {
-            int kw = font_width(FONT_MEDIUM, S(11), "esc", -1) + S(12);
-            if (click && ui_hit(e->x, e->y, scr_w - S(28) - kw - S(6), S(18), kw + S(12), S(28))) { shell_go_home(); return; }
             int ax, ay, aw, ah; app_area(&ax, &ay, &aw, &ah);
-            if (cur->pointer) { cur->pointer(e, ax, ay, aw, ah); dirty = 1; }
+            int acted = click || e->wheel || e->buttons;
+            if (cur->pointer) { cur->pointer(e, ax, ay, aw, ah); if (acted) dirty = 1; }
         }
         return;
     }
@@ -467,18 +587,21 @@ static void handle(const input_ev_t *e) {
     if (e->key == KEY_ESC && cur == &app_terminal) { int terminal_esc(void); term_ate = terminal_esc(); }
     if (e->key == KEY_ESC && cur == &app_browser) { int browser_esc(void); term_ate = browser_esc(); }
     if (e->key == KEY_ESC && cur == &app_settings) { int settings_esc(void); term_ate = settings_esc(); }
+    if (e->key == KEY_ESC && cur && cur->esc) term_ate = cur->esc();
     if (term_ate) { dirty = 1; return; }
     if (e->key == KEY_SUPER || (e->key == KEY_ESC && cur)) {
         if (cur) shell_go_home();
         return;
     }
-    if (e->key >= KEY_F1 && e->key < KEY_F1 + NAPPS) { shell_open(apps[e->key - KEY_F1]); return; }
+    /* Code has F2 (rename), F3 (find again) and F5 (run) for itself */
+    int code_key = cur == &app_code && (e->key == KEY_F2 || e->key == KEY_F3 || e->key == KEY_F5);
+    if (!code_key && e->key >= KEY_F1 && e->key < KEY_F1 + NAPPS) { shell_open(apps[e->key - KEY_F1]); return; }
     if (cur) cur->key(e); else home_key(e);
     dirty = 1;
 }
 
 /* ---- the frame ------------------------------------------------------------------------------------ */
-static int last_minute = -1, last_mac = -1, last_kb = -1;
+static int last_minute = -1, last_mac = -1, last_kb = -1, last_load = -1;
 
 void shell_request_frame(void) { dirty = 1; }
 
@@ -488,27 +611,79 @@ void shell_init(void) {
     kprintf("[shell] home: %d apps\n", NAPPS);
 }
 
+static void draw_frame(void) {
+    gfx_bind(&g_back, 0, 0, 0, 0, scr_w, scr_h);
+    gfx_fill(0, 0, scr_w, scr_h, th.bg);
+    draw_bar();
+    if (cur) draw_app(); else draw_home();
+    draw_toast();
+}
+
+/* Development (/bench): draw the current screen n times, as if every frame
+ * had changed, and say what one costs. */
+int shell_bench(int n, char *out, int cap) {
+    uint64_t draw = 0, pres = 0, mx = 0;
+    for (int i = 0; i < n; i++) {
+        uint64_t t0 = now_us();
+        draw_frame();
+        uint64_t t1 = now_us();
+        screen_present(0, 0, scr_w, scr_h);
+        uint64_t t2 = now_us();
+        draw += t1 - t0; pres += t2 - t1;
+        if (t1 - t0 > mx) mx = t1 - t0;
+    }
+    if (n < 1) n = 1;
+    return snprintf(out, (size_t)cap, "%s: draw avg %lu us, max %lu us, present %lu us (%d frames)\n",
+                    cur ? cur->name : "Home", (unsigned long)(draw / (uint64_t)n), (unsigned long)mx,
+                    (unsigned long)(pres / (uint64_t)n), n);
+}
+
+/* Development (/anim): for `ms`, change the screen every frame -- mode 0
+ * flips between Home and each app (the whole screen), mode 1 moves Home's
+ * selection (a few tiles) -- to measure what reaches a viewer. */
+static uint64_t anim_until;
+static int anim_mode, anim_step;
+void shell_anim(int mode, int ms) { anim_mode = mode; anim_until = now_ms() + (uint64_t)ms; anim_step = 0; dirty = 1; }
+
+int vnc_streaming(void);
+void mini_pump(void);
+
 int shell_frame(void) {
     input_ev_t e;
     while (input_pop(&e)) handle(&e);
-    load_sample();
     uint64_t now = now_ms();
+    if (anim_until && now - last_frame >= 16) {
+        if (now >= anim_until) { anim_until = 0; cur = 0; }
+        else if (anim_mode == 0) { anim_step++; cur = (anim_step % 2) ? apps[(anim_step / 2) % NAPPS] : 0; }
+        else { cur = 0; sel = (sel + 1) % NAPPS; }
+        dirty = 1;
+    }
+    load_sample();
     int minute = (int)(clock_unix() / 60);
     if (minute != last_minute) { last_minute = minute; dirty = 1; }
-    int mac = shell_mac_connected(), kb = usbh_keyboards();
-    if (mac != last_mac || kb != last_kb) { last_mac = mac; last_kb = kb; dirty = 1; }
+    int mac = shell_mac_connected(), kb = usbh_keyboards(), load = shell_cpu_load();
+    if (mac != last_mac || kb != last_kb || load != last_load) { last_mac = mac; last_kb = kb; last_load = load; dirty = 1; }
     if (cur && cur->tick && cur->tick()) dirty = 1;
-    if (toast_at) dirty = 1;
+    int code_background(void), notes_background(void);
+    code_background();                                 /* a program run from Code keeps printing */
+    notes_background();                                /* and Notes saves what was typed last   */
+    if (toast_at && now - toast_at >= TOAST_MS) { toast_at = 0; dirty = 1; }
     if (!dirty || now - last_frame < 16) return 0;
+    /* A viewer still taking the last frame can't be sent this one yet: drawing
+     * it now would only keep the loop from feeding the network. */
+    if (vnc_streaming() && now - last_frame < 100) return 0;
     dirty = 0;
     last_frame = now;
 
-    gfx_bind(&g_back, 0, 0, 0, 0, scr_w, scr_h);
-    if (cur) gfx_copy(0, 0, &wall_blur, 0, 0, scr_w, scr_h);
-    else     gfx_copy(0, 0, &wall, 0, 0, scr_w, scr_h);
-    if (cur) draw_app(now); else draw_home(now);
-    draw_toast(now);
-    draw_pointer();
+    uint64_t t0 = now_us();
+    draw_frame();
+    uint64_t t1 = now_us();
+    mini_pump();                                       /* the network, between the two halves */
+    uint64_t t2 = now_us();
     screen_present(0, 0, scr_w, scr_h);
+    g_perf.frames++;
+    g_perf.draw_us += t1 - t0;
+    if (t1 - t0 > g_perf.draw_max) g_perf.draw_max = t1 - t0;
+    g_perf.present_us += now_us() - t2;
     return 1;
 }

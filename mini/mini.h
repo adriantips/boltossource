@@ -54,9 +54,25 @@ static inline void     clr32(uintptr_t a, uint32_t m) { w32(a, r32(a) & ~m); }
 #define MINI_LOG_SIZE    0x00100000ull
 #define MINI_BIG_BASE    0x60000000ull     /* 384 MiB for one big thing: a video  */
 #define MINI_BIG_SIZE    0x18000000ull     /* being streamed (player.c)           */
+/* The rest of RAM, for apps that need a lot of it (a language model):
+ * "low" below the log window, "high" from the video's window to the top of
+ * the map. A video and an app can't both have the high one (bigmem.c).     */
+#define MINI_LOW_BASE    0x47200000ull     /* 382 MiB                             */
+#define MINI_LOW_SIZE    0x17E00000ull
+#define MINI_HIGH_BASE   MINI_BIG_BASE     /* 512 MiB                             */
+#define MINI_HIGH_SIZE   0x20000000ull
 
 void  mmu_init(void);
-/* Run fn(arg) on core `cpu` (1..3), alone and forever. 0 if it started. */
+/* The other cores (arch/cpu.c). They wait for work from boot on.
+ * core_run hands an idle one fn(arg); 0 if it took it. cpu_start waits
+ * for the core to be free first. A long pool job checks core_wanted()
+ * between steps and returns early when cpu_start is waiting for its core;
+ * when a job returns, its core waits in the pool again. */
+void  cores_init(void);
+int   core_pooled(int cpu);                /* 1..3: waiting for work, or doing some */
+int   core_busy(int cpu);
+int   core_wanted(int cpu);
+int   core_run(int cpu, void (*fn)(void *), void *arg);
 int   cpu_start(int cpu, void (*fn)(void *), void *arg);
 void *dma_alloc(uint32_t size, uint32_t align);   /* zeroed, uncached, never freed */
 static inline uint32_t dma_addr(const void *p) { return (uint32_t)(uintptr_t)p; }
@@ -122,9 +138,15 @@ const char *fdt_model(const void *fdt);
 extern surface_t g_back;               /* draw here                            */
 extern uint32_t *g_front;              /* shown: same size, stride == width    */
 extern int scr_w, scr_h;
-extern volatile uint32_t g_front_gen;  /* bumped every present                 */
+extern volatile uint32_t g_front_gen;  /* bumped by a present that changed something */
+#define SCR_TILE 16
+extern uint32_t *g_tile_gen;           /* per 16x16 tile: the g_front_gen it last changed in */
+extern int scr_tw, scr_th;             /* tiles across, down                  */
 int  screen_init(int w, int h);
 void screen_present(int x, int y, int w, int h);
+/* A USB mouse's arrow, drawn over front (not into back): moving it costs
+ * a few tiles, not a frame. shown 0 takes it away. */
+void screen_pointer(int x, int y, int shown);
 
 /* ---- input ---------------------------------------------------------------- */
 enum {
@@ -154,6 +176,7 @@ void input_key(int key, int ch, int mods, int source);
 void input_pointer(int x, int y, int buttons, int wheel, int source);
 int  input_pop(input_ev_t *ev);
 uint32_t input_count(int source);      /* events seen from a source            */
+uint64_t input_idle_ms(void);          /* since the last key, click or wheel   */
 /* HID boot-protocol usage -> KEY_* / character, US layout. */
 int  input_from_hid(uint8_t usage, int shift, int *ch);
 /* X11 keysym (what VNC speaks) -> KEY_* / character. */
@@ -199,6 +222,20 @@ void shell_init(void);
 int  shell_frame(void);                /* 1 if it drew something                */
 void shell_toast(const char *title, const char *detail);
 void shell_request_frame(void);
+
+/* ---- timing, for /perf (counted since the last read) ---------------------------- */
+typedef struct {
+    uint32_t frames;                   /* shell frames drawn                  */
+    uint64_t draw_us, draw_max;        /* drawing them into the back buffer   */
+    uint64_t present_us;               /* back -> front                       */
+    uint32_t loops;                    /* main-loop turns                     */
+    uint64_t busy_max;                 /* the longest turn, us                */
+    uint32_t vnc_updates, vnc_rects;
+    uint64_t vnc_bytes, vnc_scan_us, vnc_scan_max, vnc_pump_us;
+    uint64_t t0;
+} perf_t;
+extern perf_t g_perf;
+int perf_report(char *out, int cap);   /* and start counting again            */
 
 /* ---- odds and ends ---------------------------------------------------------- */
 uint32_t mini_rand(void);
