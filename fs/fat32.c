@@ -31,6 +31,8 @@ static struct {
     uint32_t  total_clus;
     uint32_t  clus_bytes;
     uint32_t  next_free;      /* allocation hint: where to start looking      */
+    uint32_t  fsinfo;         /* FSInfo's sector, 0 if none                   */
+    int       fsinfo_stale;   /* its free count is marked unknown this mount  */
     char      label[12];
 } fs;
 
@@ -74,7 +76,23 @@ static int fat_next(uint32_t clus, uint32_t *out) {
     *out = (*(uint32_t *)(fatcache + off % SECSZ)) & 0x0FFFFFFFu;
     return 0;
 }
+/* FSInfo's free count is a hint this driver doesn't keep up. The first change
+ * to the FAT in a mount marks it unknown (0xFFFFFFFF, as the spec allows), so
+ * fsck and other systems count the free clusters instead of trusting a number
+ * that stopped being true. */
+static void fsinfo_unknown(void) {
+    static uint8_t b[SECSZ];
+    if (fs.fsinfo_stale || !fs.fsinfo) return;
+    fs.fsinfo_stale = 1;
+    if (rd_sec(fs.fsinfo, b) != 0) return;
+    if (*(uint32_t *)b != 0x41615252u || *(uint32_t *)(b + 484) != 0x61417272u) return;
+    if (*(uint32_t *)(b + 488) == 0xFFFFFFFFu) return;
+    *(uint32_t *)(b + 488) = 0xFFFFFFFFu;
+    wr_sec(fs.fsinfo, b);
+}
+
 static int fat_set(uint32_t clus, uint32_t val) {
+    fsinfo_unknown();
     uint32_t off = clus * 4;
     uint32_t idx = off % SECSZ;
     fatcache_sec = 0xFFFFFFFFu;                    /* the cached copy is stale */
@@ -522,6 +540,155 @@ int fat32_write(const char *path, const void *data, uint32_t len) {
     return 0;
 }
 
+/* ---- public: what a system update needs (kernel/sysupdate.c) ------------- */
+/* Mark n clusters from `first` as one chain, a FAT sector at a time: one read
+ * and one write per 128 clusters and FAT copy, where fat_set would do both for
+ * every cluster -- the difference between seconds and minutes for a kernel. */
+static int fat_chain_run(uint32_t first, uint32_t n) {
+    fsinfo_unknown();
+    fatcache_sec = 0xFFFFFFFFu;
+    for (uint32_t c = first; c < first + n; ) {
+        uint32_t off = c * 4, idx0 = off % SECSZ;
+        uint32_t in_sec = (SECSZ - idx0) / 4, k = first + n - c < in_sec ? first + n - c : in_sec;
+        for (uint32_t f = 0; f < fs.num_fats; f++) {
+            uint32_t sec = fs.fat_start + f * fs.fat_size + off / SECSZ;
+            if (rd_sec(sec, secbuf) != 0) return -1;
+            for (uint32_t j = 0; j < k; j++) {
+                uint32_t cl = c + j, *e = (uint32_t *)(secbuf + idx0 + j * 4);
+                *e = (*e & 0xF0000000u) | ((cl == first + n - 1 ? 0x0FFFFFFFu : cl + 1) & 0x0FFFFFFFu);
+            }
+            if (wr_sec(sec, secbuf) != 0) return -1;
+        }
+        c += k;
+    }
+    return 0;
+}
+
+/* The first of n free clusters in a row, or 0. */
+static uint32_t find_run(uint32_t n) {
+    uint32_t run = 0, start = 0;
+    for (uint32_t c = 2; c < fs.total_clus + 2; c++) {
+        uint32_t v;
+        if (fat_next(c, &v) != 0) return 0;
+        if (v) { run = 0; continue; }
+        if (!run) start = c;
+        if (++run == n) return start;
+    }
+    return 0;
+}
+
+/* Like fat32_write, with the same order (new clusters, one sector to switch,
+ * the old ones freed), but the clusters follow each other on the disk: what
+ * stage2 needs, since it reads the kernel as a run of sectors, not as a
+ * file. *dev_lba is where the file starts on the device. */
+int fat32_write_contiguous(const char *path, const void *data, uint32_t len, uint64_t *dev_lba) {
+    if (!fs.mounted || !len) return -1;
+    uint32_t parent; char leaf[256]; dir_loc at = { 0, 0 };
+    uint32_t old_clus, old_size; uint8_t old_attr;
+    int rr = resolve(path, &old_clus, &old_size, &old_attr, &parent, leaf, &at);
+    if (rr == -2 || !leaf[0]) return -1;
+    int exists = rr == 0;
+    if (exists && (old_attr & FAT_ATTR_DIR)) return -1;
+    uint32_t n = (len + fs.clus_bytes - 1) / fs.clus_bytes;
+    uint32_t first = find_run(n);
+    if (!first) return -2;                            /* no room for it in one piece */
+    if (fat_chain_run(first, n) != 0) { free_chain(first); return -1; }
+    /* the data, 64 KiB at a time, the last cluster padded with zeros */
+    const uint8_t *src = data;
+    uint64_t lba = clus_dev_lba(first);
+    uint32_t whole = len / fs.clus_bytes * fs.clus_bytes, done = 0;
+    while (done < whole) {
+        uint32_t chunk = whole - done > MAX_CLUSTER_BYTES ? MAX_CLUSTER_BYTES : whole - done;
+        memcpy(clusbuf, src + done, chunk);
+        if (blk_write(fs.dev, lba + done / SECSZ, chunk / SECSZ, clusbuf) != 0) { free_chain(first); return -1; }
+        done += chunk;
+    }
+    if (done < len) {
+        memset(clusbuf, 0, fs.clus_bytes);
+        memcpy(clusbuf, src + done, len - done);
+        if (write_cluster(first + n - 1, clusbuf) != 0) { free_chain(first); return -1; }
+    }
+    if (blk_flush(fs.dev) != 0) { free_chain(first); return -1; }
+    int rc;
+    if (exists) rc = dir_repoint(&at, first, len);
+    else {
+        char sn[11]; to_short(leaf, sn);
+        uint8_t ent[32]; memset(ent, 0, 32);
+        memcpy(ent, sn, 11);
+        ent[11] = 0x20;
+        ent[20] = (uint8_t)(first >> 16); ent[21] = (uint8_t)(first >> 24);
+        ent[26] = (uint8_t)(first);       ent[27] = (uint8_t)(first >> 8);
+        *(uint32_t *)(ent + 28) = len;
+        rc = dir_put_entry(parent, ent);
+    }
+    if (rc != 0) { free_chain(first); return -1; }
+    if (blk_flush(fs.dev) != 0) return -1;
+    if (exists && old_clus) { free_chain(old_clus); blk_flush(fs.dev); }
+    if (dev_lba) *dev_lba = lba;
+    return 0;
+}
+
+/* A file's first cluster and length, and the device sector its data starts
+ * at (meaningful when it is contiguous). 0 if it is there. */
+int fat32_locate(const char *path, uint32_t *first, uint32_t *len, uint64_t *dev_lba) {
+    if (!fs.mounted) return -1;
+    uint32_t c, sz; uint8_t attr;
+    if (resolve(path, &c, &sz, &attr, 0, 0, 0) != 0 || (attr & FAT_ATTR_DIR)) return -1;
+    if (first) *first = c;
+    if (len) *len = sz;
+    if (dev_lba) *dev_lba = c >= 2 ? clus_dev_lba(c) : 0;
+    return 0;
+}
+
+/* 1 if the file's clusters follow each other on the disk. */
+int fat32_contiguous(const char *path) {
+    uint32_t c, sz;
+    if (fat32_locate(path, &c, &sz, 0) != 0 || c < 2) return 0;
+    for (uint32_t i = 1; i < (sz + fs.clus_bytes - 1) / fs.clus_bytes; i++) {
+        uint32_t nx;
+        if (fat_next(c, &nx) != 0 || nx != c + 1) return 0;
+        c = nx;
+    }
+    return 1;
+}
+
+/* Point an existing file at another file's clusters (both then name them,
+ * until one is removed with fat32_remove(.., 0)); its old clusters are freed
+ * once the switch is on the disk. */
+int fat32_take(const char *path, const char *from) {
+    if (!fs.mounted) return -1;
+    uint32_t c, sz, oc, osz; uint8_t attr, oattr; dir_loc at = { 0, 0 };
+    if (resolve(from, &c, &sz, &attr, 0, 0, 0) != 0 || (attr & FAT_ATTR_DIR)) return -1;
+    if (resolve(path, &oc, &osz, &oattr, 0, 0, &at) != 0 || (oattr & FAT_ATTR_DIR)) return -1;
+    if (oc == c) return 0;
+    if (dir_repoint(&at, c, sz) != 0 || blk_flush(fs.dev) != 0) return -1;
+    if (oc >= 2) { free_chain(oc); blk_flush(fs.dev); }
+    return 0;
+}
+
+/* Remove a file's entry, freeing its clusters too unless another file was
+ * pointed at them (fat32_take). Only 8.3 entries: what fat32_write makes. */
+int fat32_remove(const char *path, int free_clusters) {
+    if (!fs.mounted) return -1;
+    uint32_t c, sz; uint8_t attr; dir_loc at = { 0, 0 };
+    if (resolve(path, &c, &sz, &attr, 0, 0, &at) != 0 || (attr & FAT_ATTR_DIR)) return -1;
+    uint8_t *e = dir_ent_begin(&at);
+    if (!e) return -1;
+    e[0] = 0xE5;
+    if (dir_ent_commit(&at) != 0 || blk_flush(fs.dev) != 0) return -1;
+    if (free_clusters && c >= 2) { free_chain(c); blk_flush(fs.dev); }
+    return 0;
+}
+
+/* What is mounted, so a caller that borrows the one mount can put it back. */
+int fat32_where(blkdev_t **dev, uint64_t *base, uint64_t *span) {
+    if (!fs.mounted) return 0;
+    if (dev) *dev = fs.dev;
+    if (base) *base = fs.base;
+    if (span) *span = fs.span;
+    return 1;
+}
+
 int fat32_mkdir(const char *path) {
     if (!fs.mounted || boot_is_recovery()) return -1;
     uint32_t parent; char leaf[256];
@@ -611,6 +778,9 @@ int fat32_mount_at(blkdev_t *dev, uint64_t base, uint64_t span) {
     for (int i = 10; i >= 0 && fs.label[i] == ' '; i--) fs.label[i] = 0;
 
     fs.next_free = 2;
+    fs.fsinfo = secbuf[48] | (secbuf[49] << 8);
+    if (fs.fsinfo == 0xFFFF || fs.fsinfo >= fs.reserved) fs.fsinfo = 0;
+    fs.fsinfo_stale = 0;
     fatcache_sec = 0xFFFFFFFFu;
     fs.mounted = 1;
     if (base) kprintf("[ok] FAT32 mounted on %s@LBA%lu: '%s', %u clusters x %u B\n",

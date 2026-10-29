@@ -51,6 +51,15 @@ int  fat32_mkdir(const char *path);
  * Called on the shutdown path so a FAT volume is safe to unplug. */
 int  fat32_flush(void);
 
+/* For a system update (kernel/sysupdate.c). fat32_write_contiguous returns
+ * -2 when there is no run of free clusters long enough. */
+int  fat32_write_contiguous(const char *path, const void *data, uint32_t len, uint64_t *dev_lba);
+int  fat32_locate(const char *path, uint32_t *first, uint32_t *len, uint64_t *dev_lba);
+int  fat32_contiguous(const char *path);
+int  fat32_take(const char *path, const char *from);   /* path gets from's clusters */
+int  fat32_remove(const char *path, int free_clusters);
+int  fat32_where(blkdev_t **dev, uint64_t *base, uint64_t *span);   /* 1 if mounted */
+
 const char *fat32_label(void);
 uint64_t    fat32_free_bytes(void);
 uint64_t    fat32_total_bytes(void);
