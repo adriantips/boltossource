@@ -664,7 +664,26 @@ void shell_anim(int mode, int ms) { anim_mode = mode; anim_until = now_ms() + (u
 int vnc_streaming(void);
 void mini_pump(void);
 
+static int was_splash;                  /* the turn before drew the splash */
+
 int shell_frame(void) {
+    /* While the splash is up the screen is the splash: input skips it, the
+     * machine carries on coming up behind it, and the desktop is drawn on
+     * the turn after it ends. */
+    if (splash_active()) {
+        input_ev_t e;
+        while (input_pop(&e)) splash_dismiss();
+        uint64_t now = now_ms();
+        if (now - last_frame < 16) return 0;
+        last_frame = now;
+        dirty = 0;
+        splash_draw();
+        screen_present(0, 0, scr_w, scr_h);
+        g_perf.frames++;
+        was_splash = 1;
+        return 1;
+    }
+    if (was_splash) { was_splash = 0; dirty = 1; }
     input_ev_t e;
     while (input_pop(&e)) handle(&e);
     uint64_t now = now_ms();

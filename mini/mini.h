@@ -223,6 +223,12 @@ int  shell_frame(void);                /* 1 if it drew something                
 void shell_toast(const char *title, const char *detail);
 void shell_request_frame(void);
 
+/* ---- the boot splash (mini/splash.c) ----------------------------------- */
+void splash_start(void);               /* call once the theme exists, just before the main loop */
+int  splash_active(void);              /* 1 while the five seconds last   */
+void splash_dismiss(void);             /* any key or click skips it     */
+void splash_draw(void);                /* draws the frame into g_back    */
+
 /* ---- timing, for /perf (counted since the last read) ---------------------------- */
 typedef struct {
     uint32_t frames;                   /* shell frames drawn                  */

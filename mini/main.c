@@ -138,6 +138,9 @@ void kmain(uint64_t dtb) {
      * carries on (the old 90 s "restart into U-Boot's DFU window" rule is gone,
      * it would have rebooted a Pi that nobody is plugged into). To send a new
      * kernel, POST /reboot (pi.py does) while the Mac is connected. */
+    /* The splash runs behind the main loop: the machine keeps coming up
+     * while the five seconds last, any key or click skips them. */
+    splash_start();
     extern volatile uint64_t g_loop_ms;
     for (;;) {
         g_loop_ms = now_ms();

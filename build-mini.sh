@@ -85,6 +85,7 @@ for f in mini/sdio.c mini/wcn.c mini/wifi.c mini/bt.c mini/hid.c mini/emac.c min
          mini/ohci.c mini/usbhost.c mini/shell.c mini/ui.c \
          mini/app_terminal.c mini/app_monitor.c mini/app_notes.c mini/app_clock.c \
          mini/app_settings.c mini/app_packages.c mini/sdcard.c mini/store.c mini/dl.c mini/update.c \
+         mini/splash.c \
          mini/pkg.c mini/exports.c mini/fs.c mini/rt.c mini/gc.c mini/numfmt.c mini/mathx.c mini/app_code.c \
          mini/py_obj.c mini/py_parse.c mini/py_eval.c mini/py_lib.c mini/cc.c mini/cc_eval.c mini/cc_lib.c; do
     [ -f "$f" ] || continue
