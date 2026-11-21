@@ -61,6 +61,28 @@ void audio_tone_ch(int mix_ch, uint32_t freq, uint32_t ms);
  * playing rather than at the next one. */
 void audio_gain_changed(void);
 
+/* --- a stream that never stops ---------------------------------------------
+ *  audio_play_async hands the codec one buffer and the caller the next once
+ *  it drains, and the engine is restarted between them: a millisecond of
+ *  nothing each time, which a player of music never minds and a film's sound
+ *  track does (a tick every half second). The ring is the other way: the DMA
+ *  engine goes round a buffer for as long as the ring is open, and the
+ *  caller keeps writing ahead of where it reads. What has been played is
+ *  zeroed behind it, so a writer that falls behind is heard as a gap of
+ *  silence, not as the last half second again.
+ *
+ *  While it is open the ring owns the device: one-shot sounds (UI clicks,
+ *  audio_play_async, audio_play_pcm) are dropped rather than cut into it.
+ *  It plays on the MIX_MEDIA channel. Same PCM as everything else here.
+ * ------------------------------------------------------------------------*/
+int      audio_ring_open(void);                 /* 0, or -1 if the codec can't */
+int      audio_ring_active(void);
+uint32_t audio_ring_write(const int16_t *pcm, uint32_t frames);   /* frames taken */
+uint32_t audio_ring_space(void);                /* frames that fit now          */
+uint32_t audio_ring_queued(void);               /* written, not yet heard       */
+uint64_t audio_ring_played(void);               /* frames heard since open      */
+void     audio_ring_close(void);
+
 /* --- capture --------------------------------------------------------------
  *  The other direction, and it is not the output path with the arrow turned
  *  round. An output route is chosen once at boot and left open; an input route
@@ -109,6 +131,13 @@ typedef struct audio_dev {
     void        (*cap_close)(void);
     void        (*cap_gain)(int percent);
     const char *(*cap_name)(void);
+
+    /* A ring for a stream that never stops (see audio_ring_open). NULL on a
+     * codec that can't: the DMA engine runs round `bytes` of `mem` until
+     * ring_close, and ring_pos says where it is reading. */
+    void       *(*ring_open)(uint32_t *bytes);
+    uint32_t    (*ring_pos)(void);
+    void        (*ring_close)(void);
 } audio_dev_t;
 
 /* Claim the device if present, otherwise return NULL. Called only by

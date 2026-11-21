@@ -44,8 +44,10 @@ void audio_set_volume(int percent) {
     audio_gain_changed();
 }
 
+static int ring_on;
+
 void audio_play_async_ch(int mix_ch, const int16_t *interleaved, uint32_t frames) {
-    if (!dev || !interleaved || !frames) return;
+    if (!dev || !interleaved || !frames || ring_on) return;
     uint32_t cap = dev->capacity();
     if (frames > cap) frames = cap;
     apply_gain(mix_ch);
@@ -57,11 +59,11 @@ void audio_play_async(const int16_t *interleaved, uint32_t frames) {
     audio_play_async_ch(MIX_APP, interleaved, frames);
 }
 
-int  audio_busy(void) { return dev ? dev->busy() : 0; }
-void audio_stop(void) { if (dev) dev->stop(); }
+int  audio_busy(void) { return dev && !ring_on ? dev->busy() : 0; }
+void audio_stop(void) { if (dev && !ring_on) dev->stop(); }
 
 void audio_play_pcm_ch(int mix_ch, const int16_t *interleaved, uint32_t frames) {
-    if (!dev || !interleaved || !frames) return;
+    if (!dev || !interleaved || !frames || ring_on) return;
     if (preempt) preempt();               /* this buffer, not the one already going */
     uint32_t cap = dev->capacity();
     if (frames > cap) frames = cap;
@@ -117,6 +119,93 @@ void audio_tone_ch(int mix_ch, uint32_t freq, uint32_t ms) {
 }
 
 void audio_tone(uint32_t freq, uint32_t ms) { audio_tone_ch(MIX_APP, freq, ms); }
+
+/* --- the ring ----------------------------------------------------------------
+ *  Positions are bytes into the device's buffer. `queued` is what has been
+ *  written and not yet read; it is brought up to date from how far the read
+ *  position moved since the last call, which only works if calls come more
+ *  often than the buffer's length (1.3 s on HDA) -- a player calls every frame.
+ * ------------------------------------------------------------------------*/
+static uint8_t *ring_mem;
+static uint32_t ring_bytes, ring_wr, ring_rd, ring_q;
+static uint64_t ring_heard;
+#define RING_LEAD  (48u * 4 * 20)       /* write this far ahead after a gap: 20 ms */
+#define RING_GUARD (4096u)              /* never write right up to the reader      */
+
+static void ring_zero(uint32_t a, uint32_t b) {      /* [a, b) of the ring, wrapping */
+    if (a == b) return;
+    if (a < b) { for (uint32_t i = a; i < b; i++) ring_mem[i] = 0; return; }
+    for (uint32_t i = a; i < ring_bytes; i++) ring_mem[i] = 0;
+    for (uint32_t i = 0; i < b; i++) ring_mem[i] = 0;
+}
+
+static void ring_catch_up(void) {
+    uint32_t rd = dev->ring_pos() % ring_bytes & ~3u;
+    uint32_t moved = (rd + ring_bytes - ring_rd) % ring_bytes;
+    ring_zero(ring_rd, rd);                            /* heard: silence from now on */
+    ring_rd = rd;
+    ring_heard += moved / 4;
+    if (moved >= ring_q) {                            /* ran dry: start again just ahead */
+        ring_q = 0;
+        ring_wr = (rd + RING_LEAD) % ring_bytes;
+    } else ring_q -= moved;
+}
+
+int audio_ring_open(void) {
+    if (ring_on) return 0;
+    if (!dev || !dev->ring_open) return -1;
+    if (preempt) preempt();
+    ring_mem = dev->ring_open(&ring_bytes);
+    if (!ring_mem || ring_bytes < 16384) { ring_mem = 0; return -1; }
+    apply_gain(MIX_MEDIA);
+    ring_rd = dev->ring_pos() % ring_bytes & ~3u;
+    ring_wr = (ring_rd + RING_LEAD) % ring_bytes;
+    ring_q = 0; ring_heard = 0;
+    ring_on = 1;
+    return 0;
+}
+
+int audio_ring_active(void) { return ring_on; }
+
+uint32_t audio_ring_space(void) {
+    if (!ring_on) return 0;
+    ring_catch_up();
+    uint32_t room = ring_bytes - RING_GUARD - RING_LEAD;
+    return ring_q >= room ? 0 : (room - ring_q) / 4;
+}
+
+uint32_t audio_ring_write(const int16_t *pcm, uint32_t frames) {
+    uint32_t room = audio_ring_space();
+    if (frames > room) frames = room;
+    if (!frames) return 0;
+    uint32_t n = frames * 4, first = ring_bytes - ring_wr;
+    if (first > n) first = n;
+    const uint8_t *src = (const uint8_t *)pcm;
+    for (uint32_t i = 0; i < first; i++) ring_mem[ring_wr + i] = src[i];
+    for (uint32_t i = first; i < n; i++) ring_mem[i - first] = src[i];
+    ring_wr = (ring_wr + n) % ring_bytes;
+    ring_q += n;
+    mixer_note_peak(MIX_MEDIA, pcm, frames);
+    return frames;
+}
+
+uint32_t audio_ring_queued(void) {
+    if (!ring_on) return 0;
+    ring_catch_up();
+    return ring_q / 4;
+}
+
+uint64_t audio_ring_played(void) {
+    if (!ring_on) return 0;
+    ring_catch_up();
+    return ring_heard;
+}
+
+void audio_ring_close(void) {
+    if (!ring_on) return;
+    dev->ring_close();
+    ring_on = 0; ring_mem = 0; ring_q = 0;
+}
 
 /* --- capture --------------------------------------------------------------
  *  Opened on demand and closed again, unlike the output route. Holding it open

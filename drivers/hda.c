@@ -618,6 +618,32 @@ static void hda_submit(const int16_t *pcm, uint32_t frames) {
     mmio_write8 (h.mm, h.sd + SD_CTL, CTL_RUN);
 }
 
+static void hda_stop(void);
+
+/* The ring: the whole sample buffer as two descriptors, no interrupts, the
+ * engine left running round it (see audio_ring_open in drivers/audio.c). */
+static void *hda_ring_open(uint32_t *bytes) {
+    if (!h.present) return 0;
+    memset(h.pcm.virt, 0, CAP_BYTES);
+    struct bdl_entry *b = (struct bdl_entry *)h.bdl.virt;
+    b[0].addr = h.pcm.phys;                  b[0].len = CAP_BYTES / 2; b[0].flags = 0;
+    b[1].addr = h.pcm.phys + CAP_BYTES / 2;  b[1].len = CAP_BYTES / 2; b[1].flags = 0;
+    sd_reset(h.sd);
+    mmio_write32(h.mm, h.sd + SD_CBL, CAP_BYTES);
+    mmio_write16(h.mm, h.sd + SD_LVI, 1);
+    mmio_write16(h.mm, h.sd + SD_FMT, FMT_48K_S16_2);
+    mmio_write32(h.mm, h.sd + SD_BDPL, (uint32_t)h.bdl.phys);
+    mmio_write32(h.mm, h.sd + SD_BDPU, (uint32_t)(h.bdl.phys >> 32));
+    mmio_write8 (h.mm, h.sd + SD_STS, 0x1C);
+    mmio_write8 (h.mm, h.sd + SD_CTL + 2, (uint8_t)(STREAM_TAG << 4));
+    h.data_bytes = 0;                        /* not a one-shot buffer: never "busy" */
+    mmio_write8 (h.mm, h.sd + SD_CTL, CTL_RUN);
+    *bytes = CAP_BYTES;
+    return h.pcm.virt;
+}
+static uint32_t hda_ring_pos(void) { return h.present ? mmio_read32(h.mm, h.sd + SD_LPIB) : 0; }
+static void hda_ring_close(void) { hda_stop(); }
+
 static int hda_busy(void) {
     if (!h.present || !h.data_bytes) return 0;
     if (mmio_read8(h.mm, h.sd + SD_STS) & STS_BCIS) return 0;
@@ -714,6 +740,9 @@ static const audio_dev_t hda_dev = {
     .cap_close = hda_cap_close,
     .cap_gain = hda_cap_gain,
     .cap_name = hda_cap_name,
+    .ring_open  = hda_ring_open,
+    .ring_pos   = hda_ring_pos,
+    .ring_close = hda_ring_close,
 };
 
 /* --- bring-up ------------------------------------------------------------ */
