@@ -18,6 +18,16 @@
  *  and the frame after that does the work, while mini_pump keeps the links
  *  and VNC alive underneath.
  *
+ *  Firefox: when the Firefox machine is on the card (mini/vm.c runs it; it
+ *  comes from mini/firefox/) the Browser is Firefox -- its whole window, its
+ *  own tabs and address bar, pages exactly as Firefox on Windows draws them,
+ *  video included -- and this file only copies its screen into place and
+ *  passes the keys and pointer on. The first Esc goes to the page (menus,
+ *  full-screen video), a second one straight after goes Home. Without the
+ *  machine (no card files, or a CPU started without EL2), or with Firefox on
+ *  another computer switched on (mini/engine.c), the same view shows that one,
+ *  and failing both, the pages below.
+ *
  *  Keys: type to search or enter an address (Ctrl+L too). Tab and arrows
  *  move between results; Return opens; Backspace goes back; Space and the
  *  page keys scroll; Shift+Left/Right change the search tab; Esc leaves an
@@ -31,6 +41,9 @@
 #include "flow.h"
 #include "image.h"
 #include "http.h"
+#include "vm.h"
+#include "engine.h"
+#include "store.h"
 #include "kheap.h"
 #include "kprintf.h"
 #include "string.h"
@@ -52,7 +65,7 @@
 #define INK_LINK   0x1A0DAB
 #define RULE       0xDADCE0
 
-enum { V_START, V_WEB, V_RESULTS, V_IMAGES, V_VIDEOS, V_WATCH, V_MESSAGE };
+enum { V_START, V_WEB, V_RESULTS, V_IMAGES, V_VIDEOS, V_WATCH, V_MESSAGE, V_FIREFOX };
 enum { T_ALL, T_IMAGES, T_VIDEOS };
 enum { H_LINK = 1, H_INPUT, H_SUBMIT, H_ITEM, H_QUICK };
 
@@ -702,6 +715,79 @@ static void do_load(void) {
     shell_request_frame();
 }
 
+/* ---- Firefox ---------------------------------------------------------------------------------- */
+static struct {
+    int      quick;                     /* the user asked for the pages below instead       */
+    int      w, h;                      /* its screen: the app's area                        */
+    int      x, y;                      /* where that is                                     */
+    int      shown;                     /* a picture has been drawn                          */
+    uint64_t esc_at;
+    uint32_t vmstate;
+} F;
+
+static int fx_remote(void) { return engine_enabled(); }
+static int fx_installed(void) {
+    if (!vm_supported() || store_open(0) != 0) return 0;
+    const store_entry_t *k = store_find("fx/Image"), *r = store_find("fx/root.sqfs");
+    return k && r && (k->flags & STORE_DONE) && (r->flags & STORE_DONE);
+}
+/* On a Mini that started at EL2 the Browser is Firefox, downloaded first if it
+ * isn't on the card yet. */
+static int fx_on(void) { return !F.quick && (fx_remote() || vm_supported()); }
+
+static void fx_start(void) {
+    if (fx_remote()) { engine_start(F.w, F.h); return; }
+    if (!fx_installed()) return;
+    int st = vm_state();
+    if (st == VM_LOADING || st == VM_RUNNING) return;
+    vm_config c = { "fx/Image", "fx/root.sqfs", "fx/home.img", 256ull << 20, 3, F.w, F.h, 0 };
+    vm_start(&c);
+}
+
+/* 1 once Firefox shows something, with its picture's size. */
+static int fx_picture(int *w, int *h) {
+    if (!fx_remote()) return vgpu_size(w, h);
+    const surface_t *s = engine_picture();
+    if (!s || !s->px) return 0;
+    *w = s->w; *h = s->h;
+    return 1;
+}
+
+static void fx_status(char *out, int cap) {
+    if (fx_remote()) { snprintf(out, (size_t)cap, "%s", engine_message()); return; }
+    int st = vm_state();
+    if (st == VM_FAILED) snprintf(out, (size_t)cap, "%s", vm_message());
+    else if (st == VM_RUNNING) snprintf(out, (size_t)cap, "Starting Firefox\x85");
+    else snprintf(out, (size_t)cap, "Starting Firefox's machine\x85");
+}
+
+/* The picture's changed part into the back buffer: 1 with the rectangle
+ * (Firefox's coordinates) narrowed to what really changed. */
+static int fx_blit(int *x, int *y, int *w, int *h) {
+    if (F.x + F.w > scr_w) F.w = scr_w - F.x;           /* the screen got smaller (Settings, HDMI) */
+    if (F.y + F.h > scr_h) F.h = scr_h - F.y;
+    if (*x + *w > F.w) *w = F.w - *x;
+    if (*y + *h > F.h) *h = F.h - *y;
+    if (*w <= 0 || *h <= 0) return 0;
+    if (!fx_remote()) return vgpu_copy(g_back.px + F.y * g_back.stride + F.x, g_back.stride, x, y, w, h);
+    const surface_t *s = engine_picture();
+    if (!s || !s->px) return 0;
+    if (*x + *w > s->w) *w = s->w - *x;
+    if (*y + *h > s->h) *h = s->h - *y;
+    for (int j = 0; j < *h; j++)
+        memcpy(g_back.px + (F.y + *y + j) * g_back.stride + F.x + *x, s->px + (*y + j) * s->stride + *x, (size_t)*w * 4);
+    return *w > 0 && *h > 0;
+}
+
+void browser_open_url(const char *url) {
+    shell_open(&app_browser);
+    if (fx_on() && fx_remote()) { engine_go(url); return; }
+    if (!fx_on()) open_url(url, 1);
+}
+
+/* F5 is Firefox's (reload), not the Settings shortcut, while Firefox is up. */
+int browser_wants_key(int key) { return B.view == V_FIREFOX && key == KEY_F5; }
+
 /* ---- drawing ------------------------------------------------------------------------------- */
 static int wrap_lines(const char *s, int face, int px, int w, int max, int draw_x, int draw_y, int lh, uint32_t col) {
     int lines = 0, len = (int)strlen(s);
@@ -968,9 +1054,53 @@ static void draw_picture(int x, int y, int w, int h) {
     font_draw_fit(FONT_REGULAR, S(11), x + S(20), y + h - S(22), l, w - S(40), 0xD0D0D8, 255);
 }
 
+static void draw_firefox(int x, int y, int w, int h) {
+    F.x = x; F.y = y;
+    int pw, ph;
+    if (fx_picture(&pw, &ph)) {
+        if (pw < w || ph < h) gfx_fill(x, y, w, h, 0xF9F9FB);
+        int bx = 0, by = 0;
+        fx_blit(&bx, &by, &pw, &ph);
+        F.shown = 1;
+        return;
+    }
+    F.shown = 0;
+    gfx_fill(x, y, w, h, th.bg);
+    if (!fx_remote() && !fx_installed()) {                        /* not on the card yet */
+        uint64_t got = 0, total = 0; uint32_t rate = 0;
+        int st = fxget_state(&got, &total, &rate);
+        int cx = x + w / 2, cy = y + h / 2;
+        text_c(cx, cy - S(60), "Firefox for BoltOS Mini", FONT_SEMIBOLD, S(22), th.text);
+        text_c(cx, cy - S(30), "Real Firefox, running on this Pi: pages and video exactly as Firefox on Windows shows them.", FONT_REGULAR, S(13), th.sub);
+        char m[200];
+        if (st == FX_DOWNLOADING || st == FX_CHECKING || st == FX_LIST) {
+            int bw = w / 2, bx = cx - bw / 2;
+            gfx_rrect(bx, cy, bw, S(6), S(3), th.line, 255);
+            if (total) gfx_rrect(bx, cy, (int)((long)bw * (long)(got >> 10) / (long)(total >> 10 ? total >> 10 : 1)), S(6), S(3), th.accent, 255);
+            if (st == FX_LIST) snprintf(m, sizeof m, "Asking boltos.dev\x85");
+            else if (st == FX_CHECKING) snprintf(m, sizeof m, "Checking what came down\x85");
+            else snprintf(m, sizeof m, "%lu of %lu MB  \xB7  %lu KB/s", (unsigned long)(got >> 20), (unsigned long)(total >> 20), (unsigned long)(rate >> 10));
+            text_c(cx, cy + S(28), m, FONT_REGULAR, S(12), th.sub);
+            text_c(cx, y + h - S(22), "It keeps downloading while you use other apps  \xB7  Q opens the quick browser", FONT_REGULAR, S(11), th.faint);
+        } else {
+            if (st == FX_FAILED) text_c(cx, cy + S(4), fxget_error(), FONT_REGULAR, S(13), 0xD93025);
+            text_c(cx, cy + S(34), "Return downloads it (about 310 MB, onto the SD card)", FONT_MEDIUM, S(14), th.text);
+            text_c(cx, y + h - S(22), "Q opens the quick browser instead", FONT_REGULAR, S(11), th.faint);
+        }
+        return;
+    }
+    char m[200]; fx_status(m, sizeof m);
+    int failed = fx_remote() ? engine_state() == ENG_ERROR : vm_state() == VM_FAILED;
+    text_c(x + w / 2, y + h / 2 - S(20), "Firefox", FONT_SEMIBOLD, S(22), th.text);
+    font_draw_fit(FONT_REGULAR, S(13), x + w / 2 - font_width(FONT_REGULAR, S(13), m, -1) / 2, y + h / 2 + S(12), m, w - S(40), th.sub, 255);
+    text_c(x + w / 2, y + h - S(22), failed ? "Return tries again  \xB7  Q opens the quick browser" :
+           "The first start reads Firefox from the card  \xB7  Q opens the quick browser meanwhile", FONT_REGULAR, S(11), th.faint);
+}
+
 static void b_draw(int x, int y, int w, int h) {
     nhits = 0;
     int pad = S(16);
+    if (B.view == V_FIREFOX) { draw_firefox(x, y, w, h); return; }
     if (B.view == V_START) {
         draw_start(x, y, w, h);
     } else {
@@ -1024,8 +1154,32 @@ static void b_draw(int x, int y, int w, int h) {
 }
 
 /* ---- work between frames ------------------------------------------------------------------- */
+static int fx_tick(void) {
+    int r = 0, dx, dy, dw, dh;
+    if (fx_remote()) {
+        r = engine_tick(&dx, &dy, &dw, &dh);
+        if (r == 2 && F.shown) { if (fx_blit(&dx, &dy, &dw, &dh)) screen_present(F.x + dx, F.y + dy, dw, dh); return 0; }
+        return r || (!F.shown && fx_picture(&dw, &dh));
+    }
+    if (!fx_installed()) {                                         /* downloading: the bar moves */
+        static uint64_t at;
+        int st = fxget_state(0, 0, 0);
+        if (st == FX_READY) { fx_start(); return 1; }
+        if ((st == FX_DOWNLOADING || st == FX_CHECKING) && now_ms() - at > 500) { at = now_ms(); return 1; }
+        return 0;
+    }
+    uint32_t st = (uint32_t)vm_state();
+    if (st != F.vmstate) { F.vmstate = st; r = 1; }
+    if (vgpu_damage(&dx, &dy, &dw, &dh)) {
+        if (!F.shown || r) return 1;
+        if (fx_blit(&dx, &dy, &dw, &dh)) screen_present(F.x + dx, F.y + dy, dw, dh);
+    }
+    return r || (!F.shown && fx_picture(&dw, &dh));
+}
+
 static int b_tick(void) {
     static uint64_t blink;
+    if (B.view == V_FIREFOX) return fx_tick();
     if (B.pending) {
         if (!B.drawn_loading) { B.drawn_loading = 1; return 1; }
         B.pending = 0;
@@ -1038,7 +1192,7 @@ static int b_tick(void) {
             /* Only the picture changed: copy it into place and show just that, not a whole frame. */
             const surface_t *f = player_frame();
             char msg[8]; int st = player_status(msg, sizeof msg);
-            if (f && f->w == vid_w && f->h == vid_h && st == 2) {
+            if (f && f->w == vid_w && f->h == vid_h && st == 2 && vid_x + vid_w <= scr_w && vid_y + vid_h <= scr_h) {
                 for (int j = 0; j < vid_h; j++)
                     memcpy(g_back.px + (vid_y + j) * g_back.stride + vid_x, f->px + j * f->stride, (size_t)vid_w * 4);
                 screen_present(vid_x, vid_y, vid_w, vid_h);
@@ -1208,6 +1362,15 @@ static void start_editing(int clear) {
 }
 
 static void b_key(const input_ev_t *e) {
+    if (B.view == V_FIREFOX) {
+        if (!F.shown) {
+            if (e->key == KEY_CHAR && (e->ch == 'q' || e->ch == 'Q')) { F.quick = 1; B.view = V_START; start_editing(1); }
+            else if (e->key == KEY_ENTER) { if (!fx_remote() && !fx_installed()) fxget_start(); else fx_start(); }
+            return;
+        }
+        if (fx_remote()) engine_key(e->key, e->ch, e->mods); else vinput_key(e->key, e->ch, e->mods);
+        return;
+    }
     if (B.pending) return;
     if (e->key == KEY_CHAR && (e->mods & MOD_CTRL) && (e->ch == 'l' || e->ch == 'L')) { start_editing(0); return; }
     if (e->key == KEY_CHAR && (e->mods & MOD_CTRL) && (e->ch == 'r' || e->ch == 'R')) {
@@ -1255,6 +1418,12 @@ static void b_key(const input_ev_t *e) {
 
 static void b_pointer(const input_ev_t *e, int x, int y, int w, int h) {
     static int last_btn;
+    if (B.view == V_FIREFOX) {
+        if (!F.shown) return;
+        if (fx_remote()) engine_pointer(e->x - x, e->y - y, e->buttons, e->wheel);
+        else vinput_pointer(e->x - x, e->y - y, e->buttons, e->wheel);
+        return;
+    }
     int click = (e->buttons & 1) && !(last_btn & 1);
     last_btn = e->buttons;
     if (e->wheel) { scroll_by(-e->wheel * S(60)); return; }
@@ -1297,6 +1466,14 @@ static void b_pointer(const input_ev_t *e, int x, int y, int w, int h) {
 /* Esc: leave the address being typed, a text field, a picture -- else the shell
  * takes the browser home (shell.c asks this first, as it does the Terminal). */
 int browser_esc(void) {
+    if (B.view == V_FIREFOX) {
+        if (!F.shown) return 0;
+        uint64_t now = now_ms();
+        if (now - F.esc_at < 600) { F.esc_at = 0; return 0; }    /* twice: Home */
+        F.esc_at = now;
+        if (fx_remote()) engine_key(KEY_ESC, 0, 0); else vinput_key(KEY_ESC, 0, 0);
+        return 1;
+    }
     if (B.editing && B.view != V_START) { B.editing = 0; snprintf(B.addr, sizeof B.addr, "%s", B.query[0] ? B.query : B.url); return 1; }
     if (B.field) { B.field = 0; return 1; }
     if (B.view == V_IMAGES && B.picked >= 0) { B.picked = -1; return 1; }
@@ -1311,6 +1488,8 @@ static void b_open(void) {
         start_editing(1);
     }
     if (B.view == V_START) B.editing = 1;
+    F.w = scr_w; F.h = scr_h - S(28) - 1;               /* the app's area (shell.c) */
+    if (fx_on()) { B.view = V_FIREFOX; B.editing = 0; fx_start(); }
 }
 
 const app_t app_browser = { "Browser", 0x3478F6, G_GLOBE, b_open, b_key, b_pointer, b_draw, b_tick, 0 };

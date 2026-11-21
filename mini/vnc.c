@@ -254,11 +254,23 @@ static void send_server_init(vclient_t *v) {
 static int vmods;
 
 static void key_event(int down, uint32_t sym) {
+    int code = input_keysym_to_evdev(sym);                 /* a Linux program's, with the key-ups */
+    if (code) input_raw(1, code, down);
     int bit = 0;
     if (sym == 0xFFE1 || sym == 0xFFE2) bit = MOD_SHIFT;
     else if (sym == 0xFFE3 || sym == 0xFFE4) bit = MOD_CTRL;
     else if (sym == 0xFFE9 || sym == 0xFFEA) bit = MOD_ALT;
     else if (sym == 0xFFE7 || sym == 0xFFE8 || sym == 0xFFEB || sym == 0xFFEC) bit = MOD_SUPER;
+    /* Super alone, pressed and let go, is Home as on a USB keyboard -- here
+     * only while an app has the whole screen (a game), where Esc is its own. */
+    static int super_alone;
+    if (bit == MOD_SUPER && down) super_alone = 1;
+    else if (down) super_alone = 0;
+    if (bit == MOD_SUPER && !down && super_alone) {
+        super_alone = 0;
+        int shell_is_fullscreen(void);
+        if (shell_is_fullscreen()) input_key(KEY_SUPER, 0, 0, SRC_VNC);
+    }
     if (bit) { if (down) vmods |= bit; else vmods &= ~bit; return; }
     if (!down) return;
     int ch, k = input_from_keysym(sym, &ch);
@@ -266,12 +278,15 @@ static void key_event(int down, uint32_t sym) {
 }
 
 static void pointer_event(int mask, int x, int y) {
-    static int last;
+    static int last, lx = -1, ly = -1;
     int b = (mask & 1) | ((mask & 4) ? 2 : 0) | ((mask & 2) ? 4 : 0);
     int wheel = 0;
     if ((mask & 8) && !(last & 8)) wheel = 1;
     if ((mask & 16) && !(last & 16)) wheel = -1;
     last = mask;
+    /* A viewer says where, not how far: the difference, which stops at the window's edge. */
+    if (lx >= 0) input_raw_mouse(x - lx, y - ly, wheel, b);
+    lx = x; ly = y;
     input_pointer(x, y, b, wheel, SRC_VNC);
 }
 

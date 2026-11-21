@@ -17,6 +17,13 @@
  *  with one transfer in flight, checked every loop. Hubs are polled for
  *  port changes four times a second rather than through their status pipe.
  *
+ *  Touchscreens too: the 5" and 7" HDMI LCDs sold for the Raspberry Pi send
+ *  touch over their own USB cable as a HID digitizer -- the Windows
+ *  multi-touch kind, no boot protocol -- so an interface that isn't a boot
+ *  keyboard or mouse has its report descriptor read, and one with a touch
+ *  screen (or pen) collection is driven: its first finger goes to
+ *  input_touch(), which makes taps, scrolls and drags of it.
+ *
  *  Under QEMU the same code drives `-device pci-ohci` (run-qemu.sh --ohci),
  *  with QEMU's own hub, keyboard and mouse behind it.
  * ===========================================================================*/
@@ -87,6 +94,7 @@ typedef struct dev {
     int used, hc, addr, low, mps0;
     int parent, port;           /* -1 for a root port                          */
     int is_hub, hub_ports;
+    int has_touch;              /* a touchscreen: its mouse interface is the same finger */
     uint64_t hub_next_poll;
     int hub_child[8];
     uint16_t vid, pid;
@@ -95,7 +103,9 @@ typedef struct dev {
 } dev_t;
 
 typedef struct {
-    int used, dev, ep, mps, kind;   /* kind 1 keyboard, 2 mouse                 */
+    int used, dev, ep, mps, kind;   /* kind 1 keyboard, 2 mouse, 3 touchscreen,
+                                       4 a touchscreen's mouse (read, not used) */
+    int touch;                      /* kind 3: its touches[] slot               */
     ed_t *ed;
     td_t *td[2]; int cur;           /* td[cur] in flight, td[cur^1] the dummy    */
     uint8_t *buf;
@@ -110,14 +120,34 @@ typedef struct {
     int repeat_key, repeat_ch, repeat_mods; uint64_t repeat_at;
 } intr_t;
 
+/* A touchscreen's report layout, from its HID report descriptor, and where its
+ * first finger is. A field with size 0 isn't in the report.                   */
+typedef struct { int off, size, sgn, min, max; } hfield_t;
+#define TOUCH_SLOTS 10
+typedef struct {
+    int used, ids;                  /* ids: its reports start with a report ID   */
+    int rid, len;                   /* the touch report: ID, bytes with the ID   */
+    int nslot;                      /* fingers per report                        */
+    struct { hfield_t tip, range, cid, x, y; } slot[TOUCH_SLOTS];
+    hfield_t count;                 /* contact count: how many slots are real    */
+    int mrid, mlen;                 /* its mouse-style report (single-touch mode) */
+    hfield_t mbtn, mx, my;
+    uint8_t buf[256]; int have, want;   /* a report longer than one packet       */
+    int expect, got;                /* contacts the frame promised, seen so far   */
+    int down, cid;                  /* the finger being followed                  */
+    uint64_t last;
+} touch_t;
+static touch_t touches[2];
+
 static hc_t hcs[MAX_HC];
 static int nhc;
 static dev_t devs[MAX_DEV];
 static intr_t ints[MAX_INT];
 static int next_addr = 1;
-static int n_kbd, n_mouse;
+static int n_kbd, n_mouse, n_touch;
 static int mouse_x = 200, mouse_y = 200;
 static uint8_t dbg_desc[256]; static int dbg_desc_n;
+static uint8_t dbg_tdesc[512]; static int dbg_tdesc_n;
 static uint8_t dbg_kdesc[256]; static int dbg_kdesc_n;
 static struct { uint8_t kind, n, b[16]; } dbg_rep[32];     /* the last HID reports, for /debug */
 static int dbg_rep_i;
@@ -133,6 +163,7 @@ static void dbg_report(int kind, const uint8_t *r, int n) {
 
 int usbh_keyboards(void) { return n_kbd; }
 int usbh_mice(void) { return n_mouse; }
+int usbh_touchscreens(void) { return n_touch; }
 
 static inline uint32_t hr(hc_t *h, int r) { return r32(h->base + (uintptr_t)r); }
 static inline void hw(hc_t *h, int r, uint32_t v) { w32(h->base + (uintptr_t)r, v); }
@@ -238,7 +269,14 @@ static void intr_remove_dev(int dslot) {
         it->ed->ctrl |= 1u << 14;                                  /* skip         */
         for (ed_t *p = h->int_head; p; p = p->next ? (ed_t *)(uintptr_t)p->next : 0)
             if (p->next == dma_addr(it->ed)) { p->next = it->ed->next; break; }
-        if (it->kind == 1) n_kbd--; else n_mouse--;
+        if (it->kind == 1) n_kbd--;
+        else if (it->kind == 2) n_mouse--;
+        else if (it->kind == 3) {
+            touch_t *t = &touches[it->touch];
+            if (t->down) input_touch(0, 0, 0, SRC_USB);            /* unplugged mid-touch: let go */
+            t->used = 0;
+            n_touch--;
+        }
         it->used = 0;
     }
 }
@@ -262,6 +300,7 @@ static void kbd_report(intr_t *it, const uint8_t *r, int n) {
     if (n < 3) return;
     int mods = hid_mods(r[0]);
     if (r[2] == 1) return;                                         /* rollover error */
+    input_raw_keys(it->last[0], it->last + 2, 6, r[0], r + 2, n - 2 < 6 ? n - 2 : 6);   /* a Linux program's (lx_dev.c) */
     int pressed_any = 0;
     for (int i = 2; i < 8 && i < n; i++) {
         uint8_t k = r[i];
@@ -395,6 +434,7 @@ static void mouse_report(intr_t *it, const uint8_t *r, int n) {
         if (n < 3) return;
         dx = (int8_t)r[1]; dy = (int8_t)r[2]; wheel = n > 3 ? (int8_t)r[3] : 0; btn = r[0] & 7;
     }
+    input_raw_mouse(dx, dy, wheel, btn);                           /* how far, before the edge stops it */
     mouse_x += dx; mouse_y += dy;
     if (mouse_x < 0) mouse_x = 0;
     if (mouse_y < 0) mouse_y = 0;
@@ -405,12 +445,214 @@ static void mouse_report(intr_t *it, const uint8_t *r, int n) {
 
 /* A pointer that moves by (dx, dy): Bluetooth mice share the one USB ones move (bt.c). */
 void hid_pointer_move(int dx, int dy, int btn, int wheel) {
+    input_raw_mouse(dx, dy, wheel, btn & 7);
     mouse_x += dx; mouse_y += dy;
     if (mouse_x < 0) mouse_x = 0;
     if (mouse_y < 0) mouse_y = 0;
     if (mouse_x >= scr_w) mouse_x = scr_w - 1;
     if (mouse_y >= scr_h) mouse_y = scr_h - 1;
     input_pointer(mouse_x, mouse_y, btn & 7, wheel > 0 ? 1 : wheel < 0 ? -1 : 0, SRC_USB);
+}
+
+/* ---- touchscreens ---------------------------------------------------------------------------
+ *  The descriptor is walked as Linux's hid-multitouch reads it: inside a
+ *  Touch Screen, Digitizer or Pen application, each Finger (or Stylus)
+ *  collection is a slot with Tip Switch, In Range, Contact ID, X and Y;
+ *  Contact Count says how many slots of a report are real. Bit positions are
+ *  counted per report ID. A Mouse application with absolute X and Y on the
+ *  same device is its single-touch mode, read as the same finger.          */
+#define U_X        0x010030u
+#define U_Y        0x010031u
+#define U_BTN1     0x090001u
+#define U_TIP      0x0D0042u
+#define U_RANGE    0x0D0032u
+#define U_CID      0x0D0051u
+#define U_COUNT    0x0D0054u
+
+static int hid_parse_touch(const uint8_t *d, int len, touch_t *t) {
+    static uint16_t bits[256];                                     /* input bits so far, per report ID */
+    struct { int page, lmin, lmax, size, count, rid; } g = { 0 }, stack[4];
+    int sp = 0, depth = 0, slot = -1;
+    uint32_t us[16], umin = 0, umax = 0, coll[8];
+    int nus = 0, ranged = 0;
+    memset(bits, 0, sizeof bits);
+    memset(t, 0, sizeof *t);
+    t->rid = t->mrid = -1;
+    for (int i = 0; i < len; ) {
+        uint8_t b = d[i];
+        if (b == 0xFE) { i += 3 + (i + 1 < len ? d[i + 1] : 0); continue; }   /* long item */
+        int sz = b & 3; if (sz == 3) sz = 4;
+        int type = (b >> 2) & 3, tag = b >> 4;
+        uint32_t v = 0;
+        for (int k = 0; k < sz && i + 1 + k < len; k++) v |= (uint32_t)d[i + 1 + k] << (8 * k);
+        int sv = sz == 1 ? (int8_t)v : sz == 2 ? (int16_t)v : (int)v;
+        i += 1 + sz;
+        if (type == 1) {                                           /* global */
+            switch (tag) {
+            case 0: g.page = (int)v; break;
+            case 1: g.lmin = sv; break;
+            case 2: g.lmax = (g.lmin >= 0 && sv < g.lmin) ? (int)v : sv; break;   /* 0..65535 written short */
+            case 7: g.size = (int)v; break;
+            case 8: g.rid = (int)(v & 0xFF); t->ids = 1; break;
+            case 9: g.count = (int)v; break;
+            case 10: if (sp < 4) stack[sp++] = g; break;           /* push */
+            case 11: if (sp > 0) g = stack[--sp]; break;           /* pop  */
+            }
+        } else if (type == 2) {                                    /* local */
+            uint32_t u = sz == 4 ? v : (uint32_t)g.page << 16 | v;
+            if (tag == 0 && nus < 16) us[nus++] = u;
+            else if (tag == 1) { umin = u; ranged = 1; }
+            else if (tag == 2) umax = u;
+        } else if (type == 0) {                                    /* main */
+            if (tag == 0xA) {                                      /* Collection */
+                uint32_t u = nus ? us[0] : ranged ? umin : 0;
+                if (depth < 8) coll[depth] = u;
+                depth++;
+                if ((u == 0x0D0022 || u == 0x0D0020) && depth > 1 && slot < 0 && t->nslot < TOUCH_SLOTS)
+                    slot = t->nslot++;                             /* Finger, Stylus */
+            } else if (tag == 0xC) {                               /* End Collection */
+                if (depth > 0) depth--;
+                if (depth < 8 && (coll[depth] == 0x0D0022 || coll[depth] == 0x0D0020)) slot = -1;
+            } else if (tag == 8) {                                 /* Input */
+                uint32_t app = depth ? coll[0] : 0;
+                int dig = app == 0x0D0004 || app == 0x0D0001 || app == 0x0D0002;
+                int ptr = app == 0x010002 || app == 0x010001;
+                int data = !(v & 1), var = v & 2, absol = !(v & 4);
+                for (int f = 0; data && var && f < g.count && g.size > 0 && g.size <= 24; f++) {
+                    uint32_t u = ranged ? (umin + (uint32_t)f <= umax ? umin + (uint32_t)f : umax)
+                                        : f < nus ? us[f] : nus ? us[nus - 1] : 0;
+                    hfield_t fl = { bits[g.rid] + f * g.size, g.size, g.lmin < 0, g.lmin, g.lmax };
+                    if (dig && (u == U_TIP || u == U_RANGE || u == U_CID || u == U_COUNT ||
+                                ((u == U_X || u == U_Y) && absol))) {
+                        if (t->rid < 0) t->rid = g.rid;
+                        if (g.rid != t->rid) continue;             /* a second digitizer (a pen): not followed */
+                        if (u == U_COUNT) { if (!t->count.size) t->count = fl; continue; }
+                        int s = slot;
+                        if (s < 0) { if (t->nslot > 1) continue; s = 0; if (!t->nslot) t->nslot = 1; }
+                        hfield_t *dst = u == U_TIP ? &t->slot[s].tip : u == U_RANGE ? &t->slot[s].range :
+                                        u == U_CID ? &t->slot[s].cid : u == U_X ? &t->slot[s].x : &t->slot[s].y;
+                        if (!dst->size) *dst = fl;
+                    } else if (ptr && (u == U_BTN1 || ((u == U_X || u == U_Y) && absol))) {
+                        if (t->mrid < 0) t->mrid = g.rid;
+                        if (g.rid != t->mrid) continue;
+                        hfield_t *dst = u == U_BTN1 ? &t->mbtn : u == U_X ? &t->mx : &t->my;
+                        if (!dst->size) *dst = fl;
+                    }
+                }
+                bits[g.rid] = (uint16_t)(bits[g.rid] + g.size * g.count);
+            }
+            nus = 0; ranged = 0; umin = umax = 0;                  /* locals end at a main item */
+        }
+    }
+    /* Keep the slots that can say where and whether. */
+    int k = 0;
+    for (int s = 0; s < t->nslot; s++) {
+        if (!t->slot[s].x.size || !t->slot[s].y.size || (!t->slot[s].tip.size && !t->slot[s].range.size)) continue;
+        if (t->slot[s].x.max <= t->slot[s].x.min || t->slot[s].y.max <= t->slot[s].y.min) continue;
+        t->slot[k++] = t->slot[s];
+    }
+    t->nslot = k;
+    if (!k) t->rid = -1;
+    if (t->mrid >= 0 && !(t->mbtn.size && t->mx.size && t->my.size && t->mx.max > t->mx.min && t->my.max > t->my.min))
+        t->mrid = -1;
+    if (t->rid >= 0) t->len = (bits[t->rid] + 7) / 8 + t->ids;
+    if (t->mrid >= 0) t->mlen = (bits[t->mrid] + 7) / 8 + t->ids;
+    if (!t->ids && t->rid >= 0) t->mrid = -1;                     /* one report, and it's the touch one */
+    return t->rid >= 0;                                            /* a mouse alone is a mouse, not this */
+}
+
+static int hval(const uint8_t *r, int n, const hfield_t *f) { return hid_bits(r, n, f->off, f->size, f->sgn); }
+
+/* A coordinate onto the screen, 0 .. span-1. */
+static int touch_scale(int v, const hfield_t *f, int span) {
+    long w = (long)f->max - f->min;
+    long p = w > 0 ? ((long)v - f->min) * (span - 1) / w : 0;
+    return p < 0 ? 0 : p >= span ? span - 1 : (int)p;
+}
+
+static void touch_report(intr_t *it, const uint8_t *r, int n) {
+    touch_t *t = &touches[it->touch];
+    /* A report longer than the endpoint's packets arrives in pieces: the
+     * first starts with the report ID and fills a packet; the rest follow. */
+    if (t->have) {
+        int k = t->want - t->have;
+        if (k > n) k = n;
+        memcpy(t->buf + t->have, r, (size_t)k);
+        t->have += k;
+        if (t->have < t->want) { if (n < it->mps) t->have = 0; return; }   /* more to come, or cut short */
+        r = t->buf; n = t->have; t->have = 0;
+    } else if (n == it->mps && n >= 1) {
+        int want = !t->ids ? t->len : r[0] == t->rid ? t->len : r[0] == t->mrid ? t->mlen : 0;
+        if (want > n && want <= (int)sizeof t->buf) {
+            memcpy(t->buf, r, (size_t)n); t->have = n; t->want = want;
+            return;
+        }
+    }
+    dbg_report(3, r, n);
+    if (n < 1) return;
+    const uint8_t *p = r + t->ids;
+    int pn = n - t->ids;
+    int is_touch = t->rid >= 0 && (!t->ids || r[0] == t->rid);
+    int is_mouse = !is_touch && t->mrid >= 0 && r[0] == t->mrid;
+    t->last = now_ms();
+    if (is_mouse) {
+        int down = hval(p, pn, &t->mbtn) & 1;
+        if (!down && !t->down) return;
+        t->down = down;
+        input_touch(touch_scale(hval(p, pn, &t->mx), &t->mx, scr_w), touch_scale(hval(p, pn, &t->my), &t->my, scr_h),
+                    down, SRC_USB);
+        return;
+    }
+    if (!is_touch) return;
+    /* Which slots are real: Contact Count's worth. In hybrid mode a frame
+     * with more fingers than slots goes on in reports whose count is 0. */
+    int nvalid = t->nslot;
+    if (t->count.size) {
+        int c = hval(p, pn, &t->count);
+        if (c > 0) { t->expect = c; t->got = 0; }
+        else if (t->got >= t->expect) t->got = 0;                 /* a new frame with the old count */
+        int left = t->expect - t->got;
+        if (left < nvalid) nvalid = left < 0 ? 0 : left;
+        t->got += nvalid;
+    }
+    for (int i = 0; i < nvalid; i++) {
+        const hfield_t *tip_f = t->slot[i].tip.size ? &t->slot[i].tip : &t->slot[i].range;
+        int tip = hval(p, pn, tip_f) & 1;
+        int inr = t->slot[i].range.size ? hval(p, pn, &t->slot[i].range) & 1 : 1;
+        int cid = t->slot[i].cid.size ? hval(p, pn, &t->slot[i].cid) : i;
+        if (!tip && !inr && !t->count.size) continue;             /* an empty slot */
+        if (t->down ? cid != t->cid : !tip) continue;             /* another finger, or nothing yet */
+        t->down = tip; t->cid = cid;
+        input_touch(touch_scale(hval(p, pn, &t->slot[i].x), &t->slot[i].x, scr_w),
+                    touch_scale(hval(p, pn, &t->slot[i].y), &t->slot[i].y, scr_h), tip, SRC_USB);
+        break;
+    }
+}
+
+/* Every loop: a finger held still, and one whose lift never came (a report
+ * lost) -- after 1.5 s of nothing, it has gone. */
+static void touch_tick(intr_t *it) {
+    touch_t *t = &touches[it->touch];
+    if (!t->down) return;
+    if (now_ms() - t->last > 1500) { t->down = 0; input_touch(0, 0, 0, SRC_USB); return; }
+    input_touch_tick();
+}
+
+/* A free touches[] slot holding the layout of descriptor d, or -1. */
+static int touch_new(const uint8_t *d, int len) {
+    for (int i = 0; i < (int)(sizeof touches / sizeof touches[0]); i++) {
+        if (touches[i].used) continue;
+        if (!hid_parse_touch(d, len, &touches[i])) return -1;
+        touches[i].used = 1;
+        return i;
+    }
+    return -1;
+}
+
+const char *usbh_touch_name(void) {
+    for (int i = 0; i < MAX_INT; i++)
+        if (ints[i].used && ints[i].kind == 3) return devs[ints[i].dev].name;
+    return 0;
 }
 
 static void intr_poll(void) {
@@ -424,12 +666,14 @@ static void intr_poll(void) {
             if (td->cbp) n = (int)(td->cbp - dma_addr(it->buf));
             if (cc == 0 || cc == 9) {
                 if (it->kind == 1) kbd_report(it, it->buf, n);
-                else mouse_report(it, it->buf, n);
+                else if (it->kind == 2) mouse_report(it, it->buf, n);
+                else if (it->kind == 3) touch_report(it, it->buf, n);
             }
             if (it->ed->headp & 1) it->ed->headp &= ~1u;           /* clear a halt  */
             it->cur ^= 1;
             intr_arm(it);
         }
+        if (it->kind == 3) touch_tick(it);
         if (it->kind == 1 && it->repeat_key && now_ms() >= it->repeat_at) {
             input_key(it->repeat_key, it->repeat_ch, it->repeat_mods, SRC_USB);
             it->repeat_at = now_ms() + 33;
@@ -490,10 +734,37 @@ static int enumerate(int hc, int low, int parent, int port) {
             hid_kind = 0; hid_len = 0;
             if (cur_cls == 3 && (cur_proto == 1 || cur_proto == 2)) {
                 hid_kind = cur_proto;
+            } else if (cur_cls == 3 && cur_proto == 0) {
+                hid_kind = 3;                                      /* a touchscreen? its descriptor says */
             }
             if (cur_cls == 9) d->is_hub = 1;
         } else if (x[1] == 0x21 && x[0] >= 9) {
             hid_len = x[7] | x[8] << 8;
+        } else if (x[1] == 5 && hid_kind == 3 && (x[2] & 0x80) && (x[3] & 3) == 3) {
+            /* Not a boot keyboard or mouse: driven only if it's a touchscreen.
+             * Ten-finger descriptors run to 700 bytes or more. */
+            static uint8_t td[1024];
+            int mps = x[4] | (x[5] & 7) << 8;
+            int got = hid_len > 0 ? req(d, 0x81, 6, 0x2200, (uint16_t)cur_if, td, hid_len > 1024 ? 1024 : hid_len) : -1;
+            int ti = got > 0 ? touch_new(td, got) : -1;
+            int ii = ti >= 0 ? intr_add(d, x[2] & 0x0F, mps, 3) : -1;
+            if (ti >= 0 && ii < 0) touches[ti].used = 0;
+            if (ii >= 0) {
+                touch_t *t = &touches[ti];
+                ints[ii].touch = ti;
+                dbg_tdesc_n = got > (int)sizeof dbg_tdesc ? (int)sizeof dbg_tdesc : got;
+                memcpy(dbg_tdesc, td, (size_t)dbg_tdesc_n);
+                req(d, 0x21, 0x0A, 0, (uint16_t)cur_if, 0, 0);                          /* SET_IDLE 0 */
+                n_touch++; drives = 1; d->has_touch = 1;
+                kprintf("[usb] %s: touchscreen on %s%s port %d: %d finger%s, x %d..%d, y %d..%d, report %d (%d bytes)%s%s\n",
+                        d->name, hcs[hc].name, parent >= 0 ? " hub" : "", port + 1, t->nslot, t->nslot == 1 ? "" : "s",
+                        t->slot[0].x.min, t->slot[0].x.max, t->slot[0].y.min, t->slot[0].y.max, t->rid, t->len,
+                        t->count.size ? ", contact count" : "", t->mrid >= 0 ? ", mouse mode too" : "");
+                shell_toast("Touchscreen connected", d->name);
+            } else if (got > 0) {
+                kprintf("[usb] %s: interface %d is HID but not a touchscreen (%d-byte descriptor)\n", d->name, cur_if, got);
+            }
+            hid_kind = 0;
         } else if (x[1] == 5 && hid_kind && (x[2] & 0x80) && (x[3] & 3) == 3) {
             int mps = x[4] | (x[5] & 7) << 8;
             int ii = intr_add(d, x[2] & 0x0F, mps, hid_kind);
@@ -525,6 +796,10 @@ static int enumerate(int hc, int low, int parent, int port) {
             hid_kind = 0;
         }
     }
+    /* A touchscreen that also has a boot-mouse interface reports the same
+     * finger twice: that one is kept quiet. */
+    for (int i = 0; d->has_touch && i < MAX_INT; i++)
+        if (ints[i].used && ints[i].dev == slot && ints[i].kind == 2) { ints[i].kind = 4; n_mouse--; }
     if (d->is_hub) {
         uint8_t hd[16];
         if (req(d, 0xA0, 6, 0x2900, 0, hd, 9) >= 3) {
@@ -709,11 +984,15 @@ int usbh_debug(char *out, int cap) {
     for (int i = 0; i < dbg_desc_n; i++) n += snprintf(out + n, (size_t)(cap - n), " %02x", dbg_desc[i]);
     n += snprintf(out + n, (size_t)(cap - n), "\nkbd desc (%d):", dbg_kdesc_n);
     for (int i = 0; i < dbg_kdesc_n; i++) n += snprintf(out + n, (size_t)(cap - n), " %02x", dbg_kdesc[i]);
+    if (dbg_tdesc_n) {
+        n += snprintf(out + n, (size_t)(cap - n), "\ntouch desc (%d):", dbg_tdesc_n);
+        for (int i = 0; i < dbg_tdesc_n && n < cap - 8; i++) n += snprintf(out + n, (size_t)(cap - n), " %02x", dbg_tdesc[i]);
+    }
     n += snprintf(out + n, (size_t)(cap - n), "\n");
-    for (int j = 0; j < 32; j++) {
+    for (int j = 0; j < 32 && n < cap - 80; j++) {
         int k = (dbg_rep_i + j) & 31;
         if (!dbg_rep[k].n) continue;
-        n += snprintf(out + n, (size_t)(cap - n), "%s (%d):", dbg_rep[k].kind == 1 ? "kbd" : "mouse", dbg_rep[k].n);
+        n += snprintf(out + n, (size_t)(cap - n), "%s (%d):", dbg_rep[k].kind == 1 ? "kbd" : dbg_rep[k].kind == 2 ? "mouse" : "touch", dbg_rep[k].n);
         for (int i = 0; i < dbg_rep[k].n; i++) n += snprintf(out + n, (size_t)(cap - n), " %02x", dbg_rep[k].b[i]);
         n += snprintf(out + n, (size_t)(cap - n), "\n");
     }
@@ -738,7 +1017,8 @@ int usbh_device_list(char *out, int cap) {
         if (!d->used) continue;
         const char *what = d->is_hub ? "hub" : "device";
         for (int k = 0; k < MAX_INT; k++)
-            if (ints[k].used && ints[k].dev == i) what = ints[k].kind == 1 ? "keyboard" : "mouse";
+            if (ints[k].used && ints[k].dev == i && ints[k].kind != 4)
+                what = ints[k].kind == 1 ? "keyboard" : ints[k].kind == 2 ? "mouse" : "touchscreen";
         n += snprintf(out + n, (size_t)(cap - n), "%s%-26s %04x:%04x  %s, %s\n",
                       d->parent >= 0 ? "  " : "", d->name, d->vid, d->pid, what,
                       d->low ? "low speed" : "full speed");

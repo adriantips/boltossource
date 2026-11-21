@@ -68,6 +68,11 @@ int  ui_hit(int px, int py, int x, int y, int w, int h);
 
 /* ---- the shell, for apps ---------------------------------------------------------- */
 void shell_go_home(void);
+/* The whole screen for the current app (a game): no bar, no arrow, Super is
+ * the only key the shell keeps, and the app's tick draws into g_back and
+ * calls screen_present itself. Going Home or to another app ends it. */
+void shell_fullscreen(int on);
+int  shell_is_fullscreen(void);
 void shell_open(const app_t *a);
 int  shell_add_app(const app_t *a);                 /* an installed package's   */
 void shell_remove_app(const app_t *a);

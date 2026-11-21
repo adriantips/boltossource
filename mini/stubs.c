@@ -40,6 +40,8 @@ __attribute__((weak)) int  usbh_device_list(char *out, int cap) { if (cap) out[0
 __attribute__((weak)) int  usbh_keyboards(void) { return 0; }
 __attribute__((weak)) int  usbh_debug(char *out, int cap) { if (cap) out[0] = 0; return 0; }
 __attribute__((weak)) int  usbh_mice(void) { return 0; }
+__attribute__((weak)) int  usbh_touchscreens(void) { return 0; }
+__attribute__((weak)) const char *usbh_touch_name(void) { return 0; }
 __attribute__((weak)) int  eth_init(void) { return -1; }
 __attribute__((weak)) void eth_poll(void) { }
 __attribute__((weak)) int  eth_link(void) { return 0; }

@@ -40,6 +40,8 @@ typedef struct {
 } udp_meta_t;
 typedef void (*udp_fn)(const udp_meta_t *m, const uint8_t *data, int len);
 int  udp_bind(uint16_t port, udp_fn fn);
+int  udp_bound(uint16_t port);
+void udp_unbind(uint16_t port);
 /* dst_mac NULL: resolve through ARP (dropped if not cached yet; ARP is
  * asked). dst_ip 0xFFFFFFFF goes to the broadcast MAC. */
 int  udp_send(netif_t *nif, uint32_t src_ip, uint32_t dst_ip, const uint8_t *dst_mac,
@@ -63,6 +65,11 @@ int    tcp_conn_count(void);
 tcb_t *tcp_connect(uint32_t ip, uint16_t port);   /* active open; NULL if no route */
 int    tcp_connecting(tcb_t *c);       /* SYN sent, no answer yet              */
 netif_t *net_route(uint32_t dst);      /* the link that reaches dst            */
+
+/* ---- NAT (for vdev.c's network card) ---------------------------------------- */
+extern int (*net_nat_in)(netif_t *nif, const uint8_t *ip, int len);   /* 1: taken */
+int      net_ip_out(uint8_t *frame, int iplen);   /* an IPv4 packet at frame + 14 */
+uint32_t net_ip_of(uint32_t dst);                 /* our address on the way to dst */
 
 /* ---- the client side (mini/inet.c): DHCP on Ethernet, DNS, the clock --------- */
 void     inet_init(void);

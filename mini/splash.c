@@ -2,8 +2,9 @@
  *  BoltOS Mini  -  mini/splash.c
  *
  *  The five seconds between the firmware handing over and the desktop:
- *  the BoltOS bolt over the wordmark on a dark field, a loading bar under
- *  it. Everything else in the kernel carries on bringing the machine up
+ *  the BoltOS Mini logo (assets/mini/splash-logo.png, built in by
+ *  build-mini.sh through mini/tools/mkimg.py) on a dark field, a loading
+ *  bar under it. Everything else in the kernel carries on bringing the machine up
  *  behind the curtain; any key or click skips the wait.
  *
  *  The bar is time, not work: boot itself is done in a few hundred
@@ -17,6 +18,7 @@
 #include "ui.h"                        /* S(), th (for the accent only)     */
 #include "string.h"
 #include "stdio.h"
+#include "kheap.h"
 #include "buildid.h"                   /* BOLT_VERSION                      */
 
 #define SPLASH_MS 5000
@@ -36,24 +38,34 @@ static int      splash_started, splash_skipped;
 
 void splash_start(void) { splash_t0 = now_ms(); splash_started = 1; splash_skipped = 0; }
 
+static uint32_t *logo_px;
+static int logo_w, logo_h;
+static void logo_free(void) { if (logo_px) { kfree(logo_px); logo_px = 0; } }
+
 int splash_active(void) {
-    if (!splash_started || splash_skipped) return 0;
-    return now_ms() - splash_t0 < SPLASH_MS;
+    if (!splash_started || splash_skipped || now_ms() - splash_t0 >= SPLASH_MS) { logo_free(); return 0; }
+    return 1;
 }
 
 void splash_dismiss(void) { splash_skipped = 1; }
 
-/* The bolt: two slashes meeting at the kink, drawn with the same thick
- * anti-aliased lines the glyphs use, over a faint halo of the accent. */
-static void draw_bolt(float cx, float cy, float s, uint32_t c) {
-    gfx_circle(cx, cy, s * 1.5f, c, 16);
-    float w = s * 0.30f;
-    /* upper slash: top-right tip down to the kink */
-    gfx_line(cx + s * 0.34f, cy - s * 0.92f, cx - s * 0.08f, cy + s * 0.06f, w, c, 255);
-    /* lower slash: kink down to the bottom-left tip */
-    gfx_line(cx + s * 0.20f, cy - s * 0.02f, cx - s * 0.34f, cy + s * 0.92f, w, c, 255);
-    /* bridge across the kink so the two meet cleanly */
-    gfx_line(cx - s * 0.08f, cy + s * 0.06f, cx + s * 0.20f, cy - s * 0.02f, w * 0.8f, c, 255);
+/* The logo: "BIMG", width, height, then premultiplied ARGB (mkimg.py).
+ * The linked-in bytes needn't be 4-byte aligned, so the pixels are copied
+ * out once, for the five seconds, and let go when the splash ends. */
+extern const uint8_t _binary_splash_logo_img_start[], _binary_splash_logo_img_end[];
+static int logo_load(void) {
+    if (logo_px) return 1;
+    const uint8_t *d = _binary_splash_logo_img_start;
+    size_t n = (size_t)(_binary_splash_logo_img_end - d);
+    uint32_t w, h;
+    if (n < 12 || memcmp(d, "BIMG", 4)) return 0;
+    memcpy(&w, d + 4, 4); memcpy(&h, d + 8, 4);
+    if (!w || !h || 12 + (size_t)w * h * 4 > n) return 0;
+    logo_px = (uint32_t *)kmalloc((size_t)w * h * 4);
+    if (!logo_px) return 0;
+    memcpy(logo_px, d + 12, (size_t)w * h * 4);
+    logo_w = (int)w; logo_h = (int)h;
+    return 1;
 }
 
 void splash_draw(void) {
@@ -61,11 +73,16 @@ void splash_draw(void) {
     gfx_bind(&g_back, 0, 0, 0, 0, scr_w, scr_h);
     gfx_vgrad(0, 0, scr_w, scr_h, SP_BG_TOP, SP_BG_BOT, 255);
 
-    float bolt_cy = (float)S(176);
-    draw_bolt((float)cx, bolt_cy, (float)S(56), th.accent);
-
-    text_c(cx, S(286), "BoltOS", FONT_DISPLAY, S(60), SP_TEXT);
-    text_c(cx, S(336), "M I N I", FONT_SEMIBOLD, S(12), SP_SUB);
+    /* The logo, as wide as 440 of the 600-high design, centred over the bar.
+     * Narrow screens get it narrower, never cut. */
+    if (logo_load()) {
+        int lw = S(440), max_w = scr_w - S(48);
+        if (lw > max_w) lw = max_w;
+        int lh = (int)((long)lw * logo_h / logo_w);
+        gfx_image(cx - lw / 2, S(250) - lh / 2, lw, lh, logo_px, logo_w, logo_h, 255);
+    } else {
+        text_c(cx, S(286), "BoltOS Mini", FONT_DISPLAY, S(60), SP_TEXT);
+    }
 
     /* the loading bar: smoothstepped across the five seconds */
     uint64_t el = now_ms() - splash_t0;

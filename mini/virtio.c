@@ -176,6 +176,13 @@ static struct { uintptr_t base; struct vq evq; } vin[VIN_MAX];
 static int nvin, vmods, vbtn, vx, vy;
 
 static void vin_event(uint16_t type, uint16_t code, uint32_t value) {
+    if (type == 1 || type == 2) input_raw(type, code, (int32_t)value);   /* a Linux program's (lx_dev.c) */
+    if (type == 3 && input_raw_on()) {                 /* the tablet: how far, in pixels */
+        int nx = code == 0 ? (int)((uint64_t)value * (uint64_t)scr_w / 32768) : vx;
+        int ny = code == 1 ? (int)((uint64_t)value * (uint64_t)scr_h / 32768) : vy;
+        if (nx != vx) input_raw(2, 0, nx - vx);
+        if (ny != vy) input_raw(2, 1, ny - vy);
+    }
     if (type == 1 && code < 0x100) {                   /* EV_KEY: a key          */
         int bit = 0;
         if (code == 42 || code == 54) bit = MOD_SHIFT;

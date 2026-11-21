@@ -1,10 +1,12 @@
 /* ===========================================================================
  *  BoltOS Mini  -  mini/app_settings.c
  *
- *  Eight pages: Wi-Fi, Bluetooth, Appearance, Screen Sharing, Date & Time,
- *  Updates, About, Power. Up and down move through the list on the left; Right or
+ *  Nine pages: Network (the Ethernet socket), Bluetooth, Appearance, Display,
+ *  Screen Sharing, Date & Time, Updates, About, Power (eight in a release
+ *  build, which has no Screen Sharing). Mini is online by Ethernet only: the
+ *  Zero3's Wi-Fi antenna is gone, so Wi-Fi has no page and never starts. Up and down move through the list on the left; Right or
  *  Return goes into a page, where Left and Right change a value and Return
- *  does a thing. What takes a moment (starting the radio, joining) waits for
+ *  does a thing. What takes a moment (starting Bluetooth, pairing) waits for
  *  the next frame, so the page says what it's doing first.
  * ===========================================================================*/
 #include <stdint.h>
@@ -13,45 +15,39 @@
 #include "string.h"
 #include "stdio.h"
 #include "stdlib.h"
-#include "wlan.h"
 #include "bt.h"
 #include "update.h"
 
-enum { P_WIFI, P_BT, P_LOOK, P_SHARE, P_TIME, P_UPDATE, P_ABOUT, P_POWER, NPAGES };
 #ifdef MINI_RELEASE
-static const char *const pages[NPAGES] = { "Wi-Fi", "Bluetooth", "Appearance", "Network", "Date & Time", "Updates", "About", "Power" };
-static const int page_glyph[NPAGES] = { G_WIFI, G_BLUETOOTH, G_DOT, G_GLOBE, G_CLOCK, G_UPDATE, G_CHECK, G_POWER };
+enum { P_NET, P_BT, P_LOOK, P_DISPLAY, P_TIME, P_UPDATE, P_ABOUT, P_POWER, NPAGES };
+static const char *const pages[NPAGES] = { "Network", "Bluetooth", "Appearance", "Display", "Date & Time", "Updates", "About", "Power" };
+static const int page_glyph[NPAGES] = { G_GLOBE, G_BLUETOOTH, G_DOT, G_MONITOR, G_CLOCK, G_UPDATE, G_CHECK, G_POWER };
 #else
-static const char *const pages[NPAGES] = { "Wi-Fi", "Bluetooth", "Appearance", "Screen Sharing", "Date & Time", "Updates", "About", "Power" };
-static const int page_glyph[NPAGES] = { G_WIFI, G_BLUETOOTH, G_DOT, G_MAC, G_CLOCK, G_UPDATE, G_CHECK, G_POWER };
+enum { P_NET, P_BT, P_LOOK, P_DISPLAY, P_SHARE, P_TIME, P_UPDATE, P_ABOUT, P_POWER, NPAGES };
+static const char *const pages[NPAGES] = { "Network", "Bluetooth", "Appearance", "Display", "Screen Sharing", "Date & Time", "Updates", "About", "Power" };
+static const int page_glyph[NPAGES] = { G_GLOBE, G_BLUETOOTH, G_DOT, G_MONITOR, G_MAC, G_CLOCK, G_UPDATE, G_CHECK, G_POWER };
 #endif
 static int page, in_page, item, confirm;
 static char pw_edit[9]; static int pw_editing, pw_len;
 
-/* Wi-Fi: the network being typed a password for, and work for the next tick. */
-static int wsel = -1, wtyping, wlen, wtop, btop;
-static char wpass[64];
-enum { DO_NONE, DO_WIFI_ON, DO_WIFI_OFF, DO_SCAN, DO_JOIN, DO_LEAVE, DO_BT_ON, DO_BT_OFF, DO_BT_SCAN, DO_BT_PAIR, DO_BT_FORGET, DO_BT_CANCEL };
+/* Bluetooth's scroll, and work for the next tick. */
+static int btop;
+enum { DO_NONE, DO_DISPLAY, DO_BT_ON, DO_BT_OFF, DO_BT_SCAN, DO_BT_PAIR, DO_BT_FORGET, DO_BT_CANCEL };
 static int todo, todo_arg;
-static uint64_t last_scan, bt_last_scan;
+static int dpick = -1;                   /* Display: the size Left/Right reached, not yet Return'd */
+static uint64_t bt_last_scan;
 #define WROW S(42)
 static void toggle(int x, int y, int on, int busy);
 static int bt_npaired(void);
 static int bt_row_y(int i, int ly, int np);
 
-static int wifi_rows(void) {
-    const wifi_net_t *n;
-    return wifi_state() >= WIFI_READY ? wifi_nets(&n) : 0;
-}
-
 static int items(void) {
     switch (page) {
-    case P_WIFI: return 1 + wifi_rows();
+    case P_NET:  return 0;
     case P_BT:   return 1 + (bt_state() >= BT_READY ? bt_device_count() : 0);
     case P_LOOK: return 2;
-#ifdef MINI_RELEASE
-    case P_SHARE: return 0;
-#else
+    case P_DISPLAY: return 2;                /* the size, and screen sleep */
+#ifndef MINI_RELEASE
     case P_SHARE: return 1;
 #endif
     case P_TIME: return 3;
@@ -69,6 +65,13 @@ static void nudge_time(int dh, int dm) {
 }
 
 static void change(int dir) {
+    if (page == P_DISPLAY && item == 1) { screen_sleep_cycle(dir); return; }
+    if (page == P_DISPLAY) {
+        int n = display_count();
+        if (dpick < 0 || dpick >= n) dpick = display_current();
+        dpick = (dpick + n + dir) % n;
+        return;
+    }
     if (page == P_LOOK && item == 0) theme_set((th.wallpaper + 3 + dir) % 3, th.accent_i);
     else if (page == P_LOOK && item == 1) theme_set(th.wallpaper, (th.accent_i + 6 + dir) % 6);
     else if (page == P_TIME && item == 0) nudge_time(dir, 0);
@@ -78,21 +81,6 @@ static void change(int dir) {
         if (tz >= -12 * 60 && tz <= 14 * 60) clock_set_tz_minutes(tz);
     }
     if (page == P_LOOK || (page == P_TIME && item == 2)) shell_settings_save();
-}
-
-static void wifi_activate(void) {
-    if (item == 0) { todo = wifi_state() >= WIFI_READY ? DO_WIFI_OFF : DO_WIFI_ON; return; }
-    const wifi_net_t *n;
-    int k = wifi_nets(&n);
-    if (item - 1 >= k) return;
-    const wifi_net_t *w = &n[item - 1];
-    if (wifi_state() >= WIFI_CONNECTING && !strcmp(wifi_ssid(), w->ssid)) {
-        if (confirm == item + 1) { todo = DO_LEAVE; confirm = 0; } else confirm = item + 1;
-        return;
-    }
-    wsel = item - 1;
-    if (w->security == WIFI_SEC_WPA2) { wtyping = 1; wlen = 0; wpass[0] = 0; }
-    else todo = DO_JOIN;
 }
 
 static void bt_activate(void) {
@@ -114,17 +102,24 @@ static void update_activate(void) {
 }
 
 static void activate(void) {
-    if (page == P_WIFI) { wifi_activate(); return; }
     if (page == P_BT) { bt_activate(); return; }
     if (page == P_UPDATE) { update_activate(); return; }
+    if (page == P_DISPLAY) {
+        if (dpick >= 0 && dpick != display_current()) { todo = DO_DISPLAY; todo_arg = dpick; }
+        else change(1);
+        return;
+    }
+#ifndef MINI_RELEASE
     if (page == P_SHARE && item == 0) { pw_editing = 1; pw_len = 0; pw_edit[0] = 0; }
-    else if (page == P_POWER) {
+    else
+#endif
+    if (page == P_POWER) {
         if (confirm == item + 1) { if (item == 0) board_reboot(); else board_poweroff(); }
         confirm = item + 1;
     } else change(1);
 }
 
-static void s_open(void) { in_page = 0; confirm = 0; pw_editing = 0; wtyping = 0; }
+static void s_open(void) { in_page = 0; confirm = 0; pw_editing = 0; dpick = -1; }
 
 void settings_show_updates(void) {
     shell_open(&app_settings);
@@ -133,18 +128,11 @@ void settings_show_updates(void) {
 
 /* Esc: leave the password being typed (the shell asks this first). */
 int settings_esc(void) {
-    if (wtyping) { wtyping = 0; wsel = -1; return 1; }
     if (pw_editing) { pw_editing = 0; return 1; }
     return 0;
 }
 
 static void s_key(const input_ev_t *e) {
-    if (wtyping) {
-        if (e->key == KEY_CHAR && wlen < 63 && e->ch >= 32 && e->ch < 127 && !(e->mods & MOD_CTRL)) { wpass[wlen++] = (char)e->ch; wpass[wlen] = 0; }
-        else if (e->key == KEY_BACKSPACE && wlen) wpass[--wlen] = 0;
-        else if (e->key == KEY_ENTER && wlen >= 8) { wtyping = 0; todo = DO_JOIN; }
-        return;
-    }
     if (pw_editing) {
         if (e->key == KEY_CHAR && pw_len < 8 && e->ch > 32 && e->ch < 127) { pw_edit[pw_len++] = (char)e->ch; pw_edit[pw_len] = 0; }
         else if (e->key == KEY_BACKSPACE && pw_len) pw_edit[--pw_len] = 0;
@@ -171,7 +159,7 @@ static void s_key(const input_ev_t *e) {
     case KEY_UP:    if (item > 0) item--; confirm = 0; break;
     case KEY_DOWN:  if (item < items() - 1) item++; confirm = 0; break;
     case KEY_LEFT:
-        if ((page == P_LOOK || page == P_TIME)) change(-1);
+        if (page == P_LOOK || page == P_TIME || page == P_DISPLAY) change(-1);
         else if (page == P_UPDATE && item == 0 && update_auto()) update_set_auto(0);
         else { in_page = 0; confirm = 0; }
         break;
@@ -194,13 +182,11 @@ static void s_pointer(const input_ev_t *e, int x, int y, int w, int h) {
     if (!click) return;
     for (int i = 0; i < NPAGES; i++)
         if (ui_hit(e->x, e->y, list_x, list_y + i * row_h, list_w, row_h)) { page = i; in_page = 0; confirm = 0; return; }
-    if (page == P_WIFI || page == P_BT) {
-        if (wtyping) return;
+    if (page == P_BT) {
         int np = bt_npaired(), ly = pane_y + S(56), off = bt_row_y(btop, ly, np) - bt_row_y(0, ly, np);
         for (int i = 0; i < items(); i++) {
-            int top = page == P_WIFI ? wtop : btop;
-            int ry = i == 0 ? pane_y : page == P_WIFI ? pane_y + S(62) + (i - 1 - top) * WROW : bt_row_y(i - 1, ly, np) - off;
-            if (i > 0 && i - 1 < top) continue;
+            int ry = i == 0 ? pane_y : bt_row_y(i - 1, ly, np) - off;
+            if (i > 0 && i - 1 < btop) continue;
             if (ui_hit(e->x, e->y, pane_x, ry, pane_w, S(38))) {
                 in_page = 1;
                 if (item == i) activate(); else { item = i; confirm = 0; }
@@ -222,62 +208,24 @@ static void heading(int x, int y, const char *t, const char *sub) {
     if (sub) text_l(x, y + S(28), sub, FONT_REGULAR, S(13), th.sub);
 }
 
-static void bars(int x, int cy, int rssi, uint32_t c) {
-    int n = rssi >= -55 ? 4 : rssi >= -67 ? 3 : rssi >= -75 ? 2 : 1;
-    for (int i = 0; i < 4; i++) {
-        int bh = S(4) + i * S(3);
-        gfx_fill(x + i * S(5), cy + S(7) - bh, S(3), bh, i < n ? c : th.line);
+/* The Ethernet socket: Mini's only way online (the Wi-Fi antenna is gone). */
+static void draw_net(int hy) {
+    netif_t *e = eth_netif();
+    int sp = eth_link();
+    heading(pane_x, hy, "Network", sp ? "Online by Ethernet." : "Plug a network cable into the Ethernet socket.");
+    char ip[16] = "", gw[16] = "", dns[16] = "";
+    if (e && e->ip) { net_fmt_ip(e->ip, ip); net_fmt_ip(e->gw, gw); net_fmt_ip(e->dns, dns); }
+    const char *k[] = { "Ethernet", "Address", "Router", "DNS", "Clock" };
+    char v[5][48];
+    snprintf(v[0], 48, "%s", sp ? (sp == 1000 ? "1 Gbit/s" : sp == 100 ? "100 Mbit/s" : "10 Mbit/s") : "No cable");
+    snprintf(v[1], 48, "%s", ip[0] ? ip : sp ? "Asking the router" TXT_ELLIPSIS : TXT_ENDASH);
+    snprintf(v[2], 48, "%s", gw[0] ? gw : TXT_ENDASH);
+    snprintf(v[3], 48, "%s", dns[0] ? dns : TXT_ENDASH);
+    snprintf(v[4], 48, "%s", clock_known() ? "Set from the network" : "Not set yet");
+    for (int i = 0; i < 5; i++) {
+        text_l(pane_x + S(14), pane_y + i * S(30), k[i], FONT_MEDIUM, S(14), th.sub);
+        text_l(pane_x + S(130), pane_y + i * S(30), v[i], FONT_REGULAR, S(14), th.text);
     }
-}
-
-static void draw_wifi(int hy, int bottom, int sel) {
-    char b[120], ip[16] = "";
-    int st = wifi_state();
-    netif_t *wl = wifi_netif();
-    if (wl && wl->ip) net_fmt_ip(wl->ip, ip);
-    const char *sub = st == WIFI_OFF ? "Off." : st == WIFI_STARTING ? "Starting the radio" TXT_ELLIPSIS : b;
-    if (st == WIFI_CONNECTED) snprintf(b, sizeof b, "Connected to %s%s%s", wifi_ssid(), ip[0] ? "  " "\xB7" "  " : "", ip);
-    else if (st == WIFI_READY && wifi_scanning() && !wifi_rows()) snprintf(b, sizeof b, "Looking for networks" TXT_ELLIPSIS);
-    else snprintf(b, sizeof b, "%s", wifi_why());
-    if (todo == DO_JOIN) snprintf(b, sizeof b, "Joining" TXT_ELLIPSIS);
-    if (todo == DO_WIFI_ON) sub = "Starting the radio" TXT_ELLIPSIS;
-    const wifi_net_t *n;
-    int k = wifi_nets(&n);
-    if (wtyping && wsel >= 0 && wsel < k) {
-        snprintf(b, sizeof b, "The password for %s", n[wsel].ssid);
-        heading(pane_x, hy, "Wi-Fi", b);
-        char dots[70];
-        int d = 0;
-        for (int i = 0; i < wlen && d < 60; i++) { dots[d++] = '\x95'; }
-        dots[d++] = '_'; dots[d] = 0;
-        ui_row(pane_x, pane_y, pane_w, "Password", dots, 1);
-        text_l(pane_x + S(14), pane_y + S(64), wlen < 8 ? "At least 8 characters.  Esc goes back." :
-               "Return joins.  Esc goes back.", FONT_REGULAR, S(12), th.faint);
-        return;
-    }
-    heading(pane_x, hy, "Wi-Fi", sub);
-    ui_row(pane_x, pane_y, pane_w, "Wi-Fi", 0, sel == 0);
-    toggle(pane_x + pane_w - S(12), pane_y, st >= WIFI_READY || todo == DO_WIFI_ON, st == WIFI_STARTING || todo == DO_WIFI_ON);
-    if (st < WIFI_READY) return;
-    int ly = pane_y + S(62), rows = (bottom - S(40) - ly) / WROW;
-    if (rows < 1) rows = 1;
-    if (sel > 0) {                                          /* keep the chosen one in view */
-        if (sel - 1 < wtop) wtop = sel - 1;
-        if (sel - 1 >= wtop + rows) wtop = sel - rows;
-    }
-    if (wtop > k - rows) wtop = k - rows > 0 ? k - rows : 0;
-    for (int i = wtop; i < k && i < wtop + rows; i++) {
-        int ry = ly + (i - wtop) * WROW;
-        int here = st >= WIFI_CONNECTING && !strcmp(wifi_ssid(), n[i].ssid);
-        ui_row(pane_x, ry, pane_w, n[i].ssid, 0, sel == i + 1);
-        int rx = pane_x + pane_w - S(36), cy = ry + S(19);
-        bars(rx, cy, n[i].rssi, th.text);
-        if (n[i].security != WIFI_SEC_OPEN) ui_glyph(G_LOCK, rx - S(16), cy - S(1), S(18), th.sub);
-        const char *note = here ? (st == WIFI_CONNECTED ? (confirm == i + 2 ? "Return again to leave" : "Connected") : "Joining" TXT_ELLIPSIS)
-                         : n[i].security == WIFI_SEC_OTHER ? "Not supported" : 0;
-        if (note) text_r(rx - S(32), cy, note, FONT_REGULAR, S(13), here ? th.accent : th.faint);
-    }
-    if (!k && !wifi_scanning()) text_l(pane_x + S(14), ly + S(10), "No networks in range.", FONT_REGULAR, S(13), th.sub);
 }
 
 /* An on/off switch, right-aligned in a row: a flat track and a square knob. */
@@ -438,14 +386,8 @@ static int s_tick(void) {
     if (todo) {
         int t = todo, a = todo_arg;
         todo = DO_NONE; shown = 0;
-        const wifi_net_t *n;
-        int k = wifi_nets(&n);
         switch (t) {
-        case DO_WIFI_ON:  if (wifi_start() == 0) { wifi_scan(); last_scan = now_ms(); } break;
-        case DO_WIFI_OFF: wifi_stop(); break;
-        case DO_SCAN:     wifi_scan(); last_scan = now_ms(); break;
-        case DO_JOIN:     if (wsel >= 0 && wsel < k) wifi_connect(n[wsel].ssid, wpass); memset(wpass, 0, sizeof wpass); wlen = 0; wsel = -1; break;
-        case DO_LEAVE:    wifi_leave(); break;
+        case DO_DISPLAY:  display_choose(a); dpick = -1; break;
         case DO_BT_ON:    if (bt_start() == 0) { bt_scan(); bt_last_scan = now_ms(); } break;
         case DO_BT_OFF:   bt_stop(); break;
         case DO_BT_SCAN:  bt_scan(); bt_last_scan = now_ms(); break;
@@ -455,17 +397,12 @@ static int s_tick(void) {
         }
         return 1;
     }
-    /* While the Wi-Fi page is up: look again now and then. */
-    if (page == P_WIFI && wifi_state() >= WIFI_READY && !wifi_scanning() && !wtyping && now_ms() - last_scan > 20000) {
-        last_scan = now_ms();
-        wifi_scan();
-    }
     if (page == P_BT && cur_is_settings() && bt_state() >= BT_READY && !bt_scanning() && now_ms() - bt_last_scan > 13000) {
         bt_last_scan = now_ms();
         bt_scan();
     }
-    const wifi_net_t *n;
-    int sig = wifi_state() * 1000 + wifi_nets(&n) * 10 + wifi_scanning() + bt_state() * 100000 + bt_device_count() * 7 +
+    netif_t *eth = eth_netif();
+    int sig = eth_link() * 1000 + (int)(eth ? eth->ip : 0) + bt_state() * 100000 + bt_device_count() * 7 +
               bt_scanning() * 3 + bt_changes() * 13;
     if (sig != last_sig) { last_sig = sig; return 1; }
     return 0;
@@ -495,7 +432,7 @@ static void s_draw(int x, int y, int w, int h) {
     pane_y = hy + S(64);
     int sel = in_page ? item : -1;
     switch (page) {
-    case P_WIFI: draw_wifi(hy, y + h, sel); break;
+    case P_NET:  draw_net(hy); break;
     case P_BT:   draw_bt(hy, y + h, sel); break;
     case P_UPDATE: draw_update(hy, y + h, sel); break;
     case P_LOOK:
@@ -517,27 +454,41 @@ static void s_draw(int x, int y, int w, int h) {
         }
         text_l(pane_x, pane_y + S(214), "Left and right change the chosen row.", FONT_REGULAR, S(12), th.faint);
         break;
-#ifdef MINI_RELEASE
-    case P_SHARE: {                                        /* the release build's Network page */
-        netif_t *e = eth_netif();
-        heading(pane_x, hy, "Network", e && e->up ? "The Ethernet socket is connected." : "Plug a network cable into the Ethernet socket.");
-        char ip[16] = "", gw[16] = "", dns[16] = "";
-        if (e && e->ip) { net_fmt_ip(e->ip, ip); net_fmt_ip(e->gw, gw); net_fmt_ip(e->dns, dns); }
-        const char *k[] = { "Ethernet", "Address", "Router", "DNS", "Clock" };
-        char v[5][48];
-        int sp = eth_link();
-        snprintf(v[0], 48, "%s", sp ? (sp == 1000 ? "1 Gbit/s" : sp == 100 ? "100 Mbit/s" : "10 Mbit/s") : "No cable");
-        snprintf(v[1], 48, "%s", ip[0] ? ip : TXT_ENDASH);
-        snprintf(v[2], 48, "%s", gw[0] ? gw : TXT_ENDASH);
-        snprintf(v[3], 48, "%s", dns[0] ? dns : TXT_ENDASH);
-        snprintf(v[4], 48, "%s", clock_known() ? "Set from the network" : "Not set yet");
-        for (int i = 0; i < 5; i++) {
-            text_l(pane_x + S(14), pane_y + i * S(30), k[i], FONT_MEDIUM, S(14), th.sub);
-            text_l(pane_x + S(130), pane_y + i * S(30), v[i], FONT_REGULAR, S(14), th.text);
-        }
+    case P_DISPLAY: {
+        char st[128], v[48];
+        display_status(st, sizeof st);
+        heading(pane_x, hy, "Display", todo == DO_DISPLAY ? "Switching" TXT_ELLIPSIS : st);
+        int n = display_count(), cur = display_current();
+        if (dpick >= n) dpick = -1;
+        int shown_i = dpick >= 0 ? dpick : cur;
+        display_label(shown_i, v, sizeof v);
+        ui_row(pane_x, pane_y, pane_w, "Resolution", v, sel == 0);
+        char sl[32]; screen_sleep_label(sl, sizeof sl);
+        ui_row(pane_x, pane_y + S(46), pane_w, "Screen off", sl, sel == 1);
+        if (shown_i != cur) text_l(pane_x + S(14), pane_y + S(98), "Return switches to the new size.", FONT_REGULAR, S(13), th.accent);
+        int ty = pane_y + S(140);
+        const char *mon = hdmi_monitor();
+        snprintf(b, sizeof b, "%s", mon ? mon : "None");
+        text_l(pane_x + S(14), ty, "Monitor", FONT_MEDIUM, S(14), th.sub);
+        text_fit_l(pane_x + S(130), ty, b, pane_w - S(140), FONT_REGULAR, S(14), th.text);
+        snprintf(b, sizeof b, "%d x %d", scr_w, scr_h);
+        text_l(pane_x + S(14), ty + S(30), "Screen", FONT_MEDIUM, S(14), th.sub);
+        text_l(pane_x + S(130), ty + S(30), b, FONT_REGULAR, S(14), th.text);
+        const char *touch = usbh_touch_name();
+        text_l(pane_x + S(14), ty + S(60), "Touch", FONT_MEDIUM, S(14), th.sub);
+        text_fit_l(pane_x + S(130), ty + S(60), touch ? touch : "None", pane_w - S(140), FONT_REGULAR, S(14), th.text);
+        text_l(pane_x + S(14), ty + S(100), mon ? "Automatic uses the size the monitor asks for. Plug one in any time."
+                                               : "Plug a monitor or an HDMI LCD into the HDMI port and the screen moves to it.",
+               FONT_REGULAR, S(12), th.faint);
+        text_l(pane_x + S(14), ty + S(120), touch ? "Tap to click, slide to scroll, hold then move to drag."
+                                                  : "An LCD's touch works once its USB cable is in the Pi's USB-A port.",
+               FONT_REGULAR, S(12), th.faint);
+        text_l(pane_x + S(14), ty + S(140), "Left and right change the chosen row; Return switches the size.", FONT_REGULAR, S(12), th.faint);
+        text_l(pane_x + S(14), ty + S(160), "Screen off: no picture after that long without input, and nothing is drawn. Any key or click wakes it.",
+               FONT_REGULAR, S(12), th.faint);
         break;
     }
-#else
+#ifndef MINI_RELEASE
     case P_SHARE: {
         heading(pane_x, hy, "Screen Sharing", "Your Mac sees and drives this screen over the USB-C cable.");
         if (pw_editing) snprintf(b, sizeof b, "%s_", pw_edit);
@@ -585,7 +536,7 @@ static void s_draw(int x, int y, int w, int h) {
 #ifdef MINI_RELEASE
         snprintf(v[3], 64, "%d x %d", scr_w, scr_h);
 #else
-        snprintf(v[3], 64, "%d x %d, %s", scr_w, scr_h, g_plat == PLAT_QEMU ? "QEMU window and VNC" : "over VNC");
+        snprintf(v[3], 64, "%d x %d, %s", scr_w, scr_h, g_plat == PLAT_QEMU ? "QEMU window and VNC" : hdmi_shown() ? "HDMI and VNC" : "over VNC");
 #endif
         snprintf(v[4], 64, "%s, boot #%u", up, klog_boot_count());
         snprintf(v[5], 64, "Inter, DejaVu Sans Mono");

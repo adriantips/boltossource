@@ -389,6 +389,7 @@ static void kbd_report(link_t *l, const uint8_t *r, int n) {
     if (n < 8) return;
     int mods = hid_mods(r[0]), any = 0;
     if (r[2] == 1) return;                                  /* rollover */
+    input_raw_keys(l->last[0], l->last + 2, 6, r[0], r + 2, 6);
     for (int i = 2; i < 8; i++) {
         uint8_t k = r[i];
         if (k < 4) continue;

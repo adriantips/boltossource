@@ -55,14 +55,16 @@ int perf_report(char *out, int cap) {
         "window %lu ms\n"
         "frames %u (%lu.%lu/s), draw avg %lu us max %lu us, present avg %lu us\n"
         "loops %u (%lu/s), longest turn %lu us\n"
-        "vnc updates %u (%lu.%lu/s), %u rects, %lu KiB (%lu KiB/s), scan avg %lu us max %lu us, pump %lu us total\n",
+        "vnc updates %u (%lu.%lu/s), %u rects, %lu KiB (%lu KiB/s), scan avg %lu us max %lu us, pump %lu us total\n"
+        "turns spent: links %lu ms, shell %lu ms, Firefox's machine %lu ms\n",
         (unsigned long)(dt / 1000),
         p.frames, (unsigned long)(p.frames * 10000000ull / dt / 10), (unsigned long)(p.frames * 10000000ull / dt % 10),
         (unsigned long)(p.draw_us / f), (unsigned long)p.draw_max, (unsigned long)(p.present_us / f),
         p.loops, (unsigned long)(p.loops * 1000000ull / dt), (unsigned long)p.busy_max,
         p.vnc_updates, (unsigned long)(p.vnc_updates * 10000000ull / dt / 10), (unsigned long)(p.vnc_updates * 10000000ull / dt % 10),
         p.vnc_rects, (unsigned long)(p.vnc_bytes >> 10), (unsigned long)((p.vnc_bytes * 1000000ull / dt) >> 10),
-        (unsigned long)(p.vnc_scan_us / u), (unsigned long)p.vnc_scan_max, (unsigned long)p.vnc_pump_us);
+        (unsigned long)(p.vnc_scan_us / u), (unsigned long)p.vnc_scan_max, (unsigned long)p.vnc_pump_us,
+        (unsigned long)(p.pump_us / 1000), (unsigned long)(p.shell_us / 1000), (unsigned long)(p.vm_us / 1000));
     if (n < cap) n += vnc_perf(out + n, cap - n, dt);
     return n;
 }
@@ -108,7 +110,11 @@ void kmain(uint64_t dtb) {
 
     font_init();
     kprintf("[%4lu ms] fonts\n", now_ms() - t0);
-    screen_init(1024, 600);
+    int sw = 1024, sh = 600;
+    display_start(&sw, &sh);                       /* a monitor on the HDMI port picks the size */
+    screen_init(sw, sh);
+    display_show();
+    kprintf("[%4lu ms] screen\n", now_ms() - t0);
 
     int link = musb_init();
     if (link == 0) kprintf("[ok] USB-C port is a network adapter to the Mac\n");
@@ -146,12 +152,22 @@ void kmain(uint64_t dtb) {
         g_loop_ms = now_ms();
         uint64_t t_turn = now_us();
         mini_pump();
+        uint64_t t_pump = now_us();
+        g_perf.pump_us += t_pump - t_turn;
         int pkg_poll(void);
         if (pkg_poll()) shell_request_frame();
         if (update_poll()) shell_request_frame();
         shell_frame();
+        uint64_t t_shell = now_us();
+        g_perf.shell_us += t_shell - t_pump;
         netsvc_jobs();
         fs_poll();
+        int lx_poll(void);
+        lx_poll();                                     /* a Linux program's card reads, writes, packets */
+        void vm_poll(void);
+        uint64_t t_vm = now_us();
+        vm_poll();
+        g_perf.vm_us += now_us() - t_vm;
         wifi_poll();
         bt_poll();
         uint64_t t = now_us();

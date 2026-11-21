@@ -87,7 +87,9 @@ for f in mini/sdio.c mini/wcn.c mini/wifi.c mini/bt.c mini/hid.c mini/emac.c min
          mini/app_settings.c mini/app_packages.c mini/sdcard.c mini/store.c mini/dl.c mini/update.c \
          mini/splash.c \
          mini/pkg.c mini/exports.c mini/fs.c mini/rt.c mini/gc.c mini/numfmt.c mini/mathx.c mini/app_code.c \
-         mini/py_obj.c mini/py_parse.c mini/py_eval.c mini/py_lib.c mini/cc.c mini/cc_eval.c mini/cc_lib.c; do
+         mini/py_obj.c mini/py_parse.c mini/py_eval.c mini/py_lib.c mini/cc.c mini/cc_eval.c mini/cc_lib.c \
+         mini/vm.c mini/vdev.c mini/fxget.c mini/engine.c mini/hdmi.c \
+         mini/lx.c mini/lx_sys.c mini/lx_fs.c mini/lx_dev.c mini/lx_net.c; do
     [ -f "$f" ] || continue
     # The release build is the Pi on its own: what only a Mac uses stays out.
     if [ "$RELEASE" = 1 ]; then case "$f" in mini/musb.c|mini/vnc.c|mini/netsvc.c) continue ;; esac; fi
@@ -98,7 +100,8 @@ echo "[1/5] kernel"
 OBJS=()
 clang "${CFLAGS[@]}" -mstrict-align mini/arch/cpu.c -o "$B/obj/cpu.o"
 clang --target=aarch64-none-elf -mcpu=cortex-a53 -c mini/arch/start.S -o "$B/obj/start.o"
-OBJS+=("$B/obj/start.o" "$B/obj/cpu.o")
+clang --target=aarch64-none-elf -mcpu=cortex-a53 -Imini -c mini/arch/hyp.S -o "$B/obj/hyp.o"
+OBJS+=("$B/obj/start.o" "$B/obj/hyp.o" "$B/obj/cpu.o")
 
 JOBS=$( (sysctl -n hw.ncpu || nproc || echo 4) 2>/dev/null | head -1)
 PIDS=()
@@ -138,6 +141,20 @@ for spec in "${UIFONTS[@]}"; do
     fi
     ( cd "$B" && llvm-objcopy -I binary -O elf64-littleaarch64 "$fname.bfnt" "${fname}_bfnt.o" )
     OBJS+=("$B/${fname}_bfnt.o")
+done
+# Pictures, the same way: premultiplied ARGB that gfx_image() draws as it is.
+# The splash logo is drawn on #1A1A1A, which --key makes transparent.
+IMAGES=(
+    "splash_logo:assets/mini/splash-logo.png:--key 1A1A1A --fade 28"
+)
+for spec in "${IMAGES[@]}"; do
+    IFS=: read -r iname isrc iargs <<< "$spec"
+    if [ ! -f "$B/$iname.img" ] || [ "$isrc" -nt "$B/$iname.img" ] || [ mini/tools/mkimg.py -nt "$B/$iname.img" ]; then
+        "$PYTHON" mini/tools/mkimg.py "$isrc" "$B/$iname.img.tmp" $iargs
+        mv "$B/$iname.img.tmp" "$B/$iname.img"
+    fi
+    ( cd "$B" && llvm-objcopy -I binary -O elf64-littleaarch64 "$iname.img" "${iname}_img.o" )
+    OBJS+=("$B/${iname}_img.o")
 done
 
 # The Wi-Fi/Bluetooth module's firmware (mini/wcn.c): Unisoc's UWE5622 runs its own

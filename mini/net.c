@@ -188,14 +188,38 @@ static int ip_send(netif_t *nif, const uint8_t *dmac, uint32_t src, uint32_t dst
     return eth_send(nif, dmac, ETH_IP, frame, 20 + paylen);
 }
 
+/* ---- NAT, for the Firefox machine (vdev.c) ---------------------------------- *
+ *  Its packets leave with this machine's address (vdev.c rewrites them and
+ *  hands them here, an IPv4 packet with 14 bytes of room in front); what
+ *  comes back to a port vdev.c gave out goes to it first.                    */
+int (*net_nat_in)(netif_t *nif, const uint8_t *ip, int len);
+
+int net_ip_out(uint8_t *frame, int iplen) {
+    uint32_t dst = be32(frame + 14 + 16);
+    netif_t *nif = net_route(dst);
+    if (!nif || !nif->up) return -1;
+    uint32_t hop = ((dst & nif->mask) == (nif->ip & nif->mask) || !nif->gw) ? dst : nif->gw;
+    uint8_t mac[6];
+    if (!arp_find(hop, mac)) { arp_request(nif, hop); return -1; }
+    return eth_send(nif, mac, ETH_IP, frame, iplen);
+}
+uint32_t net_ip_of(uint32_t dst) { netif_t *nif = net_route(dst); return nif ? nif->ip : 0; }
+
 /* ---- UDP -------------------------------------------------------------------- */
-#define UDP_N 8
+#define UDP_N 24
 static struct { uint16_t port; udp_fn fn; } udp_tab[UDP_N];
 
 int udp_bind(uint16_t port, udp_fn fn) {
     for (int i = 0; i < UDP_N; i++)
         if (!udp_tab[i].port) { udp_tab[i].port = port; udp_tab[i].fn = fn; return 0; }
     return -1;
+}
+int udp_bound(uint16_t port) {
+    for (int i = 0; i < UDP_N; i++) if (udp_tab[i].port == port) return 1;
+    return 0;
+}
+void udp_unbind(uint16_t port) {
+    for (int i = 0; i < UDP_N; i++) if (udp_tab[i].port == port) { udp_tab[i].port = 0; udp_tab[i].fn = 0; }
 }
 
 int udp_send(netif_t *nif, uint32_t src_ip, uint32_t dst_ip, const uint8_t *dst_mac,
@@ -662,6 +686,7 @@ void net_rx(netif_t *nif, const uint8_t *f, int len) {
                  (nif->ip && dst == (nif->ip | ~nif->mask)) || (dst & 0xF0000000u) == 0xE0000000u;
     if (!for_us) return;
     if (src && (src & 0xF0000000u) != 0xE0000000u) arp_learn(src, f + 6);
+    if (net_nat_in && nif->ip && dst == nif->ip && net_nat_in(nif, ip, tot)) return;
     const uint8_t *p = ip + ihl;
     int plen = tot - ihl;
     switch (ip[9]) {

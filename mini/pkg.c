@@ -441,3 +441,30 @@ int bigmem_take_for_video(void) {
 }
 
 void bigmem_video_done(void) { W[1].video = 0; }
+
+/* Something that can't start without the window (a Linux program, lx.c):
+ * whoever has it is asked to let go, as a video asks -- Firefox stops,
+ * Local AI puts its model away, a program from Code ends. An owner whose
+ * memory must stay put (a machine that is running) says no by calling
+ * bigmem_keep() from its release callback. 0 once the window is free; -1 if
+ * its owner said no, or has no way to be asked. */
+static int keep_said;
+void bigmem_keep(void) { keep_said = 1; }
+
+int bigmem_evict(int high) {
+    high = !!high;
+    if (high && W[1].video) {
+        void player_stop(const char *why);
+        player_stop("Stopped so a program could use the memory. Space plays it again.");
+        W[1].video = 0;
+    }
+    if (!W[high].who) return 0;
+    if (!W[high].release) return -1;
+    kprintf("[mem] the %s window is needed: %s is asked for it\n", high ? "high" : "low", W[high].who);
+    void (*rel)(void) = W[high].release;
+    keep_said = 0;
+    rel();
+    if (keep_said) { kprintf("[mem] %s keeps it\n", W[high].who ? W[high].who : "its owner"); return -1; }
+    W[high].who = 0; W[high].release = 0;           /* given back (or left for us, as for a video) */
+    return 0;
+}

@@ -148,7 +148,7 @@ static void p_draw(int x, int y, int w, int h) {
     int px = x + S(40), pw = w - S(80);
     int hy = y + S(36);
     text_l(px, hy, "Packages", FONT_SEMIBOLD, S(22), th.text);
-    text_l(px, hy + S(28), "Apps for BoltOS Mini from boltos.dev. They come over Wi-Fi or Ethernet and stay on the SD card.",
+    text_l(px, hy + S(28), "Apps for BoltOS Mini from boltos.dev. They come over Ethernet and stay on the SD card.",
            FONT_REGULAR, S(13), th.sub);
 
     const pkg_offer_t *o;

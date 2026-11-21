@@ -20,6 +20,10 @@
  *  .ini by mini/tools/mkwifiini.py), the firmware's details (our MAC address
  *  among them), then a station interface. The link is "wlan0" to mini/net.c,
  *  and inet.c runs DHCP on it like on any other.
+ *
+ *  Off for good: the Zero3's Wi-Fi antenna is gone, so Mini is online by
+ *  Ethernet only. Nothing starts Wi-Fi any more (no start at boot, no page
+ *  in Settings); the code stays for the development endpoint /wifi?up.
  * ===========================================================================*/
 #include <stdint.h>
 #include "mini.h"
@@ -616,12 +620,7 @@ void wifi_stop(void) {
 static int ip_due;
 static void tell_ip(void);
 void wifi_poll(void) {
-    static int autostarted;
-    if (!autostarted && F.state == WIFI_OFF && now_ms() > 2000 && g_plat == PLAT_H618) {
-        autostarted = 1;                                    /* on by default, like a phone's */
-        if (wifi_start() == 0) wifi_scan();
-        return;
-    }
+    if (F.state == WIFI_OFF) return;                        /* never on by itself: Ethernet only */
     if (F.scanning && now_ms() > F.scan_end) F.scanning = 0;
     if (ip_due && F.state == WIFI_CONNECTED) tell_ip();
     static int was_scanning;

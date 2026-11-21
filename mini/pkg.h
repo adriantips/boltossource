@@ -104,3 +104,5 @@ void  bigmem_free(int high);
 const char *bigmem_owner(int high);              /* NULL when free           */
 int   bigmem_take_for_video(void);               /* 0 once the high window is the video's */
 void  bigmem_video_done(void);
+int   bigmem_evict(int high);                       /* its owner lets go; 0 once free */
+void  bigmem_keep(void);                            /* in a release callback: "no"    */

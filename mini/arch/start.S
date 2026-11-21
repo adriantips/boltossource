@@ -48,6 +48,8 @@ in_el1:
     b       1b
 2:
     bl      mmu_init
+    ldr     x2, =hyp_present        /* we came from EL2: vm.c can run a guest */
+    str     w21, [x2]
 
     ldr     x2, =vectors
     msr     vbar_el1, x2
@@ -58,12 +60,19 @@ in_el1:
 3:  wfe
     b       3b
 
-/* Into EL1 from wherever the loader left us, then on to x20. */
+/* Into EL1 from wherever the loader left us, then on to x20. x21 says
+ * whether there was an EL2 to leave: if so its vectors are the hypervisor's
+ * (hyp.S), for vm.c to call on later. */
 to_el1:
+    mov     x21, #0
     mrs     x1, CurrentEL
     lsr     x1, x1, #2
     cmp     x1, #2
     b.ne    9f
+    ldr     x2, =hyp_vectors
+    msr     vbar_el2, x2
+    msr     tpidr_el2, xzr
+    mov     x21, #1
 
     /* EL2 -> EL1. EL1 is AArch64, owns its own timer, and nothing traps.     */
     mov     x2, #(1 << 31)          /* HCR_EL2.RW                             */
@@ -113,8 +122,9 @@ secondary_start:
     b       2b
 
 /* ---------------------------------------------------------------------------
- *  Exception vectors. Only the "current EL, SP_ELx" group can happen: there
- *  is no EL0 code. Each entry saves everything -- the general registers and
+ *  Exception vectors. The "current EL, SP_ELx" group is Mini's own; the
+ *  "lower EL" group is a Linux program at EL0 on a spare core (lx.c): its
+ *  syscalls and its faults, kind 4. Each entry saves everything -- the general registers and
  *  all 32 SIMD registers, because the compiler is free to use them anywhere,
  *  including in code an interrupt interrupts -- and calls trap(frame, kind).
  *
@@ -130,6 +140,12 @@ secondary_start:
     mov     x0, #\kind
     b       trap_common
 .endm
+
+    .section .bss
+    .balign 4
+    .globl hyp_present
+hyp_present:
+    .space  4
 
     .section .text
     .balign 0x800

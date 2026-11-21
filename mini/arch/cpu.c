@@ -76,6 +76,33 @@ void mmu_enable(void) {
     __asm__ volatile("msr sctlr_el1, %0\nisb" :: "r"(sctlr) : "memory");
 }
 
+/* ---- a map for a Linux program (lx.c) ------------------------------------------
+ *  The same identity map, with the given windows of RAM (2 MiB aligned) open
+ *  to EL0 as well: the core running a Linux program at EL0 uses it, so the
+ *  program reaches its own memory and nothing else -- not the kernel's heap,
+ *  not a device. Memory EL0 may write is never executable at EL1.          */
+static uint64_t l1_user[512] __attribute__((aligned(4096)));
+static uint64_t l2_user[512] __attribute__((aligned(4096)));
+
+uint64_t mmu_user_table(const uint64_t *base, const uint64_t *size, int n) {
+    for (int i = 0; i < 512; i++) { l1_user[i] = l1[i]; l2_user[i] = l2_ram[i]; }
+    l1_user[1] = (uint64_t)(uintptr_t)l2_user | PTE_TABLE;
+    for (int w = 0; w < n; w++)
+        for (uint64_t a = base[w]; a < base[w] + size[w]; a += 0x200000ull) {
+            uint64_t i = (a - 0x40000000ull) >> 21;
+            if (a >= 0x40000000ull && i > 0 && i < 512 && l2_user[i]) l2_user[i] |= 1ull << 6;   /* AP[1] */
+        }
+    __asm__ volatile("dsb ish" ::: "memory");
+    return (uint64_t)(uintptr_t)l1_user;
+}
+
+/* This core's map (0: everyone's). Only this core's TLB is touched. */
+void mmu_use(uint64_t ttbr0) {
+    if (!ttbr0) ttbr0 = (uint64_t)(uintptr_t)l1;
+    __asm__ volatile("dsb ish\nmsr ttbr0_el1, %0\nisb\ntlbi vmalle1\ndsb nsh\nic iallu\ndsb nsh\nisb"
+                     :: "r"(ttbr0) : "memory");
+}
+
 /* ---- the other cores ------------------------------------------------------------ *
  *  Cores 1-3 start at boot into pool_loop and wait there (WFE) for work.
  *  core_run() hands an idle one a job; cpu_start() waits for the core to
@@ -218,6 +245,10 @@ void trap(struct frame *f, uint64_t kind) {
         }
         return;
     }
+    /* A Linux program's core (lx.c): its syscalls, and its faults, which end
+     * the program and not the machine. */
+    int lx_trap(void *frame, uint64_t kind);
+    if (lx_trap(f, kind)) return;
     uint64_t esr, far;
     __asm__ volatile("mrs %0, esr_el1" : "=r"(esr));
     __asm__ volatile("mrs %0, far_el1" : "=r"(far));

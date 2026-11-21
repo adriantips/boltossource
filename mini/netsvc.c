@@ -296,11 +296,12 @@ static void http_text(tcb_t *c, int code, const char *text) {
 
 /* /screen.bmp: the front buffer as a 24-bit BMP, bottom-up, streamed out a
  * band at a time as the send ring empties. */
-static struct { tcb_t *c; int row; } shot;
+static struct { tcb_t *c; int row, w, h; } shot;
 
 static void shot_pump(void) {
     if (!shot.c) return;
     if (!tcp_open(shot.c)) { shot.c = 0; return; }
+    if (shot.w != scr_w || shot.h != scr_h) { tcp_close(shot.c); shot.c = 0; return; }   /* resized under it */
     int rowbytes = scr_w * 3;
     while (shot.row >= 0 && tcp_space(shot.c) >= rowbytes) {
         uint8_t line[4096 * 3];
@@ -327,7 +328,7 @@ static void http_shot(tcb_t *c) {
     for (int i = 0; i < 6; i++) memcpy(b + 2 + 4 * i, &v[i], 4);
     b[26] = 1; b[28] = 24;
     tcp_write(c, b, 54);
-    shot.c = c; shot.row = scr_h - 1;
+    shot.c = c; shot.row = scr_h - 1; shot.w = scr_w; shot.h = scr_h;
 }
 
 /* ---- uploads (development) --------------------------------------------------------
@@ -340,7 +341,7 @@ static struct {
     uint64_t len, got, written;
     uint8_t *buf; uint32_t blen, cap;
     const store_entry_t *e; char name[48];
-    sha256_ctx sha; uint64_t t0;
+    sha256_ctx sha; uint64_t t0, last;    /* last: when bytes last came */
     char fpath[256];
 } up;
 
@@ -386,11 +387,22 @@ static void up_take(const uint8_t *p, uint32_t n) {
 static void up_pump(void) {
     if (!up.c) return;
     uint8_t b[16384];
+    if (!up.last) up.last = now_ms();
     for (int i = 0; i < 64 && up.got < up.len; i++) {
         int n = tcp_read(up.c, b, sizeof b);
         if (n <= 0) break;
+        up.last = now_ms();
         up_take(b, (uint32_t)n);
         if (!up.c) return;
+    }
+    /* A link that went away mid-upload (a cable out) never says so: after 30 s
+     * of nothing, the upload is given up, so the next one isn't "busy". */
+    if (up.got < up.len && now_ms() - up.last > 30000) {
+        kprintf("[http] upload stalled at %lu of %lu bytes: given up\n", (unsigned long)up.got, (unsigned long)up.len);
+        tcp_abort(up.c);
+        if (up.buf) kfree(up.buf);
+        memset(&up, 0, sizeof up);
+        return;
     }
     if (up.got >= up.len) {
         char msg[200];
@@ -501,6 +513,7 @@ static void http_handle(int i) {
             { "f7", KEY_F7, 0 }, { "f8", KEY_F8, 0 }, { "s-f5", KEY_F5, MOD_SHIFT }, { "del", KEY_DELETE, 0 },
             { "s-up", KEY_UP, MOD_SHIFT }, { "s-down", KEY_DOWN, MOD_SHIFT }, { "s-home", KEY_HOME, MOD_SHIFT },
             { "s-end", KEY_END, MOD_SHIFT }, { "c-home", KEY_HOME, MOD_CTRL }, { "c-end", KEY_END, MOD_CTRL },
+            { "super", KEY_SUPER, 0 },
         };
         for (char *p = t; *p; p++) {
             if (*p == '{') {
@@ -576,6 +589,16 @@ static void http_handle(int i) {
     } else if (!strcmp(path, "/pkg") || !strcmp(path, "/store")) {
         char *buf = kmalloc(16384);
         if (buf) { pkg_debug(buf, 16384); http_text(c, 200, buf); kfree(buf); }
+    } else if (!strncmp(path, "/vm", 3)) {
+        /* the Firefox machine (vm.c): ?start, ?stop, ?con for its console */
+        int vm_dev(const char *q, char *out, int cap);
+        char *buf = kmalloc(8192);
+        if (buf) { vm_dev(path + 3, buf, 8192); http_text(c, 200, buf); kfree(buf); }
+    } else if (!strncmp(path, "/lx", 3)) {
+        /* a Linux program (lx.c): ?run=/path+arg&packs=a.pak,b.pak, ?stop, ?status, ?con */
+        int lx_dev(const char *q, char *out, int cap);
+        char *buf = kmalloc(32768);
+        if (buf) { lx_dev(path + 3, buf, 32768); http_text(c, 200, buf); kfree(buf); }
     } else if (!strncmp(path, "/app?", 5)) {
         /* /app?<id>&<cmd>: the package's own dev hook; %20 and + are spaces */
         char id[32] = "", cmd[256] = "";
@@ -655,6 +678,10 @@ static void http_handle(int i) {
             http_text(c, 200, buf);
             kfree(buf);
         }
+    } else if (strncmp(path, "/hdmi", 5) == 0 && (path[5] == 0 || path[5] == '?')) {
+        int hdmi_debug(const char *path, char *out, int cap);
+        char *buf = kmalloc(4096);
+        if (buf) { hdmi_debug(path, buf, 4096); http_text(c, 200, buf); kfree(buf); }
     } else if (strcmp(path, "/screen.bmp") == 0) {
         http_shot(c);
         http[i].c = 0;                         /* the pump owns it now         */

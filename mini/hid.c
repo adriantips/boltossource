@@ -159,6 +159,7 @@ void hid_report(const hid_map_t *m, hid_state_t *st, int rid, const uint8_t *r, 
         }
         if ((st->mods & 0x88) && !(md & 0x88) && !any) input_key(KEY_SUPER, 0, 0, source);
         if (!any) st->rep_key = 0;
+        input_raw_keys(st->mods, st->keys, st->nkeys, (uint8_t)md, keys, nk);
         memcpy(st->keys, keys, (size_t)nk);
         st->nkeys = (uint8_t)nk;
         st->mods = (uint8_t)md;

@@ -15,7 +15,7 @@ and it has eight apps built in:
 - **Monitor**: processor load, memory, the link to your Mac, USB devices.
 - **Notes**: a page to type on, kept on the SD card.
 - **Clock**: the time, large, and a stopwatch.
-- **Settings**: Wi-Fi, Bluetooth, theme and accent, screen-sharing
+- **Settings**: Network (Ethernet), Bluetooth, theme and accent, screen-sharing
   password, date and time, About, restart and power off.
 - **Packages**: apps from boltos.dev that aren't in the kernel, installed
   over the network onto the SD card. The first is **BoltOS Local AI**, a
@@ -24,7 +24,7 @@ and it has eight apps built in:
 Files are kept on the card's FAT32 partition, the one BOLTOS.BIN is on, so
 a Mac with the card in its reader sees the same folders.
 
-The Pi gets online by Ethernet or by its own Wi-Fi, and Bluetooth
+The Pi gets online by Ethernet only (its Wi-Fi is off: see below), and Bluetooth
 keyboards, mice and game controllers work alongside USB ones.
 
 Until your LCD arrives, **your Mac is the Pi's screen**. The Pi's USB-C port
@@ -252,12 +252,12 @@ Bluetooth settings, from Orange Pi's firmware repository at a fixed commit
 and checks it against known hashes; the files aren't part of this
 repository. Built offline, Mini works without Wi-Fi and Bluetooth.
 
-**Wi-Fi** turns itself on two seconds after boot. In Settings → Wi-Fi,
-pick a network (↑ ↓, Return), type its password and press Return. Open and
-WPA2 networks work; WPA3-only and enterprise networks don't yet. The
-network you joined last is joined again by itself, after a restart and
-after the power has been off: it's kept on the card (as WPA2's key, not
-the password). The switch at the top turns Wi-Fi off.
+**Wi-Fi is off.** The Zero3's Wi-Fi antenna snapped off, so Mini relies
+on the Ethernet socket alone: Wi-Fi never starts by itself and Settings has
+no Wi-Fi page; Settings → Network shows the cable's speed, the address the
+router gave, the router and DNS. `mini/wifi.c` is still built (open and
+WPA2 networks, the last one kept on the card) and the development endpoint
+`/wifi?up` starts it by hand.
 
 **Bluetooth**: switch it on in Settings → Bluetooth and put the device in
 pairing mode; it shows under Other Devices. Return pairs it. A keyboard
@@ -360,7 +360,7 @@ can't be removed or replaced from the Pi; `pi.py install` does that.
 
 **Packages** (7, or F7) lists the apps boltos.dev offers
 (<https://boltos.dev/pkg/index.json>). Return installs the chosen one: it
-downloads over Wi-Fi or Ethernet, its SHA-256 is checked against the list,
+downloads over Ethernet, its SHA-256 is checked against the list,
 and it's kept on the SD card. It then shows up in the bar after the
 built-in apps, and is loaded again at every start. Return on an installed
 one opens it; Backspace twice removes it, with everything it downloaded.
@@ -389,7 +389,7 @@ arithmetic, not of memory), and they answer noticeably worse. A
 question goes in at 10-15 tokens a second, so one with web search results
 in front of it takes half a minute or so before the answer starts.
 
-Downloads come over Wi-Fi or Ethernet at about 1 MB/s. A download that
+Downloads come over Ethernet at about 1 MB/s. A download that
 stops carries on where it got to, and once it's whole it is read back and
 checked against Hugging Face's SHA-256. Return on a downloaded model loads
 it, and it's loaded again the next time Local AI opens.
@@ -415,14 +415,109 @@ loads again when you come back to Local AI. The other way round, loading a
 model stops a video whose page isn't on screen; Space on that page plays it
 again.
 
-## When the LCD arrives
+## Firefox
 
-The screen is a buffer in RAM, and anything can show it. Today that's VNC
-and QEMU's window. An LCD needs one more driver behind `screen_present()`
-(`mini/screen.c`). Which driver depends on the panel: a small SPI panel on
-the pin header (ILI9341, ST7789, ILI9486) is a short driver, and the H618's
-HDMI output is a much larger one. The layout scales with screen height
-(`S()` in `mini/ui.h`), so 480 × 320 and 800 × 480 work without changes.
+The **Browser** (1) is real Firefox, running on the Pi: pages look exactly as
+Firefox on Windows draws them -- React apps, web fonts, video and all --
+because that is what draws them. Its window fills the space under the bar:
+its own tabs, address bar, bookmarks, history, downloads, extensions.
+
+Firefox needs Linux under it, so BoltOS runs Linux as a guest, on its own
+hypervisor: U-Boot starts Mini at EL2, the A53's hypervisor level, and Mini
+keeps that level for itself. The guest -- *the Firefox machine* -- gets cores
+1-3 and the two big windows of RAM (894 MB); BoltOS keeps core 0 and makes
+its devices: a disk (Firefox and Debian, read-only), a second disk for the
+profile, a screen, a keyboard, a tablet, and a network card it routes through
+Ethernet. Nothing else runs on the Pi; nothing needs a Mac.
+
+The first time the Browser opens it offers to download Firefox (about 310 MB,
+from boltos.dev, onto the card's store, checked against its SHA-256). It keeps
+downloading while other apps are open. Then the first start reads Firefox off
+the card; after that the machine stays up, and coming back to the Browser is
+instant.
+
+| Key | Does |
+| --- | --- |
+| everything | goes to Firefox: Ctrl+L, Ctrl+T, Ctrl+W, F5, Ctrl+F, ... |
+| Esc | goes to the page (a menu, full-screen video) |
+| Esc twice | back to Home |
+| Q, while it starts | the quick browser instead (BoltOS's own engine) |
+
+Firefox is set up as Firefox on Windows 11 (`mini/firefox/user.js`): a page
+sees Windows' user agent and platform, gets Windows' default fonts --
+Microsoft's core web fonts (Arial, Times New Roman, Verdana, Georgia, Courier
+New...), which the machine downloads from Microsoft on its first start, and
+Selawik and Cascadia Mono standing in for Segoe UI and Consolas -- Windows
+11's scrollbars, and Windows' light theme. Video comes as H.264 where a site
+offers it (YouTube does), which is what an A53 decodes fastest. There is no
+sound: Mini has no audio output yet.
+
+Settings for it don't exist yet; the dev page has `/vm` (state, `?start`,
+`?stop`, `?con` for the guest's console).
+
+**Firefox on another computer.** If a Mac or PC runs the BoltOS Web Engine
+(`webengine/`: Firefox in a small Linux VM, streamed as H.264), the Browser
+can show that one instead: `bash webengine/vm.sh pair` points a Mini at it
+(`/engine?set=HOST:7310&key=K`, `/engine?off` to stop). It's off unless set.
+
+**Building the Firefox machine.** `bash mini/firefox/make-image.sh` builds the
+guest kernel (Linux 6.18 LTS) and root file system in an arm64 Debian VM on the
+Mac (`webengine/vm.sh setup` makes the VM), into `build/mini/firefox/`;
+`bash mini/firefox/publish.sh` puts them on boltos.dev. For a dev Pi,
+`curl --data-binary @build/mini/firefox/root.sqfs "http://10.77.0.1/store?name=fx/root.sqfs"`
+(and `fx/Image`) copies them straight onto its card over USB-C (about 4 MB/s,
+70 s for the root). `/vm?debug` starts the next machine with a root shell
+on its console: `/vm?sh=free+-m` types a line into it, `/vm?con` shows what
+came back.
+
+## A screen on the HDMI port
+
+Plug a monitor into the Pi's micro-HDMI port (a micro-HDMI to HDMI cable or
+adapter) and the screen shows up on it. It's the same screen the Mac sees,
+so Screen Sharing keeps working alongside. Mini reads the monitor's EDID and
+uses the size the monitor asks for, so a 1080p monitor gets 1920 × 1080 at
+60 Hz. A monitor plugged in after Mini has started gets picked up within a
+second. Unplugging it leaves the screen at the size it was.
+
+Settings → Display picks the resolution. Left and right move through the
+sizes the monitor supports, and Return switches. **Automatic** follows the
+monitor. With no monitor attached, the list has sizes for Screen Sharing
+instead (1024 × 600 up to 1920 × 1080). The choice is kept across restarts.
+The layout scales with screen height (`S()` in `mini/ui.h`), so every size
+looks the same, only bigger.
+
+Sizes go up to 1920 × 1200. Two screen buffers have to fit in the kernel's
+96 MiB heap, so 4K monitors get their largest mode at or under that size.
+The signal is DVI-style RGB, so no audio is carried over HDMI.
+
+The driver (`mini/hdmi.c`) sets up the H618's display engine (DE 3.3), TCON
+TOP, TCON TV0 and the DesignWare HDMI controller and PHY itself, because our
+U-Boot has no video. A small SPI LCD would need its own driver behind
+`screen_present()` (`mini/screen.c`).
+
+### An HDMI LCD
+
+The 5" and 7" touchscreens sold for the Raspberry Pi (Waveshare, Elecrow,
+SunFounder, Hosyond...) are HDMI monitors with touch on a separate USB cable,
+and Mini drives both. The Pi's port is **micro-HDMI**, so the screen needs a
+micro-HDMI to HDMI cable or adapter. Many come with one for the Pi 4 and 5.
+
+- **Picture**: the panel's EDID gives its own timing (a 7" panel is 1024 × 600,
+  Mini's design size; a 5" one is 800 × 480), and Automatic uses it. A board
+  that never raises hot-plug detect is found by its EDID answering on the DDC
+  wires. A board with no EDID gets 1280 × 720 (its scaler takes it), with
+  1024 × 600 and 800 × 480 in Settings → Display at the CVT timings the makers
+  give for the Pi.
+- **Touch**: plug the screen's touch USB cable into the Pi's USB-A port (with a
+  hub if the keyboard is there too). Any driver-free HID touchscreen works,
+  the Windows multi-touch kind (`mini/usbhost.c` reads its report descriptor).
+  The first finger is the pointer: **tap** to click, **slide** to scroll (the
+  page follows the finger), **hold, then move** to drag (select text, move a
+  slider). Settings → Display shows it under Touch; `/debug` dumps its report
+  descriptor and its last reports.
+- **Power**: a 7" panel draws about half an amp. If the Pi restarts when the
+  screen lights up, power the screen from its own USB charger and keep only
+  the touch cable on the Pi.
 
 ## How it works
 
@@ -438,13 +533,25 @@ HDMI output is a much larger one. The layout scales with screen height
   command.
 - **The machine**: `mini/arch/` holds the entry (EL2 → EL1), the identity
   map with caches on, exceptions, GICv2/v3 and the 1 kHz timer.
+- **The hypervisor**: `mini/arch/hyp.S` is all that runs at EL2 -- a world
+  switch, as KVM does on a CPU without VHE: BoltOS stays at EL1 and asks it
+  to run a guest CPU with `hvc`. `mini/vm.c` is the guest's machine: stage-2
+  translation over the two RAM windows, a vCPU per core on cores 1-3, PSCI,
+  an emulated GIC distributor with the GIC-400's virtual CPU interface and
+  list registers (the guest's timer goes in linked to the physical
+  interrupt), a PL011 console into the log and a PL031 clock, and its
+  device tree. `mini/vdev.c` makes its virtio-mmio devices: two disks on the
+  store, virtio-gpu (2D), keyboard and tablet, an RNG, and a network card
+  NAT'd through `mini/net.c`. `mini/fxget.c` downloads the machine's files.
   `mini/board.c` tells the Pi and QEMU apart from the device tree and
   covers the UART, LEDs, watchdog and PSCI.
 - **USB-C, as a device**: `mini/musb.c` drives the H618's MUSB controller
   as a CDC-ECM network adapter, which macOS supports with no drivers.
 - **USB-A and the header ports, as a host**: `mini/usbhost.c` drives OHCI,
-  with hubs and boot-protocol keyboards and mice. EHCI is left off, so a
-  USB 2.0 hub runs at full speed and passes keyboards through.
+  with hubs, keyboards and mice, and HID multi-touch touchscreens (an HDMI
+  LCD's touch; `input_touch()` in `mini/input.c` turns a finger into taps,
+  scrolls and drags). EHCI is left off, so a USB 2.0 hub runs at full speed
+  and passes keyboards through.
 - **Wi-Fi and Bluetooth**: `mini/sdio.c` drives the H618's MMC1 as an
   SDIO host for the UWE5622; `mini/wcn.c` loads its firmware and carries
   its packets. `mini/wifi.c` is the host side of its Wi-Fi firmware (scans,

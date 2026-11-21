@@ -42,6 +42,9 @@ static int sel;                          /* home: the selected app              
 static int dirty = 1;
 static uint64_t last_frame;
 static int pointer_x = -1, pointer_y = -1, pointer_btn;
+/* An app that has the whole screen (a game): no bar, no arrow, every key
+ * but Super is its own, and it draws and presents its frames itself. */
+static int fullscreen;
 
 /* ---- the theme ---------------------------------------------------------------------------------- */
 typedef struct { uint32_t bg, bar, surface, line, text, sub, faint; } palette_t;
@@ -286,6 +289,68 @@ int shell_mac_connected(void) {
     return (n && n->up && strcmp(n->name, "usb0") == 0) || vnc_clients() > 0;
 }
 
+/* ---- the screen going dark, and screen sleep ------------------------------------------------------
+ *  A 1920 x 1080 frame costs tens of ms of the core everything else runs on, so nothing is drawn while
+ *  nobody can see it: no picture going out of the HDMI port (the monitor was unplugged, or the screen
+ *  is asleep) and no Screen Sharing viewer. Screen sleep turns the HDMI output off -- the monitor goes
+ *  to standby -- after the chosen minutes without a key, click, touch or pointer move, and after one
+ *  minute when no monitor is detected at all, so a Pi left on its own stops drawing too. The next key,
+ *  click or move wakes it and does nothing else. A Screen Sharing viewer keeps it awake. Kept as "slp". */
+static const uint8_t sleep_choices[] = { 0, 1, 5, 10, 30, 60 };
+#define NSLEEP ((int)sizeof sleep_choices)
+static int sleep_min = 10, asleep, was_lit = 1, was_dark;
+static uint64_t last_input, woke_at;
+
+int screen_sleep_minutes(void) { return sleep_min; }
+
+void screen_sleep_label(char *out, int cap) {
+    if (!sleep_min) snprintf(out, (size_t)cap, "Never");
+    else snprintf(out, (size_t)cap, "After %d minute%s", sleep_min, sleep_min == 1 ? "" : "s");
+}
+
+void screen_sleep_cycle(int dir) {
+    int i = 0;
+    while (i < NSLEEP && sleep_choices[i] != sleep_min) i++;
+    if (i == NSLEEP) i = 3;
+    i = (i + NSLEEP + dir) % NSLEEP;
+    sleep_min = sleep_choices[i];
+    uint8_t v = (uint8_t)sleep_min;
+    keep_put("slp", &v, 1);
+    woke_at = now_ms();                                    /* a new choice counts from now */
+    dirty = 1;
+}
+
+int screen_is_dark(void) { return !display_lit() && vnc_clients() == 0; }
+
+static void screen_wake(const char *why) {
+    asleep = 0;
+    woke_at = now_ms();
+    display_wake();
+    dirty = 1;
+    kprintf("[screen] awake (%s)\n", why);
+}
+
+static void screen_sleep_poll(void) {
+    uint64_t now = now_ms();
+    int lit = display_lit();
+    if (lit && !was_lit) { woke_at = now; asleep = 0; }   /* a monitor came along, or the screen woke */
+    was_lit = lit;
+    int dark = screen_is_dark();
+    if (dark != was_dark) {
+        was_dark = dark;
+        if (dark) kprintf("[screen] not drawing: %s and no Screen Sharing viewer\n", asleep ? "asleep" : "nothing on the HDMI port");
+        else { dirty = 1; kprintf("[screen] drawing again\n"); }
+    }
+    if (asleep || !lit || !sleep_min || vnc_clients() > 0) return;
+    uint64_t since = now - (last_input > woke_at ? last_input : woke_at);
+    int plugged = display_plugged();
+    if (since < (plugged ? (uint64_t)sleep_min * 60000u : 60000u)) return;
+    if (!display_sleep()) return;                         /* nothing to turn off (QEMU) */
+    asleep = 1;
+    kprintf("[screen] asleep after %lu min without input%s\n", (unsigned long)(since / 60000),
+            plugged ? "" : " (no monitor detected)");
+}
+
 /* ---- settings that outlive a restart --------------------------------------------------------------
  *  The theme, the accent and the time zone go into a keep record (klog.c),
  *  which fs.c copies to the card, so they come back after a power cut too. */
@@ -298,6 +363,10 @@ void shell_settings_save(void) {
 
 void shell_settings_restore(void) {
     look_t l;
+    display_restore();
+    uint8_t s;
+    if (keep_get("slp", &s, 1) == 1)
+        for (int i = 0; i < NSLEEP; i++) if (sleep_choices[i] == s) sleep_min = s;
     if (keep_get("look", &l, (int)sizeof l) != (int)sizeof l) return;
     theme_set(l.wallpaper, l.accent);
     if (l.tz >= -12 * 60 && l.tz <= 14 * 60) clock_set_tz_minutes(l.tz);
@@ -461,14 +530,18 @@ static void draw_facts(int x, int y) {
     snprintf(v[1], sizeof v[1], "BoltOS Mini %s", mini_version());
     char *sp = strchr(v[1], ' '); sp = sp ? strchr(sp + 1, ' ') : 0; sp = sp ? strchr(sp + 1, ' ') : 0;
     if (sp) *sp = 0;                                  /* "BoltOS Mini 1.0"     */
-    if (board_cpu_mhz()) snprintf(v[2], sizeof v[2], "4 x Cortex-A53, %u MHz", board_cpu_mhz());
+    int tc_mc = board_temp_mc();
+    if (board_cpu_mhz() && tc_mc > -1000000)
+        snprintf(v[2], sizeof v[2], "4 x Cortex-A53, %u MHz, %d\xB0" "C", board_cpu_mhz(), (tc_mc + 500) / 1000);
+    else if (board_cpu_mhz()) snprintf(v[2], sizeof v[2], "4 x Cortex-A53, %u MHz", board_cpu_mhz());
     else snprintf(v[2], sizeof v[2], "Cortex-A53 (QEMU)");
     uint64_t used, total; kheap_usage(&used, &total);
     snprintf(v[3], sizeof v[3], "%lu MiB, heap %lu / %lu MiB", (unsigned long)(g_ram_size >> 20),
              (unsigned long)(used >> 20), (unsigned long)(total >> 20));
     mini_uptime_str(v[4], sizeof v[4]);
-    int kb = usbh_keyboards(), ms = usbh_mice();
-    if (kb || ms) snprintf(v[5], sizeof v[5], "%d keyboard%s, %d mouse%s", kb, kb == 1 ? "" : "s", ms, ms == 1 ? "" : "s");
+    int kb = usbh_keyboards(), ms = usbh_mice(), tc = usbh_touchscreens();
+    if (kb || ms || tc) snprintf(v[5], sizeof v[5], "%d keyboard%s, %d mouse%s%s", kb, kb == 1 ? "" : "s", ms, ms == 1 ? "" : "s",
+                                 tc ? ", touch" : "");
     else snprintf(v[5], sizeof v[5], "%s", shell_mac_connected() ? "the Mac's keyboard" : "none yet");
     int lh = S(20), kw = font_width(FONT_MONO, S(12), "memory  ", -1);
     for (int i = 0; i < 6; i++) {
@@ -522,7 +595,18 @@ static void draw_app(void) {
 }
 
 /* ---- input ---------------------------------------------------------------------------------------- */
-void shell_go_home(void) { cur = 0; dirty = 1; }
+/* Raw input (a Linux program's keyboard and mouse) belongs to a full-screen
+ * app: leaving it, for Home or another app, turns it off. */
+void shell_go_home(void) { cur = 0; fullscreen = 0; input_raw_enable(0); dirty = 1; }
+
+void shell_fullscreen(int on) {
+    if (on == fullscreen) return;
+    fullscreen = on && cur;
+    if (fullscreen) screen_pointer(pointer_x, pointer_y, 0);
+    else input_raw_enable(0);
+    dirty = 1;
+}
+int shell_is_fullscreen(void) { return fullscreen; }
 
 /* An installed package's app joins the bar and Home, after the built-in ones. */
 int shell_add_app(const app_t *a) {
@@ -547,7 +631,7 @@ void shell_remove_app(const app_t *a) {
 
 const app_t *shell_current(void) { return cur; }
 void shell_open(const app_t *a) {
-    cur = a; dirty = 1;
+    cur = a; dirty = 1; fullscreen = 0; input_raw_enable(0);
     for (int i = 0; i < NAPPS; i++) if (apps[i] == a) sel = i;
     if (a->open) a->open();
 }
@@ -565,6 +649,16 @@ static void home_key(const input_ev_t *e) {
 }
 
 static void handle(const input_ev_t *e) {
+    if (fullscreen && cur) {
+        if (e->type == EV_POINTER) {
+            pointer_x = e->x; pointer_y = e->y; pointer_btn = e->buttons;
+            if (cur->pointer) cur->pointer(e, 0, 0, scr_w, scr_h);
+            return;
+        }
+        if (e->key == KEY_SUPER) { shell_go_home(); return; }
+        cur->key(e);
+        return;
+    }
     if (e->type == EV_POINTER) {
         int moved = e->x != pointer_x || e->y != pointer_y;
         int click = (e->buttons & 1) && !(pointer_btn & 1);
@@ -611,6 +705,8 @@ static void handle(const input_ev_t *e) {
     }
     /* Code has F2 (rename), F3 (find again) and F5 (run) for itself */
     int code_key = cur == &app_code && (e->key == KEY_F2 || e->key == KEY_F3 || e->key == KEY_F5);
+    int browser_wants_key(int key);
+    if (cur == &app_browser && browser_wants_key(e->key)) code_key = 1;
     if (!code_key && e->key >= KEY_F1 && e->key < KEY_F1 + NAPPS) { shell_open(apps[e->key - KEY_F1]); return; }
     if (cur) cur->key(e); else home_key(e);
     dirty = 1;
@@ -673,6 +769,7 @@ int shell_frame(void) {
     if (splash_active()) {
         input_ev_t e;
         while (input_pop(&e)) splash_dismiss();
+        display_poll();
         uint64_t now = now_ms();
         if (now - last_frame < 16) return 0;
         last_frame = now;
@@ -685,7 +782,21 @@ int shell_frame(void) {
     }
     if (was_splash) { was_splash = 0; dirty = 1; }
     input_ev_t e;
-    while (input_pop(&e)) handle(&e);
+    while (input_pop(&e)) {
+        last_input = now_ms();
+        if (asleep) { screen_wake(e.type == EV_KEY ? "a key" : "the pointer"); continue; }   /* waking is all it does */
+        handle(&e);
+    }
+    display_poll();                                    /* a monitor plugged in or out */
+    screen_sleep_poll();                               /* nobody looking: go dark */
+    if (fullscreen && cur) {                           /* the app draws and presents itself */
+        if (cur->tick) cur->tick();
+        int code_background(void), notes_background(void);
+        code_background();
+        notes_background();
+        return 0;
+    }
+    screen_pointer_poll();                             /* an arrow move waiting for the display */
     uint64_t now = now_ms();
     if (anim_until && now - last_frame >= 16) {
         if (now >= anim_until) { anim_until = 0; cur = 0; }
@@ -704,6 +815,8 @@ int shell_frame(void) {
     notes_background();                                /* and Notes saves what was typed last   */
     if (toast_at && now - toast_at >= TOAST_MS) { toast_at = 0; dirty = 1; }
     if (!dirty || now - last_frame < 16) return 0;
+    /* Nobody can see it: keep `dirty`, so the frame after it lights up again is drawn whole. */
+    if (screen_is_dark()) return 0;
     /* A viewer still taking the last frame can't be sent this one yet: drawing
      * it now would only keep the loop from feeding the network. */
     if (vnc_streaming() && now - last_frame < 100) return 0;

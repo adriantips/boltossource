@@ -11,6 +11,11 @@
 #
 #  -accel hvf runs it on the M-series cores directly; without it (or on an
 #  Intel Mac) QEMU emulates the A53, which is slower but fine.
+#
+#      bash mini/tools/run-qemu.sh --virt      with EL2 and a GICv2 that has
+#                                             the virtualisation extensions,
+#                                             as on the Pi: Firefox's machine
+#                                             (mini/vm.c) runs (emulated, slowly)
 # ===========================================================================
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -22,11 +27,13 @@ KERNEL="$ROOT/build/mini/boltos.bin"
 DISPLAY_ARGS=(-display cocoa)
 ACCEL=(-accel tcg -cpu cortex-a53)
 GIC=2
+VIRT=""
 EXTRA=()
 for a in "$@"; do
     case "$a" in
     --headless) DISPLAY_ARGS=(-display none) ;;
     --hvf)      ACCEL=(-accel hvf -cpu host); GIC=3 ;;   # Apple's hypervisor only does GICv3
+    --virt)     VIRT=",virtualization=on"; ACCEL=(-accel tcg,thread=multi -cpu cortex-a53); GIC=2 ;;
     --ohci)     EXTRA+=(-device pci-ohci,id=ohci -device usb-hub,bus=ohci.0,port=1
                         -device usb-kbd,bus=ohci.0,port=1.1 -device usb-mouse,bus=ohci.0,port=1.2) ;;
     *)          EXTRA+=("$a") ;;
@@ -60,7 +67,7 @@ with open(sys.argv[1], "wb") as f:
 PY
 fi
 
-exec "$QEMU" -M virt,gic-version=$GIC,highmem=off "${ACCEL[@]}" -smp 4 -m 1G \
+exec "$QEMU" -M virt,gic-version=$GIC,highmem=off$VIRT "${ACCEL[@]}" -smp 4 -m 1G \
     -drive if=none,file="$CARD",format=raw,id=card -device virtio-blk-device,drive=card \
     -kernel "$KERNEL" \
     -device ramfb "${DISPLAY_ARGS[@]}" \

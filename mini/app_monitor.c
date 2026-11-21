@@ -50,6 +50,15 @@ static void m_draw(int x, int y, int w, int h) {
     if (board_cpu_mhz()) snprintf(b, sizeof b, "4 cores, %u MHz", board_cpu_mhz());
     else snprintf(b, sizeof b, "emulated by QEMU");
     text_r(x0 + cw - S(16), y0 + S(20), b, FONT_REGULAR, S(12), th.faint);
+    /* The CPU's temperature: Linux starts slowing an H618 down at 60-70 C and 110 C is its limit. */
+    int tmc = board_temp_mc();
+    if (tmc > -1000000) {
+        int t = (tmc + 500) / 1000;
+        snprintf(b, sizeof b, "%d\xB0" "C", t);
+        text_r(x0 + cw - S(16), y0 + S(58), b, FONT_SEMIBOLD, S(26), t >= 85 ? 0xF0616Du : t >= 70 ? 0xF5A524u : th.text);
+        text_r(x0 + cw - S(16), y0 + S(78), t >= 85 ? "Hot: give it air" : t >= 70 ? "Warm" : "CPU temperature",
+               FONT_REGULAR, S(12), th.faint);
+    }
     uint8_t hist[120];
     int n = shell_cpu_history(hist, 120);
     int gx = x0 + S(16), gw = cw - S(32), gy = y0 + ch - S(16), gh = ch - S(104);

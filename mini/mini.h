@@ -110,6 +110,7 @@ void board_poweroff(void) __attribute__((noreturn));
 void uart_putc(char c);
 int  uart_getc(void);                  /* -1 if nothing                        */
 int  board_temp_mc(void);              /* CPU temperature in milli-degrees C, or -1000000 */
+int  board_sensor_mc(int i);           /* the H618's sensors: 0 GPU, 1 video, 2 CPU, 3 DRAM */
 uint32_t board_cpu_mhz(void);
 
 /* ---- log ------------------------------------------------------------------ */
@@ -130,9 +131,9 @@ const char *fdt_prop_str(const void *fdt, const char *path, const char *prop);
 const char *fdt_model(const void *fdt);
 
 /* ---- the screen ----------------------------------------------------------- *
- *  There is no panel yet: the screen is a buffer in RAM. Whoever looks at it
- *  -- a VNC viewer on the Mac, QEMU's window through ramfb, and later an LCD
- *  -- reads `front`. The shell draws into `back` and screen_present() copies
+ *  The screen is a buffer in RAM. Whoever looks at it -- a VNC viewer on the
+ *  Mac, QEMU's window through ramfb, a monitor on the Pi's HDMI port --
+ *  reads `front`. The shell draws into `back` and screen_present() copies
  *  what changed across, so nobody ever sees half a frame.                     */
 #include "gfx.h"
 extern surface_t g_back;               /* draw here                            */
@@ -147,6 +148,49 @@ void screen_present(int x, int y, int w, int h);
 /* A USB mouse's arrow, drawn over front (not into back): moving it costs
  * a few tiles, not a frame. shown 0 takes it away. */
 void screen_pointer(int x, int y, int shown);
+void screen_pointer_poll(void);         /* every turn: a move waits for the display */
+int  hdmi_beam_near(int y0, int y1);    /* is HDMI scanning out rows y0..y1 now     */
+int  screen_resize(int w, int h);      /* a new size while running; -1 keeps the old */
+void screen_scanout(int on);           /* hardware reads front: keep it out of the cache */
+
+/* ---- HDMI (hdmi.c) ---------------------------------------------------------- *
+ *  The H618's display engine, TCON and DesignWare HDMI, and the monitor's
+ *  EDID. display_* decide the screen's size: Automatic or a chosen one.    */
+typedef struct {
+    uint16_t w, h, hz;
+    uint32_t khz;                      /* pixel clock                          */
+    uint16_t hfp, hs, hbp, vfp, vs, vbp;
+    uint8_t  hpos, vpos;               /* sync polarity, 1 = positive          */
+} video_mode_t;
+int  hdmi_init(void);
+int  hdmi_connected(void);
+int  hdmi_modes(const video_mode_t **m);         /* [0] is the monitor's choice */
+const char *hdmi_monitor(void);                  /* 0 with nothing plugged in   */
+const video_mode_t *hdmi_shown(void);            /* 0 when not showing          */
+int  hdmi_show(const video_mode_t *m, const uint32_t *fb);
+void hdmi_off(void);
+void display_start(int *w, int *h);    /* before screen_init                   */
+void display_show(void);               /* after it                             */
+void display_poll(void);               /* once a frame                         */
+void display_restore(void);            /* a choice kept on the card            */
+int  display_count(void);              /* Settings' choices; 0 is Automatic    */
+int  display_current(void);
+void display_label(int i, char *out, int cap);
+void display_choose(int i);
+void display_status(char *out, int cap);
+int  display_lit(void);                /* a picture is going out (always, without HDMI hardware) */
+int  display_plugged(void);            /* a monitor is detected on the port    */
+int  display_sleep(void);              /* the output off (1), the monitor to standby; 0 if it can't */
+void display_wake(void);               /* and back on                          */
+
+/* ---- screen sleep (shell.c) --------------------------------------------------- *
+ *  Nothing is drawn while nobody can see it: no picture on the HDMI port and
+ *  no Screen Sharing viewer. After the chosen minutes without input (one minute
+ *  with no monitor detected) the HDMI output goes off too; any input wakes it. */
+int  screen_sleep_minutes(void);       /* 0: never                             */
+void screen_sleep_cycle(int dir);      /* Settings' Left/Right                 */
+void screen_sleep_label(char *out, int cap);
+int  screen_is_dark(void);
 
 /* ---- input ---------------------------------------------------------------- */
 enum {
@@ -174,6 +218,10 @@ enum { SRC_USB = 1, SRC_VNC, SRC_QEMU, SRC_SERIAL, SRC_BT };
 
 void input_key(int key, int ch, int mods, int source);
 void input_pointer(int x, int y, int buttons, int wheel, int source);
+/* A touchscreen's first finger (usbhost.c): a tap clicks, a slide scrolls,
+ * a hold then a move drags. tick times the hold for a finger held still. */
+void input_touch(int x, int y, int down, int source);
+void input_touch_tick(void);
 int  input_pop(input_ev_t *ev);
 uint32_t input_count(int source);      /* events seen from a source            */
 uint64_t input_idle_ms(void);          /* since the last key, click or wheel   */
@@ -181,6 +229,19 @@ uint64_t input_idle_ms(void);          /* since the last key, click or wheel   *
 int  input_from_hid(uint8_t usage, int shift, int *ch);
 /* X11 keysym (what VNC speaks) -> KEY_* / character. */
 int  input_from_keysym(uint32_t sym, int *ch);
+/* Raw events for a Linux program (lx_dev.c): Linux evdev type/code/value,
+ * every key down and up, mouse movement before the screen edge stops it.
+ * The sources send them only while input_raw_on(). */
+typedef struct { uint16_t type, code; int32_t value; } input_raw_t;
+void input_raw_enable(int on);
+int  input_raw_on(void);
+void input_raw(int type, int code, int value);
+int  input_raw_pop(input_raw_t *e);              /* the program's core */
+int  input_raw_pending(void);
+int  input_hid_to_evdev(int usage);
+int  input_keysym_to_evdev(uint32_t sym);
+void input_raw_keys(uint8_t old_mods, const uint8_t *old_keys, int nold, uint8_t mods, const uint8_t *keys, int n);
+void input_raw_mouse(int dx, int dy, int wheel, int buttons);
 
 /* ---- USB ------------------------------------------------------------------ */
 int  musb_init(void);                  /* the USB-C port, as a device          */
@@ -192,6 +253,8 @@ void usbh_poll(void);
 int  usbh_device_list(char *out, int cap);       /* for `lsusb` and the Monitor  */
 int  usbh_keyboards(void);
 int  usbh_mice(void);
+int  usbh_touchscreens(void);
+const char *usbh_touch_name(void);              /* 0 with none plugged in        */
 
 /* ---- Ethernet (mini/emac.c) ------------------------------------------------ */
 int  eth_init(void);                   /* the RJ45 socket: EMAC0 + YT8531 PHY  */
@@ -238,6 +301,7 @@ typedef struct {
     uint64_t busy_max;                 /* the longest turn, us                */
     uint32_t vnc_updates, vnc_rects;
     uint64_t vnc_bytes, vnc_scan_us, vnc_scan_max, vnc_pump_us;
+    uint64_t pump_us, shell_us, vm_us;  /* the main loop's parts               */
     uint64_t t0;
 } perf_t;
 extern perf_t g_perf;
