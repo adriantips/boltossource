@@ -389,6 +389,12 @@ TILES = [
     ("web",      "#7C6CFF", "#4B2FD8", "globe",            0.54, 1.8, False, None),
     ("shield",   "#3DDC84", "#0E9F7E", "shield-check",     0.54, 1.9, False, None),
     ("settings", "#9A9AA2", "#5B5B63", "settings",         0.56, 1.8, False, None),
+    # The streaming apps: each service's colour and a plain glyph -- nobody's logo.
+    ("youtube",  "#FF4E45", "#D10F0F", "play",             0.46, 2.1, True,  None),
+    ("netflix",  "#3A0A0D", "#0B0B0D", "clapperboard",     0.52, 1.9, False, None),
+    ("prime",    "#2BB3FF", "#0F68D6", "monitor-play",     0.54, 1.8, False, None),
+    ("disney",   "#3C4FC4", "#121A5E", "sparkles",         0.54, 1.8, False, None),
+    ("hbomax",   "#8A3FFC", "#3B0FA8", "popcorn",          0.54, 1.8, False, None),
 ]
 
 # GL_* order in tv/tv.h

@@ -30,3 +30,6 @@ int   h264_output(h264 *d, h264_pic *p);
 /* After the last access unit: let the held-back pictures out. */
 void  h264_flush(h264 *d);
 const char *h264_error(h264 *d);
+/* Allocate up front what decoding allocates as it goes (a NAL buffer of
+ * nal_bytes, the first `pics` pictures), for a decoder run on another core. */
+int   h264_prealloc(h264 *d, int nal_bytes, int pics);

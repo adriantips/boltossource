@@ -599,6 +599,29 @@ h264 *h264_open(const uint8_t *avcc, int len) {
     return d;
 }
 
+/* What decoding would allocate as it went, allocated now: a NAL buffer for
+ * nal_bytes and the first `pics` pictures, sized by the stream's SPS. The
+ * heap is the boot core's alone, so a decoder handed to another core
+ * (mini/engine.c) must not grow there. */
+int h264_prealloc(h264 *d, int nal_bytes, int pics) {
+    const sps_t *s = 0;
+    for (int i = 0; i < 4 && !s; i++) if (d->sps[i].valid) s = &d->sps[i];
+    if (!s) return -1;
+    if (nal_bytes + 16 > d->nal_cap) {
+        if (d->nal) kfree(d->nal);
+        d->nal_cap = nal_bytes + 4096;
+        d->nal = kmalloc((uint64_t)d->nal_cap);
+        if (!d->nal) { d->nal_cap = 0; return -1; }
+    }
+    if (d->mb_w != s->mb_w || d->mb_h != s->mb_h) {
+        free_pics(d);
+        d->mb_w = s->mb_w; d->mb_h = s->mb_h;
+        d->w = s->mb_w * 16; d->h = s->mb_h * 16;
+    }
+    for (int i = 0; i < pics && i < DPB_N; i++) if (alloc_pic(d, &d->dpb[i]) < 0) return -1;
+    return 0;
+}
+
 void h264_close(h264 *d) {
     if (!d) return;
     free_pics(d);

@@ -137,6 +137,7 @@ const uint32_t *film_still(int film, int *w, int *h);
 /* ---- art (tv/art.c, drawn by tv/mkart.py) --------------------------------- */
 enum {
     ART_LIVE = 0, ART_APPLETV, ART_HDMI, ART_WEB, ART_SHIELD, ART_SETTINGS,
+    ART_YOUTUBE, ART_NETFLIX, ART_PRIME, ART_DISNEY, ART_HBOMAX,
     ART_TILES,
     /* glyphs: white, tinted when drawn */
     GL_BOLT = 0, GL_CHEV_R, GL_CHEV_L, GL_CHEV_U, GL_CHEV_D, GL_VOL, GL_MUTE,
@@ -184,9 +185,25 @@ int  ui_wrap(int face, int px, int x, int top, int w, int line_h, int max_lines,
 void fmt_int(char *out, int cap, long v);          /* 12,345 */
 void fmt_time(char *out, int cap, int h, int m);   /* 21:05 or 9:05 PM */
 
+/* ---- the on-screen keyboard (tv/osk.c) ------------------------------------ */
+typedef struct {
+    char        text[256];
+    int         r, c, last_typed, active;
+    const char *title, *done;      /* placeholder in the empty field; the last key */
+} osk_t;
+void osk_begin(osk_t *k, const char *initial, const char *title, const char *done);
+/* 0 still typing, 1 done (text is the answer), -1 Back. Puts the shell in and
+ * out of text mode. */
+int  osk_key(osk_t *k, tvkey_t key);
+void osk_draw(const osk_t *k, uint64_t now, int alpha);
+
 /* ---- the views ----------------------------------------------------------- */
 extern const view_t view_home, view_live, view_input, view_web, view_adblock,
-                    view_settings;
+                    view_settings, view_youtube, view_ytplay, view_stream;
+/* The streaming services that play through the Firefox engine (tv/stream.c). */
+enum { SVC_NETFLIX = 0, SVC_PRIME, SVC_DISNEY, SVC_HBOMAX, SVC_COUNT };
+void stream_select(int service);
+void settings_open_streaming(void);
 void settings_open_about(void);
 void input_select(int which);        /* 0 HDMI 1, 1 Apple TV (HDMI 2) */
 void web_open(const char *url);
@@ -240,8 +257,17 @@ typedef struct fetch {
     int       status;          /* HTTP status, or a negative reason            */
     char      location[1024];  /* a redirect's target                          */
     const char *headers;       /* extra request header lines, or NULL           */
+    /* Set: the network thread calls this instead of fetching `url` (see
+     * netsvc_call). It sets len >= 0 for done, < 0 for failed. */
+    void      (*run)(struct fetch *f);
+    void       *arg;
 } fetch_t;
 int  netsvc_fetch(fetch_t *f);       /* 0 queued, -1 queue full */
+/* Run f->run(f) on the network thread, in turn with the fetches: work that
+ * talks to the network its own way (a video's byte ranges over one kept-
+ * alive connection, a POST). The caller owns f and polls f->state; nothing
+ * frees it. */
+int  netsvc_call(fetch_t *f, void (*run)(fetch_t *f), void *arg);
 void netsvc_cancel(fetch_t *f);
 
 /* ---- ad blocker (tv/adblock.c) ------------------------------------------- */

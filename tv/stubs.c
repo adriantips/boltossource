@@ -91,3 +91,7 @@ void gui_request_redraw(void) { }
 int dns_blocked(const char *host) {
     return tvs.adblock && adblock_host_blocked(host);
 }
+
+/* ---- the H.264 decoder --------------------------------------------------- *
+ * mini/h264mb.c can trace macroblocks for the host tests; nothing reads it here. */
+void h264_trace(const char *fmt, ...) { (void)fmt; }

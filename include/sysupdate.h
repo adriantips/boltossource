@@ -58,6 +58,12 @@ int             sysupd_poll(void);        /* the shell, every frame: 1 = redraw 
 const sysupd_t *sysupd_state(void);
 int             sysupd_auto(void);
 void            sysupd_set_auto(int on);  /* kept on the boot disk                   */
+/* A few lines of the product's own settings ("key=value\n"), kept beside
+ * UPDATE.CFG as PREFS.CFG when the stick is there. Read once at start:
+ * sysupd_prefs_loaded() says when that has happened. */
+int             sysupd_prefs_loaded(void);
+void            sysupd_prefs_get(char *out, int cap);
+void            sysupd_prefs_set(const char *text);
 void            sysupd_check(void);
 int             sysupd_install(void);     /* the newer one, now                      */
 void            sysupd_restart(void);     /* into what was installed                 */

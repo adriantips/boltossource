@@ -3,6 +3,7 @@
 #include "net.h"
 #include "driver.h"
 #include "kprintf.h"
+#include "io.h"
 
 static struct netif   *netifs;       /* singly-linked list of registered ifaces */
 static netif_input_fn  input_fn;     /* protocol-stack hook (P3)                 */
@@ -46,7 +47,12 @@ struct netif *netif_list(void)    { return netifs; }
 
 int netif_send(struct netif *nif, const void *frame, uint16_t len) {
     if (!nif || !nif->send) return -1;
+    /* One frame onto the ring at a time: two threads that both talk to the
+     * network (BoltOS TV's fetches and its Firefox engine link) would
+     * otherwise interleave inside a driver's transmit descriptors. */
+    uint64_t f = irq_save();
     int r = nif->send(nif, frame, len);
+    irq_restore(f);
     if (r == 0) { nif->tx_packets++; nif->tx_bytes += len; }
     else        { nif->tx_errors++; }
     return r;

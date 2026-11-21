@@ -13,6 +13,18 @@ name and the time.
 - **Live TV.** Six channels of nature footage, filmed in 4K and playing all
   the time as seamless loops. There's a channel banner, a guide with a still
   of each channel, and you can change channel with up/down or type a number.
+- **YouTube.** Search, or pick a topic, and the results come up as a grid
+  of thumbnails. A video plays full screen with its sound, decoded by the TV
+  itself: no account, no sign-in and no other computer. OK pauses, Left and
+  Right jump ten seconds, Channel +/- jump a minute. (See the limits below
+  for the picture quality.)
+- **Netflix, Prime Video, Disney+ and HBO Max.** These play in a real
+  Firefox on another computer on your network, which streams the page and
+  its sound to the TV. See "Streaming apps" below for how to set that up.
+  The arrows move a pointer and OK clicks. Channel +/- scrolls, and Back goes
+  back a page (or out of the app from its first page). `i` turns the arrows
+  into arrow keys for a player's own controls, and Tab lets a keyboard type
+  into the page until you press Esc.
 - **Apple TV and HDMI 1.** These are input screens, as on any TV, with an input
   switcher along the bottom. (See the limits section below for what they can
   and can't do.)
@@ -52,9 +64,22 @@ name and the time.
 - **Network** is wired Ethernet only (Intel e1000-family and virtio
   adapters). There is no Wi-Fi.
 - **Settings are not saved.** BoltOS TV starts with the defaults every time.
-  The one exception is Automatic updates, which is kept on the stick.
+  The exceptions are Automatic updates and the streaming engine's address,
+  which are kept on the stick.
 - **No JavaScript in the browser.** Text-first sites work well; web apps
-  don't. YouTube and streaming services won't play.
+  don't. YouTube has its own app, and the streaming services play through
+  the Firefox engine (below).
+- **YouTube plays at 360p.** That's the one stream YouTube gives out with the
+  picture and sound in a single file, so it is what the TV can play without
+  YouTube's player scripts. It's watchable on a big screen, but it's soft.
+  Live streams don't play. Each video's first 384 MB (well over an hour)
+  fits in memory.
+- **Netflix, Prime Video, Disney+ and HBO Max need a second computer.**
+  They only play inside a browser with a licensed DRM module (Widevine).
+  No small operating system can get one, so BoltOS TV can't play them by
+  itself. A computer running the BoltOS Web Engine plays them in Firefox and
+  sends the picture to the TV, at the 720p those services give Firefox on
+  Linux.
 
 ## Putting it on your TV
 
@@ -167,6 +192,39 @@ a second. On real hardware they play at full speed.
 
 A mouse or air-mouse works everywhere as well: point and click, and use the
 wheel to scroll pages.
+
+## Streaming apps
+
+Netflix, Prime Video, Disney+ and HBO Max run in Firefox on a computer on
+your home network, through the **BoltOS Web Engine** (`webengine/` in the
+source). That's the same engine BoltOS Mini's browser can use. The engine
+captures Firefox's screen and sends it to the TV as H.264, along with its
+sound as plain PCM. Your remote's pointer, clicks and keys go back the other
+way. You sign in to each service in that Firefox, once, and it remembers you.
+
+1. **A Linux machine on x86-64**: an old PC, a NAS that runs VMs, or a VM on
+   your desktop. Debian 13 is what the engine is set up for. It has to be
+   x86-64, because Google ships Widevine for Firefox on x86-64 Linux only.
+   An ARM machine, such as the VM `webengine/vm.sh` makes on a Mac, runs
+   the engine fine for ordinary sites but can't play these services.
+2. Copy `webengine/` to `/opt/boltweb` on it, and as root run:
+
+       bash /opt/boltweb/provision.sh
+
+   This installs Firefox from Mozilla, the fonts, PulseAudio for the sound,
+   and the engine as a service on port 7310. To stop anyone else on your
+   network from using it, put a password in `/opt/boltweb/key`.
+3. On the TV, open Netflix (or **Settings → Streaming**) and enter the
+   computer's address: `192.168.1.20`, `192.168.1.20:7310`, or
+   `KEY@192.168.1.20` if you set a key. The TV keeps it on the stick.
+
+The first time, sign in to the service with the pointer. Press Tab to type
+your email and password into the page from a keyboard. The engine needs a
+reasonably quick machine, because it encodes 720p while Firefox decodes the
+film. Any desktop from the last ten years is fine.
+
+`test/fakeengine.py` stands in for the engine when you're testing the TV
+side: it sends a test picture and a tone, and prints what the TV sends back.
 
 ## Updates
 

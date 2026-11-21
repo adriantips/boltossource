@@ -141,7 +141,7 @@ int mp4_parse(const uint8_t *moov, uint64_t len, mp4_t *m) {
         } else continue;
         if (build(tr, stbl, l_stbl) < 0) return -1;
     }
-    return m->video.n && m->avcc_len ? 0 : -1;
+    return (m->video.n && m->avcc_len) || (m->audio.n && m->asc_len) ? 0 : -1;
 }
 
 void mp4_free(mp4_t *m) {

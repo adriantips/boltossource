@@ -89,7 +89,11 @@ static fetch_t *dequeue(void) {
 }
 
 static void run_job(fetch_t *j) {
-    if (tvs.adblock && adblock_url_blocked(j->url)) {
+    if (j->run) {
+        j->len = 0;
+        if (state == NET_UP) j->run(j);
+        else { j->status = state == NET_NOLINK ? -6 : -7; j->len = -1; }
+    } else if (tvs.adblock && adblock_url_blocked(j->url)) {
         j->status = -8;                 /* refused before a packet was sent */
         j->len = -1;
     } else if (state != NET_UP) {
@@ -141,6 +145,12 @@ int netsvc_fetch(fetch_t *j) {
     irq_restore(f);
     ensure_worker();
     return 0;
+}
+
+int netsvc_call(fetch_t *j, void (*run)(fetch_t *), void *arg) {
+    j->run = run;
+    j->arg = arg;
+    return netsvc_fetch(j);
 }
 
 int netsvc_get(const char *url, const char *headers, char *buf, uint32_t cap, int *status) {

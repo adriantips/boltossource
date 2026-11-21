@@ -8,8 +8,9 @@
  *  rows for the network and About pages.
  *
  *  Settings last until the set is switched off; the defaults below are what
- *  it comes up with every time. The one exception is automatic updates,
- *  which kernel/sysupdate.c keeps on the stick the TV started from.
+ *  it comes up with every time. The exceptions are automatic updates and
+ *  the streaming engine's address, which kernel/sysupdate.c keeps on the
+ *  stick the TV started from.
  * ===========================================================================*/
 #include <stdint.h>
 #include "tv.h"
@@ -26,6 +27,7 @@
 #include "mouse.h"
 #include "buildid.h"
 #include "sysupdate.h"
+#include "engine.h"
 
 tvsettings_t tvs;
 
@@ -91,14 +93,15 @@ typedef struct {
     int id;                    /* what a CHOICE / ACTION does           */
 } item_t;
 
-enum { C_PICTURE, C_SOUND, C_BACKGROUND, C_NETWORK, C_SLEEP, C_CLOCK, C_UPDATE, C_ABOUT, C_POWER, C_COUNT };
+enum { C_PICTURE, C_SOUND, C_BACKGROUND, C_NETWORK, C_STREAMING, C_SLEEP, C_CLOCK, C_UPDATE, C_ABOUT, C_POWER, C_COUNT };
 static const struct { const char *name; int glyph; } CATS[C_COUNT] = {
     { "Picture", GL_SUN }, { "Sound", GL_VOL }, { "Background", GL_IMAGE }, { "Network", GL_ETHER },
+    { "Streaming", GL_FILM },
     { "Sleep timer", GL_MOON }, { "Clock", GL_CLOCK }, { "Updates", GL_RELOAD }, { "About", GL_INFO },
     { "Power", GL_POWER },
 };
 
-enum { A_PICTURE_MODE = 1, A_FILM, A_SLEEP, A_TZ, A_RESTART, A_OFF, A_UPDATE };
+enum { A_PICTURE_MODE = 1, A_FILM, A_SLEEP, A_TZ, A_RESTART, A_OFF, A_UPDATE, A_ENGINE };
 
 /* ---- updates (kernel/sysupdate.c does the work) --------------------------- */
 static int upd_auto = 1;                  /* the switch's own copy             */
@@ -180,6 +183,17 @@ static void build(void) {
         info("Clock", "%s", netsvc_clock_synced() ? "Set from the internet (NTP)" : "From the computer's clock");
         info("Ad blocking", "%s", tvs.adblock ? "On for every lookup" : "Off");
         add(IT_HEAD, "BoltOS TV uses wired Ethernet: Intel e1000-family and virtio adapters.");
+        break;
+    }
+    case C_STREAMING: {
+        static char addr[96];
+        engine_get_address(addr, sizeof addr);
+        it = add(IT_ACTION, addr[0] ? "Change the engine's address" : "Set the engine's address"); it->id = A_ENGINE;
+        info("Firefox engine", "%s", addr[0] ? addr : "Not set");
+        info("YouTube", "%s", "Plays on the TV itself: no engine needed");
+        add(IT_HEAD, "Netflix, Prime Video, Disney+ and HBO Max need a real browser with Widevine. They play in "
+                     "Firefox on a computer on your network running the BoltOS Web Engine (webengine/ in the source).");
+        add(IT_HEAD, "Write host, host:port (7310 if left out) or key@host:port if the engine has a key.");
         break;
     }
     case C_SLEEP: {
@@ -265,6 +279,7 @@ static void build(void) {
         add(IT_HEAD, "Made by Adrian Derakhshideh  \x95  boltos.dev  \x95  github.com/adriantips/boltossource");
         add(IT_HEAD, "Films from Pexels by Cl\xE9ment Proust, Kenan Turgu\xE7, Oskar Gross, T Honkamies, "
                      "Logan Voss and AP Vibes. MPEG-1 decoding by pl_mpeg (MIT). Type: Inter. Icons: Lucide (ISC).");
+        add(IT_HEAD, "H.264 decoding by BoltOS Mini's decoder. AAC tables from ISO/IEC 14496-3, as typed in by FFmpeg (LGPL-2.1).");
         break;
     }
     case C_POWER:
@@ -275,6 +290,9 @@ static void build(void) {
 }
 
 void settings_open_about(void) { cat = C_ABOUT; col = 0; row = 0; }
+void settings_open_streaming(void) { cat = C_STREAMING; col = 0; row = 0; }
+
+static osk_t kb;                 /* the engine's address, being typed */
 
 static int focusable(int i) {
     return i >= 0 && i < nitems && items[i].kind != IT_INFO && items[i].kind != IT_HEAD;
@@ -322,6 +340,11 @@ static void act(item_t *it) {
     if (it->kind != IT_ACTION) return;
     sfx_select();
     if (it->id == A_RESTART) { tv_toast("Restarting", 0); acpi_reboot(); }
+    if (it->id == A_ENGINE) {
+        char a[96]; engine_get_address(a, sizeof a);
+        osk_begin(&kb, a, "Engine address, like 192.168.1.20", "Save");
+        return;
+    }
     if (it->id == A_UPDATE) {
         const sysupd_t *u = sysupd_state();
         if (u->state == SU_RESTART) sysupd_restart();
@@ -340,6 +363,10 @@ static void settings_enter(void) {
 }
 
 static void settings_key(tvkey_t k) {
+    if (kb.active) {
+        if (osk_key(&kb, k) == 1) { engine_set_address(kb.text); tv_toast(kb.text[0] ? "Engine address saved" : "Engine address cleared", kb.text); }
+        return;
+    }
     build();
     if (col == 0) {
         int old = cat;
@@ -393,6 +420,7 @@ static int row_h(const item_t *it) { return it->kind == IT_HEAD ? S(80) : it->ki
 
 static void settings_pointer(int x, int y, int click, int wheel) {
     (void)wheel;
+    if (kb.active) return;
     build();
     for (int i = 0; i < C_COUNT; i++)
         if (ui_hit(x, y, S(LX + 16), S(LX + 150 + i * CROW), S(LW - 32), S(CROW))) {
@@ -420,6 +448,7 @@ static void settings_tick(uint64_t now) {
     float nc = ui_ease(cat_y, tc, dt, 150), nr = ui_ease(row_y, tr, dt, 150);
     if (nc != cat_y || nr != row_y || tv_view_t() < 1.0f) tv_redraw();
     cat_y = nc; row_y = nr;
+    if (kb.active && now % 530 < 17) tv_redraw();
     if (cat == C_NETWORK || cat == C_SLEEP || cat == C_ABOUT || cat == C_UPDATE) {
         static uint64_t last;
         if (now - last > 1000) { last = now; tv_redraw(); }
@@ -427,7 +456,6 @@ static void settings_tick(uint64_t now) {
 }
 
 static void settings_draw(uint64_t now) {
-    (void)now;
     build();
     float vt = tv_view_t();
     int a = (int)(vt * 255);
@@ -507,7 +535,7 @@ static void settings_draw(uint64_t now) {
             }
             break;
         case IT_ACTION:
-            art_glyph(it->id == A_OFF ? GL_POWER : it->id == A_UPDATE ? GL_CHEV_R : GL_RESTART, right - S(16), cy, S(28), ink, a);
+            art_glyph(it->id == A_OFF ? GL_POWER : it->id == A_UPDATE || it->id == A_ENGINE ? GL_CHEV_R : GL_RESTART, right - S(16), cy, S(28), ink, a);
             break;
         case IT_INFO:
             font_draw_fit(FONT_REGULAR, S(25), rx + S(330), cy + font_capheight(FONT_REGULAR, S(25)) / 2,
@@ -516,6 +544,7 @@ static void settings_draw(uint64_t now) {
         }
         iy += row_h(it);
     }
+    if (kb.active) osk_draw(&kb, now, 255);
 }
 
 const view_t view_settings = {

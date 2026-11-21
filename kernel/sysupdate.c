@@ -58,6 +58,7 @@
 #define QUIET_MS    15000
 #define MAX_KERNEL  (200u << 20)
 #define CFG_PATH    "/UPDATE.CFG"
+#define PREFS_PATH  "/PREFS.CFG"                /* the product's own settings: sysupd_prefs */
 
 static const sysupd_host_t *H;
 static sysupd_t U;
@@ -72,6 +73,7 @@ static struct {
     volatile int want_check, want_install, want_save, want_load;
     volatile int thread;                        /* the update thread is running  */
     volatile int answered, installed;           /* for poll(), from the thread   */
+    char     prefs[512];                        /* PREFS.CFG, as text            */
 } S;
 
 extern char __bss_start[];
@@ -355,7 +357,10 @@ static void cfg_io(int save) {
         if (save) {
             int n = snprintf(b, sizeof b, "auto=%d\ntried=%s\n", S.autoupd, S.tried);
             fat32_write(CFG_PATH, b, (uint32_t)n);
+            fat32_write(PREFS_PATH, S.prefs, (uint32_t)strlen(S.prefs));
         } else {
+            int pn = fat32_read(PREFS_PATH, S.prefs, sizeof S.prefs - 1);
+            S.prefs[pn > 0 ? pn : 0] = 0;
             int n = fat32_read(CFG_PATH, b, sizeof b - 1);
             if (n > 0) {
                 b[n] = 0;
@@ -532,6 +537,20 @@ void sysupd_init(const sysupd_host_t *host) {
 }
 
 void sysupd_set_auto(int on) { S.autoupd = !!on; S.want_save = 1; kick(); }
+
+int sysupd_prefs_loaded(void) { return S.loaded >= 1; }
+void sysupd_prefs_get(char *out, int cap) {
+    uint64_t f = irq_save();
+    snprintf(out, (size_t)cap, "%s", S.prefs);
+    irq_restore(f);
+}
+void sysupd_prefs_set(const char *text) {
+    uint64_t f = irq_save();
+    snprintf(S.prefs, sizeof S.prefs, "%s", text ? text : "");
+    irq_restore(f);
+    S.want_save = 1;
+    kick();
+}
 
 void sysupd_check(void) {
     if (U.state == SU_CHECKING || U.state == SU_DOWNLOADING || U.state == SU_INSTALLING || U.state == SU_RESTART) return;

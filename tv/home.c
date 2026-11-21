@@ -13,6 +13,8 @@
 #include "string.h"
 #include "stdio.h"
 
+enum { A_LIVE, A_YOUTUBE, A_NETFLIX, A_PRIME, A_DISNEY, A_HBOMAX, A_APPLETV, A_HDMI, A_WEB, A_ADBLOCK, A_SETTINGS };
+
 typedef struct {
     int         tile;
     const char *name;
@@ -20,12 +22,17 @@ typedef struct {
 } app_t;
 
 static const app_t APPS[] = {
-    { ART_LIVE,     "Live TV",    "Six channels of nature, filmed in 4K and on all the time." },
-    { ART_APPLETV,  "Apple TV",   "Switch over to the Apple TV on HDMI 2." },
-    { ART_HDMI,     "HDMI 1",     "A games console, a Blu-ray player or a set-top box." },
-    { ART_WEB,      "Browser",    "The web, with the ads taken out before they load." },
-    { ART_SHIELD,   "Ad Blocker", 0 },
-    { ART_SETTINGS, "Settings",   "Picture, sound, network, background and the sleep timer." },
+    { ART_LIVE,     "Live TV",     "Six channels of nature, filmed in 4K and on all the time." },
+    { ART_YOUTUBE,  "YouTube",     "Search and watch, played by the TV itself. No account needed." },
+    { ART_NETFLIX,  "Netflix",     "Plays in Firefox on a computer on your network, through the BoltOS Web Engine." },
+    { ART_PRIME,    "Prime Video", "Plays in Firefox on a computer on your network, through the BoltOS Web Engine." },
+    { ART_DISNEY,   "Disney+",     "Plays in Firefox on a computer on your network, through the BoltOS Web Engine." },
+    { ART_HBOMAX,   "HBO Max",     "Plays in Firefox on a computer on your network, through the BoltOS Web Engine." },
+    { ART_APPLETV,  "Apple TV",    "Switch over to the Apple TV on HDMI 2." },
+    { ART_HDMI,     "HDMI 1",      "A games console, a Blu-ray player or a set-top box." },
+    { ART_WEB,      "Browser",     "The web, with the ads taken out before they load." },
+    { ART_SHIELD,   "Ad Blocker",  0 },
+    { ART_SETTINGS, "Settings",    "Picture, sound, network, background and the sleep timer." },
 };
 #define NAPPS ((int)(sizeof APPS / sizeof APPS[0]))
 
@@ -42,24 +49,29 @@ static glasscache_t gc_side;
 #define SY 60                              /* and its top and bottom margin   */
 #define SW 400                             /* its width                       */
 #define PAD 20                             /* inside the pane, above the rows */
-#define ROW_H 88
-#define GROUP_GAP 22                       /* between the inputs and the apps */
+#define ROW_H 84
+#define GROUP_GAP 22                       /* between watching, inputs and apps */
 #define AMBIENT_MS 45000
 
 /* The pane runs the height of the screen, 1080 / density design px. */
 static int pane_y(void) { return SY; }
 static int pane_h(void) { return 1080 * 100 / UI_DENSITY - 2 * SY; }
-static int row_y(int i) { return pane_y() + PAD + i * ROW_H + (i >= 3 ? GROUP_GAP : 0); }
+static int row_y(int i) {
+    return pane_y() + PAD + i * ROW_H + (i >= A_APPLETV ? GROUP_GAP : 0) + (i >= A_WEB ? GROUP_GAP : 0);
+}
 
 static void activate(int i) {
     sfx_select();
     switch (i) {
-    case 0: tv_push(&view_live); break;
-    case 1: input_select(1); tv_push(&view_input); break;
-    case 2: input_select(0); tv_push(&view_input); break;
-    case 3: tv_push(&view_web); break;
-    case 4: tv_push(&view_adblock); break;
-    case 5: tv_push(&view_settings); break;
+    case A_LIVE:     tv_push(&view_live); break;
+    case A_YOUTUBE:  tv_push(&view_youtube); break;
+    case A_NETFLIX: case A_PRIME: case A_DISNEY: case A_HBOMAX:
+        stream_select(SVC_NETFLIX + (i - A_NETFLIX)); tv_push(&view_stream); break;
+    case A_APPLETV:  input_select(1); tv_push(&view_input); break;
+    case A_HDMI:     input_select(0); tv_push(&view_input); break;
+    case A_WEB:      tv_push(&view_web); break;
+    case A_ADBLOCK:  tv_push(&view_adblock); break;
+    case A_SETTINGS: tv_push(&view_settings); break;
     }
 }
 
@@ -153,7 +165,7 @@ static void draw_hero(int i, int alpha, int dy) {
     int top = tv_h - S(250) + dy;
     char line[160];
     const char *desc = APPS[i].line;
-    if (i == 4) {
+    if (i == A_ADBLOCK) {
         uint32_t n = adblock_blocked_total();
         char num[24]; fmt_int(num, sizeof num, (long)n);
         if (!tvs.adblock) snprintf(line, sizeof line, "Off. Turn it on to block ads and trackers for the whole TV.");
@@ -182,8 +194,9 @@ static void draw_sidebar(int alpha, int slide) {
         ui_text(FONT_MEDIUM, S(28), x + S(30) + S(56) + S(22), cy, APPS[i].name,
                 on ? 0x101318 : 0xFFFFFF, on ? alpha : alpha * 220 / 255, 0);
     }
-    /* a hairline between watching and doing */
-    gfx_fill_a(x + S(34), S(row_y(3)) - S(GROUP_GAP) / 2 - 1, w - S(68), 1, 0xFFFFFF, alpha * 34 / 255);
+    /* hairlines between watching, the inputs and doing */
+    gfx_fill_a(x + S(34), S(row_y(A_APPLETV)) - S(GROUP_GAP) / 2 - 1, w - S(68), 1, 0xFFFFFF, alpha * 34 / 255);
+    gfx_fill_a(x + S(34), S(row_y(A_WEB)) - S(GROUP_GAP) / 2 - 1, w - S(68), 1, 0xFFFFFF, alpha * 34 / 255);
 }
 
 static void draw_intro(uint64_t now) {

@@ -15,7 +15,8 @@
 #  What is in the TV kernel is a list, below, and it is short on purpose: the
 #  scheduler, memory, ACPI, PCI, USB, PS/2, HDA/AC97, the e1000/virtio NICs,
 #  the IPv4/IPv6 + TLS stack, the glass drawing layer, the fonts, the HTML/CSS
-#  engine and the TV shell. No window manager, no shell, no compilers, no
+#  engine and the TV shell (with BoltOS Mini's H.264 decoder, for YouTube and
+#  the Firefox engine). No window manager, no shell, no compilers, no
 #  filesystem, no DOOM -- only the disk drivers and FAT32, so that an update
 #  from boltos.dev (kernel/sysupdate.c) can go onto the stick it started from. tv/stubs.c is where the few places the shared code
 #  reaches for the desktop are answered instead.
@@ -132,6 +133,14 @@ SRCS=(
     # the television
     tv/main.c tv/stubs.c tv/video.c tv/art.c tv/ui.c tv/shell.c tv/home.c
     tv/live.c tv/inputs.c tv/web.c tv/adblock.c tv/settings.c tv/netsvc.c tv/sfx.c
+    tv/osk.c tv/youtube.c tv/stream.c tv/aac.c tv/aactab.c
+)
+# Shared with BoltOS Mini, and built with its headers: the H.264 decoder, the
+# MP4 index reader and the JSON/URL helpers -- and the two TV files that use
+# them (YouTube's player, the Firefox engine's link).
+MINI_SRCS=(
+    mini/h264.c mini/h264mb.c mini/h264pred.c mini/h264dbk.c mini/h264tab.c mini/mp4.c mini/webutil.c
+    tv/ytplay.c tv/engine.c
 )
 mkdir -p "$B/obj"
 compile() {   # compile SRC [extra flags...]
@@ -152,6 +161,11 @@ for c in "${LIBC_SRCS[@]}"; do
 done
 for c in "${SRCS[@]}"; do
     run_bg compile "$c"
+    OUTS+=("$B/obj/$(echo "${c%.c}" | tr '/' '_').o")
+    while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do sleep 0.05; done
+done
+for c in "${MINI_SRCS[@]}"; do
+    run_bg compile "$c" -Imini
     OUTS+=("$B/obj/$(echo "${c%.c}" | tr '/' '_').o")
     while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do sleep 0.05; done
 done
