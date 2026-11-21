@@ -1,0 +1,19 @@
+[Unit]
+Description=BoltOS Web Engine (Firefox, streamed to BoltOS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=boltweb
+WorkingDirectory=/opt/boltweb
+# No login session: PulseAudio (the sound sent to BoltOS TV) wants a runtime directory of its own.
+RuntimeDirectory=boltweb
+Environment=XDG_RUNTIME_DIR=/run/boltweb
+ExecStart=/usr/bin/python3 /opt/boltweb/boltweb.py
+Restart=always
+RestartSec=2
+StandardOutput=append:/var/log/boltweb.log
+StandardError=append:/var/log/boltweb.log
+
+[Install]
+WantedBy=multi-user.target
