@@ -1,0 +1,112 @@
+#!/bin/sh
+# ===========================================================================
+#  BoltOS Mini  -  mini/firefox/init  (the guest's /sbin/boltinit, PID 1)
+#
+#  The Firefox machine's whole start: the read-only root under a layer in
+#  RAM, swap compressed in RAM, the network BoltOS routes, the home disk
+#  (made the first time), udev for the screen and input, and then cage --
+#  one Wayland window, full screen -- with Firefox in it, again whenever it
+#  quits. BoltOS passes what it knows on the kernel's command line:
+#  boltos.dns=, boltos.tz= (minutes east of UTC).
+# ===========================================================================
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+if [ "$1" != stage2 ]; then
+    mount -t proc proc /proc
+    mount -t devtmpfs dev /dev
+    mount -t tmpfs -o mode=755 layer /mnt
+    mkdir -p /mnt/up /mnt/work /mnt/root
+    mount -t overlay overlay -o lowerdir=/,upperdir=/mnt/up,workdir=/mnt/work /mnt/root
+    mount --move /dev /mnt/root/dev
+    umount /proc
+    exec chroot /mnt/root /sbin/boltinit stage2
+fi
+
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mkdir -p /dev/pts /dev/shm /run/user/1000
+mount -t devpts devpts /dev/pts
+mount -t tmpfs -o mode=1777 shm /dev/shm
+mount -t tmpfs -o mode=1777 tmp /tmp
+hostname boltos-firefox
+
+dns=1.1.1.1
+tz=0
+debug=0
+for a in $(cat /proc/cmdline); do
+    case "$a" in
+    boltos.dns=*)   dns=${a#*=} ;;
+    boltos.tz=*)    tz=${a#*=} ;;
+    boltos.debug=*) debug=${a#*=} ;;
+    esac
+done
+
+# The disks are the Pi's SD card, which BoltOS reads on the core that also
+# draws its screen: small read-ahead and small requests, so that a page
+# Firefox touches costs 256 KB off the card (Linux's 8 MB read-around made
+# it 8 MB), and no request holds BoltOS up for more than a few ms.
+for d in vda vdb; do
+    echo 256 > /sys/block/$d/queue/read_ahead_kb
+    echo 256 > /sys/block/$d/queue/max_sectors_kb
+done
+
+# Memory: what Firefox sets aside, compressed in RAM -- before the files
+# it runs from are dropped, since those would come off the card again.
+if [ -e /sys/block/zram0 ]; then
+    echo zstd > /sys/block/zram0/comp_algorithm 2>/dev/null
+    echo 640M > /sys/block/zram0/disksize
+    mkswap /dev/zram0 >/dev/null && swapon -p 100 /dev/zram0
+fi
+echo 180 > /proc/sys/vm/swappiness
+echo 0 > /proc/sys/vm/page-cluster
+
+# The network: BoltOS is the router, at 10.0.3.1.
+ip link set lo up
+ip link set eth0 up
+ip addr add 10.0.3.2/24 dev eth0
+ip route add default via 10.0.3.1
+echo "nameserver $dns" > /etc/resolv.conf
+
+# Home: the second disk, given a file system the first time.
+if ! blkid /dev/vdb >/dev/null 2>&1; then
+    mkfs.ext4 -q -L home -m 0 /dev/vdb
+fi
+mount -o noatime /dev/vdb /home/firefox 2>/dev/null || mount -t tmpfs -o size=128m home /home/firefox
+chown firefox:firefox /home/firefox
+chown firefox:firefox /run/user/1000
+chmod 700 /run/user/1000
+
+# Firefox's profile: Windows Firefox's settings, fresh at every start.
+P=/home/firefox/profile
+mkdir -p "$P/chrome"
+v=$(sed -n 's/.* \([0-9][0-9]*\)\..*/\1/p' /opt/boltfx/version)
+sed "s/@VERSION@/${v:-140}.0/g" /opt/boltfx/user.js > "$P/user.js"
+cp /opt/boltfx/userChrome.css "$P/chrome/userChrome.css"
+chown -R firefox:firefox "$P"
+
+# The time zone, as POSIX writes it (west is positive).
+h=$(( -tz / 60 )); m=$(( (tz < 0 ? -tz : tz) % 60 ))
+export TZ=$(printf 'BOLT%+d:%02d' "$h" "$m")
+
+/usr/lib/systemd/systemd-udevd --daemon >/dev/null 2>&1 || /lib/systemd/systemd-udevd --daemon >/dev/null 2>&1
+udevadm trigger --action=add >/dev/null 2>&1
+udevadm settle -t 5 >/dev/null 2>&1
+seatd -g video >/dev/null 2>&1 &
+
+if [ "$debug" = 1 ]; then
+    (while true; do setsid -c sh -i </dev/ttyAMA0 >/dev/ttyAMA0 2>&1; sleep 1; done) &
+fi
+
+setpriv --reuid=1000 --regid=1000 --init-groups /usr/local/bin/boltos-msfonts >/dev/null 2>&1 &
+
+export HOME=/home/firefox XDG_RUNTIME_DIR=/run/user/1000 LIBSEAT_BACKEND=seatd
+export WLR_RENDERER=pixman WLR_BACKENDS=drm,libinput WLR_LIBINPUT_NO_DEVICES=1
+export XCURSOR_THEME=whiteglass XCURSOR_SIZE=24 XKB_DEFAULT_LAYOUT=us
+export MOZ_ENABLE_WAYLAND=1 MOZ_CRASHREPORTER_DISABLE=1 MOZ_DBUS_REMOTE=0
+sleep 0.3
+while true; do
+    setpriv --reuid=1000 --regid=1000 --init-groups \
+        cage -s -- firefox --profile "$P" >/tmp/firefox.log 2>&1
+    echo "boltinit: Firefox quit; starting it again"
+    sleep 1
+done

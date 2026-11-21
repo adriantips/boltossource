@@ -1,0 +1,4 @@
+/* BoltOS Mini - mini/firefox/userChrome.css: Firefox's window is the whole
+ * screen and there is no window to minimise or close, so the tab strip has
+ * no caption buttons; everything else is Firefox's own. */
+.titlebar-buttonbox-container { display: none !important; }

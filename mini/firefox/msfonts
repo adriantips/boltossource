@@ -1,0 +1,21 @@
+#!/bin/sh
+# BoltOS Mini - mini/firefox/msfonts (the guest's /usr/local/bin/boltos-msfonts)
+#
+# Microsoft's core web fonts -- Arial, Times New Roman, Verdana, Georgia,
+# Courier New, Trebuchet MS, Comic Sans, Impact, Webdings, Andale Mono --
+# fetched once from where Microsoft published them and unpacked into the home
+# disk, as Debian's ttf-mscorefonts-installer does. Their licence allows them
+# to be downloaded and used, not passed on, so the image doesn't carry them.
+D=$HOME/.local/share/fonts/mscore
+[ -f "$D/.done" ] && exit 0
+mkdir -p "$D" /tmp/msfonts && cd /tmp/msfonts || exit 1
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    curl -fsS --max-time 5 -o /dev/null https://downloads.sourceforge.net/ && break
+    sleep 10
+done
+for f in andale32 arial32 arialb32 comic32 courie32 georgi32 impact32 times32 trebuc32 verdan32 webdin32; do
+    curl -fsSL --retry 3 -o "$f.exe" "https://downloads.sourceforge.net/corefonts/$f.exe" &&
+        cabextract -q -L -F '*.ttf' -d "$D" "$f.exe"
+done
+ls "$D"/*.ttf >/dev/null 2>&1 && fc-cache -f "$D" && touch "$D/.done"
+rm -rf /tmp/msfonts
