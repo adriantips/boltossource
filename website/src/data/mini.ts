@@ -22,8 +22,8 @@ export type MiniFeature = { title: string; body: string; shot?: string }
 
 export const miniFeatures: MiniFeature[] = [
   {
-    title: 'Your Mac is the screen',
-    body: 'One USB-C cable powers the Pi and shows up on the Mac as a network adapter. Mini runs a VNC server on it, so the screen opens in macOS’s own Screen Sharing — keyboard and trackpad included — and only the tiles that changed travel, compressed. The keyboard on the Pi’s USB port works at the same time.',
+    title: 'A monitor on HDMI, or your Mac',
+    body: 'Plug a monitor into the micro-HDMI port and Mini drives it itself — the H618’s display engine, its timing controller and the HDMI PHY, all set up by Mini, because U-Boot has no video — at sizes up to 1080p, picked in Settings → Display. Or use one USB-C cable: it powers the Pi and shows up on the Mac as a network adapter, and the screen opens in macOS’s own Screen Sharing, keyboard and trackpad included, with only the tiles that changed travelling. Both work at once, and so does the keyboard on the Pi’s USB port.',
     shot: 'mini_home',
   },
   {
@@ -33,12 +33,16 @@ export const miniFeatures: MiniFeature[] = [
   },
   {
     title: 'Files on the SD card, readable on a Mac',
-    body: 'Code keeps its files in a Code folder on the card’s FAT32 partition, Notes keeps its page there, and the Wi-Fi network, Bluetooth pairings and the theme now outlive a power cut in a System folder. Long file names and folders, written so that a power cut mid-save leaves the old file whole. Put the card in a Mac and the same folders are there. The terminal has ls, cd, cat, cp, mv, rm, mkdir and df, and Tab completes a name.',
+    body: 'Code keeps its files in a Code folder on the card’s FAT32 partition, Notes keeps its page there, and Bluetooth pairings, the display size and the theme outlive a power cut in a System folder. Long file names and folders, written so that a power cut mid-save leaves the old file whole. Put the card in a Mac and the same folders are there. The terminal has ls, cd, cat, cp, mv, rm, mkdir and df, and Tab completes a name.',
     shot: 'mini_code_cpp',
   },
   {
-    title: 'A browser on the Pi’s own connection',
-    body: 'One address bar: an address opens the page, anything else searches DuckDuckGo, with All, Images and Videos. Pages go through the desktop’s engine — HTML, CSS layout, images, TLS 1.3 — over Ethernet or the Pi’s Wi-Fi. While you scroll, pictures wait their turn, so the page answers first.',
+    title: 'Real Firefox, on the Pi',
+    body: 'The Browser is Firefox, so pages look exactly as Firefox on Windows draws them — React apps, web fonts, video and all. Firefox needs Linux, so Mini runs Linux as a guest on a hypervisor of its own: it keeps the A53’s EL2 for itself, gives the guest three cores and 894 MB, and makes its disks, screen, keyboard, tablet and network card. The first time, the Browser downloads Firefox from boltos.dev onto the card; after that the machine stays up, and coming back to it is instant. Nothing else runs it: no Mac, no second computer.',
+  },
+  {
+    title: 'And a quick browser of its own',
+    body: 'Press Q while Firefox starts for BoltOS’s own engine instead — HTML, CSS layout, images and TLS 1.3, the desktop’s page engine — with one address bar: an address opens the page, anything else searches DuckDuckGo, with All, Images and Videos. While you scroll, pictures wait their turn, so the page answers first.',
     shot: 'mini_web',
   },
   {
@@ -48,7 +52,7 @@ export const miniFeatures: MiniFeature[] = [
   },
   {
     title: 'Packages, from boltos.dev',
-    body: 'Apps that aren’t in the kernel come from the Packages app: it lists what boltos.dev offers, downloads one over Wi-Fi or Ethernet, checks its SHA-256, keeps it on the SD card past the boot partition and loads it — linked against the kernel by name, like a shared library. It joins the bar, and comes back at every start.',
+    body: 'Apps that aren’t in the kernel come from the Packages app: it lists what boltos.dev offers, downloads one over Ethernet, checks its SHA-256, keeps it on the SD card past the boot partition and loads it — linked against the kernel by name, like a shared library. It joins the bar, and comes back at every start.',
     shot: 'mini_packages',
   },
   {
@@ -62,8 +66,8 @@ export const miniFeatures: MiniFeature[] = [
     shot: 'mini_terminal',
   },
   {
-    title: 'Wi-Fi and Bluetooth, on the board’s own chip',
-    body: 'Settings joins open and WPA2 networks on the Zero3’s UWE5622 and remembers the last one across restarts. Bluetooth finds and pairs keyboards, mice and game controllers, classic and LE. Themes, accent colour, the screen-sharing password, date and time, updates, restart and power off live there too.',
+    title: 'Bluetooth on the board’s own chip, and Ethernet',
+    body: 'Bluetooth finds and pairs keyboards, mice and game controllers, classic and LE, on the Zero3’s UWE5622. The Pi goes online over its Ethernet socket, and Settings → Network shows the cable’s speed, the address the router gave, the router and DNS. The display size, themes, accent colour, the screen-sharing password, date and time, updates, restart and power off live in Settings too.',
     shot: 'mini_settings',
   },
   {
@@ -81,7 +85,7 @@ export const miniFeatures: MiniFeature[] = [
 export const miniSteps = [
   {
     t: 'Get the board and a cable',
-    body: 'An Orange Pi Zero3 (Mini is made on the 1 GB one), a microSD card of any size, and a USB-A to USB-C cable that carries data, not only power. On the Mac’s side it goes into a USB-A port — on Apple’s USB-C adapter, the rectangular one.',
+    body: 'An Orange Pi Zero3 (Mini is made on the 1 GB one) and a microSD card of any size. For the screen, either a monitor with a micro-HDMI to HDMI cable, or a Mac and a USB-A to USB-C cable that carries data, not only power — on the Mac’s side it goes into a USB-A port; on Apple’s USB-C adapter, the rectangular one.',
   },
   {
     t: 'Write the card',
@@ -90,11 +94,11 @@ export const miniSteps = [
   },
   {
     t: 'Plug it into the Mac',
-    body: 'Card in the Pi, the cable’s USB-C end in the Pi’s USB-C socket. Click Allow if macOS asks about an accessory. A few seconds later a network adapter called BoltOS Mini appears; the Pi is 10.77.0.1.',
+    body: 'Card in the Pi, the cable’s USB-C end in the Pi’s USB-C socket. Click Allow if macOS asks about an accessory. A few seconds later a network adapter called BoltOS Mini appears; the Pi is 10.77.0.1. With a monitor instead, plug it into the micro-HDMI port, a keyboard into USB-A and a USB power supply into USB-C.',
   },
   {
     t: 'Open the screen',
-    body: 'In Finder choose Go → Connect to Server (⌘K), type vnc://10.77.0.1 and use the password boltos. Plug in Ethernet for the browser, and its clock sets itself from the network.',
+    body: 'On a monitor it is already there. On the Mac, in Finder choose Go → Connect to Server (⌘K), type vnc://10.77.0.1 and use the password boltos. Plug in Ethernet for the browser, and its clock sets itself from the network.',
   },
 ]
 
@@ -103,17 +107,17 @@ export const miniKeys = [
   ['1 – 9  or  F1 – F9', 'Open an app directly'],
   ['F5  ·  Ctrl+S  in Code', 'Save and run · save (⌘ works too)'],
   ['Ctrl+F  ·  Ctrl+/  ·  Ctrl+Z', 'Find and replace · comment lines · undo'],
-  ['Esc  or  ⌘ / Windows', 'Back to Home'],
+  ['Esc  or  ⌘ / Windows', 'Back to Home (Esc twice from Firefox)'],
   ['↑ ↓ ← →  in Settings', 'Move, change a value'],
   ['Space  ·  ← →  on a video', 'Pause and play · ten seconds back and on'],
   ['Space  ·  R  in Clock', 'Start and stop · reset the stopwatch'],
 ]
 
 export const miniLimits = [
-  'No picture of its own yet. There is no HDMI or LCD driver, so the screen is the Mac’s Screen Sharing (or any VNC viewer). A small SPI panel is the next driver.',
-  'No sound. Videos play silently, and Bluetooth headphones and speakers can’t be used.',
-  'The image here has no Wi-Fi or Bluetooth: their firmware is Unisoc’s, not ours to hand out. Ethernet and the Mac link work as they are; build from source and the build fetches the firmware from Orange Pi.',
-  'Wi-Fi is open and WPA2 only, and Bluetooth pairing is new and has met few devices.',
+  'HDMI carries the picture only, not sound, and sizes stop at 1920 × 1200, so a 4K monitor gets its largest mode under that. A small SPI panel on the pin header would need a driver of its own.',
+  'No sound. Videos play silently, in Firefox too, and Bluetooth headphones and speakers can’t be used.',
+  'Firefox is a download of about 310 MB the first time, and its first start, read off the card, takes the better part of a minute. It has no settings page of its own yet.',
+  'Wi-Fi is switched off for now, so the Pi goes online over Ethernet. The image here has no Bluetooth: its firmware is Unisoc’s, not ours to hand out; build from source and the build fetches it from Orange Pi. Bluetooth pairing is new and has met few devices.',
   'Code’s Python, C and C++ are interpreters written for Mini, not CPython or a compiler: most programs a course or a book has run as they would, but Python has no generators (yield) yet, C has no goto, and C++ has no stringstream or user-defined template specializations.',
   'The language models are small ones — what fits in 1 GB at a readable speed. They answer everyday questions well and get facts wrong sometimes; web search helps with anything recent.',
 ]
@@ -125,9 +129,9 @@ export const miniDownloads: MiniDownload[] = [
     id: 'mini-card',
     name: 'microSD card for the Zero3',
     file: 'boltos-mini-sdcard.img.gz',
-    size: '≈ 1.5 MB',
+    size: '≈ 1.7 MB',
     href: '/dl/boltos-mini-sdcard.img.gz',
-    blurb: 'The whole card: U-Boot and BoltOS Mini, ready for the Mac’s Screen Sharing. Without the Wi-Fi and Bluetooth firmware, which isn’t ours to hand out — Ethernet and the USB-C link to the Mac work as they are.',
+    blurb: 'The whole card: U-Boot and BoltOS Mini, ready for an HDMI monitor or the Mac’s Screen Sharing. Without the Bluetooth firmware, which isn’t ours to hand out — Ethernet and the USB-C link to the Mac work as they are.',
     bestFor: 'An Orange Pi Zero3 and a Mac (balenaEtcher, dd)',
   },
   {
@@ -136,7 +140,7 @@ export const miniDownloads: MiniDownload[] = [
     file: 'bash build-mini.sh',
     size: 'source',
     href: links.tree('mini'),
-    blurb: 'clang and ld.lld build the kernel and the card on macOS or Linux, fetching the Wi-Fi and Bluetooth firmware from Orange Pi at a fixed commit. After the first card, new kernels go over the USB-C cable with pi.py.',
-    bestFor: 'Wi-Fi and Bluetooth, and changing things',
+    blurb: 'clang and ld.lld build the kernel and the card on macOS or Linux, fetching the Bluetooth firmware from Orange Pi at a fixed commit. After the first card, new kernels go over the USB-C cable with pi.py.',
+    bestFor: 'Bluetooth, and changing things',
   },
 ]

@@ -51,9 +51,8 @@ function Hero() {
       <div className="grid-bg fade-edges pointer-events-none absolute inset-0 opacity-50" />
       <Container className="relative">
         <Reveal>
-          <p className="inline-flex items-center gap-3 rounded-full border border-white/15 bg-black/40 py-1.5 pr-4 pl-1.5 backdrop-blur">
-            <span className="rounded-full bg-white px-2.5 py-0.5 font-mono text-[10.5px] font-medium text-black">NEW</span>
-            <span className="font-mono text-[11.5px] text-smoke">{mini.dates} · for the {mini.board}</span>
+          <p className="inline-flex items-center rounded-full border border-white/15 bg-black/40 px-4 py-1.5 backdrop-blur">
+            <span className="font-mono text-[11.5px] text-smoke">Since {mini.dates} · for the {mini.board}</span>
           </p>
         </Reveal>
         <h1 className="display mt-8 text-[clamp(4.2rem,16.5vw,17rem)] !leading-[0.86]">
@@ -64,9 +63,9 @@ function Hero() {
             <p className="max-w-2xl text-[clamp(1.1rem,1.7vw,1.4rem)] leading-relaxed text-white/80">
               BoltOS on a board the size of a matchbox. A 64-bit ARM kernel written from scratch for the Orange Pi Zero3 — four
               Cortex-A53 cores, one gigabyte — up a quarter of a second after U-Boot, with a code editor that runs Python, C and
-              C++ on the board, files on the SD card, a browser, YouTube on the second core, Wi-Fi, Bluetooth, and apps from
-              boltos.dev — among them a language model that runs on the board itself. Until it has a screen of its own, your
-              Mac is its screen, over one USB-C cable.
+              C++ on the board, files on the SD card, real Firefox in a Linux machine on its own hypervisor, YouTube on the second
+              core, Bluetooth, and apps from boltos.dev — among them a language model that runs on the board itself. Plug a
+              monitor into its HDMI port, or let your Mac be its screen over one USB-C cable.
             </p>
           </Reveal>
           <Reveal delay={0.5} className="flex flex-wrap gap-3 lg:justify-end">
@@ -125,11 +124,11 @@ function Features() {
           n="01"
           eyebrow="What is on it"
           title={<>Eight apps on a small board, <span className="serif-i text-smoke">and more from boltos.dev.</span></>}
-          intro="Everything runs in one loop on one core — the USB ports, the network, the screen. The other three wait for work: a program from Code, a playing video’s decoding, or a language model’s arithmetic. Nothing waits on anything else."
+          intro="Everything runs in one loop on one core — the USB ports, the network, the screen. The other three wait for work: a program from Code, a playing video’s decoding, a language model’s arithmetic, or the Firefox machine. Nothing waits on anything else."
         />
         <div className="mt-16 space-y-20 sm:mt-24 sm:space-y-32">
           {miniFeatures.map((f, i) => (
-            <div key={f.title} className={cn('grid items-center gap-8 lg:grid-cols-[1fr_1.5fr] lg:gap-16', i % 2 === 1 && 'lg:grid-cols-[1.5fr_1fr]')}>
+            <div key={f.title} className={cn('grid items-center gap-8 lg:gap-16', f.shot && (i % 2 === 1 ? 'lg:grid-cols-[1.5fr_1fr]' : 'lg:grid-cols-[1fr_1.5fr]'))}>
               <Reveal className={cn(i % 2 === 1 && 'lg:order-2')}>
                 <p className="font-mono text-[11.5px] tracking-[0.14em] text-fog uppercase">{String(i + 1).padStart(2, '0')}</p>
                 <h3 className="mt-4 text-[clamp(1.8rem,3vw,2.6rem)] font-medium tracking-[-0.035em]">{f.title}</h3>
@@ -250,7 +249,7 @@ function Credits() {
           n="05"
           eyebrow="Credits"
           title={<>Made by <span className="serif-i text-smoke">Adrian Derakhshideh.</span></>}
-          intro="The board boots through U-Boot and Trusted Firmware-A. The Wi-Fi and Bluetooth firmware is Unisoc’s, fetched from Orange Pi when Mini is built. The type is Inter and DejaVu Sans Mono; the video in the screenshot is Big Buck Bunny, © Blender Foundation, CC BY 3.0."
+          intro="The board boots through U-Boot and Trusted Firmware-A. The Wi-Fi and Bluetooth firmware is Unisoc’s, fetched from Orange Pi when Mini is built. The Browser is Mozilla’s Firefox, on Debian and Linux, in a machine image that downloads from boltos.dev. The type is Inter and DejaVu Sans Mono; the video in the screenshot is Big Buck Bunny, © Blender Foundation, CC BY 3.0."
         />
       </Container>
     </section>

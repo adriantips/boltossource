@@ -1,10 +1,11 @@
-import { ArrowDownToLine, ArrowUpRight, Disc3, FileArchive, HardDrive, Tv, Usb } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpRight, Cpu, Disc3, FileArchive, HardDrive, Tv, Usb } from 'lucide-react'
 import { Container, PageHero, SectionHead, CodeBlock, ArrowLink } from '@/components/site/Blocks'
 import { Reveal } from '@/components/site/Reveal'
 import { Shot } from '@/components/site/Shot'
 import { GitHubIcon } from '@/components/site/GitHubIcon'
 import { downloads, links } from '@/data/site'
 import { tvDownloads } from '@/data/tv'
+import { mini, miniDownloads } from '@/data/mini'
 import { hasShot, thumbSrc } from '@/data/shots'
 import { useLatest } from '@/data/updates'
 
@@ -51,13 +52,14 @@ export default function Download() {
   const latest = useLatest('desktop')
   const images = downloads.filter(d => d.kind === 'image')
   const source = downloads.filter(d => d.kind === 'source')
+  const miniCard = miniDownloads[0]
 
   return (
     <>
       <PageHero
         eyebrow={`Download · version ${latest ? latest.version : '0.4'}`}
         title={['Download', <span className="serif-i text-smoke">BoltOS.</span>]}
-        intro="Every file below is served straight from GitHub, so what you download is exactly what is in the repository. Sign in with user / bolt."
+        intro="The desktop images are served straight from GitHub, so what you download is exactly what is in the repository; the TV and Mini images download from boltos.dev itself. On the desktop, sign in with user / bolt."
       />
 
       <Container className="pb-24">
@@ -120,12 +122,11 @@ export default function Download() {
             <div className="aurora-field pointer-events-none absolute -inset-10 opacity-40" />
             <div className="relative grid gap-8 lg:grid-cols-[1.1fr_1fr] lg:items-center">
               <div>
-                <p className="inline-flex items-center gap-2 font-mono text-[11px] text-smoke">
-                  <span className="aurora-chip rounded-full px-2 py-0.5 text-[10px] text-black">NEW</span> BoltOS TV
-                </p>
+                <p className="font-mono text-[11px] text-smoke">BoltOS TV</p>
                 <h3 className="mt-4 flex items-center gap-3 text-[28px] font-medium tracking-[-0.035em]"><Tv className="size-7" strokeWidth={1.4} /> For your television</h3>
                 <p className="mt-3 max-w-xl text-[15px] leading-relaxed text-white/75">
-                  The television edition: films, Live TV, inputs, a browser for the sofa and a built-in ad blocker. Write the USB
+                  The television edition: films, Live TV, YouTube, the streaming apps, inputs, a browser for the sofa and a built-in
+                  ad blocker. Write the USB
                   image to a stick, plug it into a small PC on the TV, and boot. <a href="/tv#install" className="text-white underline decoration-white/30 underline-offset-4 hover:decoration-white">How to install it</a>.
                 </p>
                 <div className="mt-6 flex flex-wrap gap-2">
@@ -139,6 +140,34 @@ export default function Download() {
               {hasShot('tv_home') && (
                 <a href="/tv" className="block overflow-hidden rounded-xl border-[6px] border-[#0b0b0d] ring-1 ring-white/10">
                   <img src={thumbSrc('tv_home')} alt="BoltOS TV home screen" width={960} height={540} loading="lazy" className="block h-auto w-full" />
+                </a>
+              )}
+            </div>
+          </div>
+        </Reveal>
+        <Reveal className="mt-4">
+          <div id="mini" className="scroll-mt-28 rounded-3xl border border-line p-7 sm:p-9">
+            <div className="grid gap-8 lg:grid-cols-[1.1fr_1fr] lg:items-center">
+              <div>
+                <p className="font-mono text-[11px] text-smoke">BoltOS Mini</p>
+                <h3 className="mt-4 flex items-center gap-3 text-[28px] font-medium tracking-[-0.035em]"><Cpu className="size-7" strokeWidth={1.4} /> For the Orange Pi Zero3</h3>
+                <p className="mt-3 max-w-xl text-[15px] leading-relaxed text-smoke">
+                  BoltOS on a small ARM board: Code with Python, C and C++, Firefox, YouTube, Bluetooth and a language model on the
+                  board itself. Write the card image to a microSD card and use an HDMI monitor or your Mac as the
+                  screen. <a href="/mini#install" className="text-white underline decoration-white/30 underline-offset-4 hover:decoration-white">How to install it</a>.
+                </p>
+                <div className="mt-6 flex flex-wrap gap-2">
+                  <a href={miniCard.href} className="inline-flex h-12 items-center gap-2 rounded-full bg-white px-5 text-[14px] font-medium text-black transition-colors hover:bg-white/85">
+                    <ArrowDownToLine className="size-4" /> {miniCard.file} <span className="text-black/50">{miniCard.size}</span>
+                  </a>
+                  <a href={mini.tree} target="_blank" rel="noreferrer" className="inline-flex h-12 items-center gap-2 rounded-full border border-line-strong px-5 text-[14px] font-medium transition-colors hover:bg-white hover:text-black">
+                    Build it yourself <ArrowUpRight className="size-4" />
+                  </a>
+                </div>
+              </div>
+              {hasShot('mini_home') && (
+                <a href="/mini" className="block overflow-hidden rounded-xl border border-white/10">
+                  <img src={thumbSrc('mini_home')} alt="BoltOS Mini home screen" width={960} height={562} loading="lazy" className="block h-auto w-full" />
                 </a>
               )}
             </div>

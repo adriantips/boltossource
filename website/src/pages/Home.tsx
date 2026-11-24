@@ -70,7 +70,7 @@ function Hero() {
             <Link to="/tv" className="group inline-flex items-center gap-3 rounded-full border border-white/15 bg-black/40 py-1.5 pr-3 pl-1.5 backdrop-blur transition-colors hover:border-white/40">
               <span className="aurora-chip rounded-full px-2.5 py-0.5 font-mono text-[10.5px] font-medium text-black">NEW</span>
               <span className="font-mono text-[11.5px] text-smoke group-hover:text-white">
-                <DecryptedText text="BoltOS TV is here" animateOn="view" sequential speed={28} />
+                <DecryptedText text="YouTube comes to BoltOS TV" animateOn="view" sequential speed={28} />
               </span>
               <ArrowUpRight className="size-3.5 text-fog transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-white" />
             </Link>
@@ -83,8 +83,8 @@ function Hero() {
           <div className="mt-10 grid gap-10 lg:grid-cols-[1.2fr_1fr] lg:items-end">
             <Reveal delay={0.55}>
               <p className="max-w-xl text-[clamp(1.05rem,1.5vw,1.25rem)] leading-relaxed text-smoke">
-                BoltOS is a 64-bit kernel, a desktop, a web browser, three compilers and DOOM. About 100,000 lines of C and
-                assembly, written by <Link to="/creator" className="text-white underline decoration-white/30 underline-offset-4 hover:decoration-white">Adrian Derakhshideh</Link>, age twelve.
+                BoltOS is a 64-bit kernel, a desktop, a web browser, three compilers and DOOM, with editions for the TV and the
+                Orange Pi. About 165,000 lines of C and assembly, written by <Link to="/creator" className="text-white underline decoration-white/30 underline-offset-4 hover:decoration-white">Adrian Derakhshideh</Link>, age thirteen.
               </p>
             </Reveal>
             <Reveal delay={0.7} className="flex flex-wrap gap-3 lg:justify-end">
@@ -143,7 +143,7 @@ function HeroShot() {
   )
 }
 
-// The newest edition: BoltOS on an Orange Pi Zero3, with the Mac as its screen.
+// BoltOS on an Orange Pi Zero3, on an HDMI monitor or with the Mac as its screen.
 function MiniBand() {
   const card = miniDownloads[0]
   const shots = ['mini_web', 'mini_video', 'mini_terminal', 'mini_settings'].filter(hasShot)
@@ -152,9 +152,8 @@ function MiniBand() {
       <div className="grid-bg fade-edges pointer-events-none absolute inset-0 opacity-40" />
       <Container className="relative">
         <Reveal>
-          <p className="inline-flex items-center gap-3 rounded-full border border-white/15 bg-black/40 py-1.5 pr-4 pl-1.5 backdrop-blur">
-            <span className="rounded-full bg-white px-2.5 py-0.5 font-mono text-[10.5px] font-medium text-black">NEW</span>
-            <span className="font-mono text-[11.5px] text-smoke">{mini.dates} · for the {mini.board}</span>
+          <p className="inline-flex items-center rounded-full border border-white/15 bg-black/40 px-4 py-1.5 backdrop-blur">
+            <span className="font-mono text-[11.5px] text-smoke">Since {mini.dates} · for the {mini.board}</span>
           </p>
         </Reveal>
         <h2 className="display mt-8 text-[clamp(4rem,15.5vw,16rem)] !leading-[0.86]">
@@ -164,8 +163,9 @@ function MiniBand() {
           <Reveal>
             <p className="max-w-2xl text-[clamp(1.1rem,1.6vw,1.35rem)] leading-relaxed text-white/80">
               BoltOS on a matchbox-sized ARM board. Its own 64-bit kernel for the Orange Pi Zero3, up a quarter of a second after
-              U-Boot, with a code editor that runs Python, C and C++, a browser, YouTube on the second core, Wi-Fi, Bluetooth and
-              a language model of its own — and a Mac as its screen, over one USB-C cable.
+              U-Boot, with a code editor that runs Python, C and C++, real Firefox on its own hypervisor, YouTube on the
+              second core, Bluetooth and a language model of its own — on an HDMI monitor, or with a Mac as its screen over one
+              USB-C cable.
             </p>
           </Reveal>
           <Reveal delay={0.1} className="flex flex-wrap gap-3 lg:justify-end">
@@ -222,9 +222,8 @@ function TvBand() {
       <div className="grid-bg fade-edges pointer-events-none absolute inset-0 opacity-30" />
       <Container className="relative">
         <Reveal>
-          <p className="inline-flex items-center gap-3 rounded-full border border-white/15 bg-black/40 py-1.5 pr-4 pl-1.5 backdrop-blur">
-            <span className="aurora-chip rounded-full px-2.5 py-0.5 font-mono text-[10.5px] font-medium text-black">NEW</span>
-            <span className="font-mono text-[11.5px] text-smoke">{tv.dates} · the television edition</span>
+          <p className="inline-flex items-center rounded-full border border-white/15 bg-black/40 px-4 py-1.5 backdrop-blur">
+            <span className="font-mono text-[11.5px] text-smoke">Since {tv.dates} · the television edition</span>
           </p>
         </Reveal>
         <h2 className="display mt-8 text-[clamp(4rem,15.5vw,16rem)] !leading-[0.86]">
@@ -234,8 +233,8 @@ function TvBand() {
           <Reveal>
             <p className="max-w-2xl text-[clamp(1.1rem,1.6vw,1.35rem)] leading-relaxed text-white/80">
               BoltOS, for the television. Switch it on and a 4K-shot film fills the screen, with a slim pane of liquid glass for
-              Live TV, Apple TV, HDMI, a browser made for the sofa and an ad blocker for the whole set. No login, no boot menu,
-              and the same kernel underneath.
+              Live TV, YouTube with its sound, Netflix and the other streaming apps, Apple TV, HDMI, a browser made for the sofa
+              and an ad blocker for the whole set. No login, no boot menu, and the same kernel underneath.
             </p>
           </Reveal>
           <Reveal delay={0.1} className="flex flex-wrap gap-3 lg:justify-end">
@@ -273,7 +272,7 @@ function TvBand() {
           ))}
         </Reveal>
         <p className="mt-10 text-center text-[13px] text-fog">
-          Also this month: <Link to="/revamp" className="text-white underline decoration-white/30 underline-offset-4 hover:decoration-white">the huge UI revamp</Link> of the desktop.
+          And on the desktop: <Link to="/revamp" className="text-white underline decoration-white/30 underline-offset-4 hover:decoration-white">the huge UI revamp</Link>, in liquid glass.
         </p>
       </Container>
     </section>
@@ -452,7 +451,7 @@ function CreatorBand() {
           <div>
             <p className="font-mono text-[11px] tracking-[0.18em] text-black/50 uppercase">The creator</p>
             <h2 className="display mt-8 text-[clamp(2.8rem,8vw,7.5rem)]">
-              <MaskLines lines={['Written by a', <span className="serif-i">twelve-year-old.</span>]} />
+              <MaskLines lines={['Written by a', <span className="serif-i">thirteen-year-old.</span>]} />
             </h2>
           </div>
           <Reveal>
@@ -471,7 +470,7 @@ function CreatorBand() {
 }
 
 function SprintBand() {
-  const bars = [11, 6, 20, 9, 11, 18, 32, 3, 4, 5, 1, 1]
+  const bars = [11, 6, 19, 9, 11, 18, 32, 3, 4, 5, 1, 1]
   const max = Math.max(...bars)
   return (
     <section className="py-24 sm:py-36">

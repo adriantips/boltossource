@@ -9,14 +9,14 @@ import { systems } from '@/data/systems'
 import { cn } from '@/lib/utils'
 
 const primary: { to: string; label: string; isNew?: boolean }[] = [
-  { to: '/mini', label: 'Mini', isNew: true },
+  { to: '/mini', label: 'Mini' },
   { to: '/tv', label: 'TV' },
   { to: '/revamp', label: 'Revamp' },
   { to: '/system', label: 'System' },
   { to: '/apps', label: 'Apps' },
   { to: '/gallery', label: 'Gallery' },
   { to: '/timeline', label: 'Timeline' },
-  { to: '/updates', label: 'Updates', isNew: true },
+  { to: '/updates', label: 'Updates' },
   { to: '/creator', label: 'Creator' },
   { to: '/docs', label: 'Docs' },
 ]

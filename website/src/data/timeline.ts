@@ -200,4 +200,86 @@ export const eras: Era[] = [
       },
     ],
   },
+  {
+    name: 'Two more editions',
+    range: 'October 25 – 29, 2026',
+    blurb: 'The same kernel on a television, a new one on an ARM board, and all three keeping themselves up to date.',
+    items: [
+      {
+        date: 'Oct 25',
+        title: 'BoltOS TV',
+        body: 'The television edition: a film edge to edge at power-on, with Live TV, a browser for the sofa, an ad blocker for the whole set and the inputs in a slim pane of glass. No login and no boot menu.',
+        commits: ['tv: BoltOS TV, the television edition'],
+        shot: 'tv_home',
+        tag: 'new edition',
+      },
+      {
+        date: 'Oct 27',
+        title: 'BoltOS Mini',
+        body: 'A second kernel, for AArch64, on an Orange Pi Zero3, with the Mac as its screen over USB-C. Within two days it has Ethernet, HTTPS with the desktop’s page engine, a browser, an H.264 decoder playing YouTube on the second core, Wi-Fi and Bluetooth.',
+        commits: [
+          'mini: BoltOS Mini for the Orange Pi Zero3; touchpad reads its HID report layout (vertical movement), runs without a Mac (battery)',
+          "mini: an H.264 decoder, bit-exact against ffmpeg on YouTube's streams",
+          'mini: YouTube plays on the Pi, decoded on its second core',
+          'mini: Bluetooth, on the same chip: looking, pairing, keyboards, mice and controllers',
+        ],
+        shot: 'mini_home',
+        tag: 'new edition',
+      },
+      {
+        date: 'Oct 29',
+        title: 'Code, packages and a language model',
+        body: 'Mini runs Python, C and C++ on a spare core, keeps its files on the card’s FAT32 partition and installs packages from boltos.dev. The first is Local AI, a chat with a language model running on the Pi’s own cores.',
+        commits: [
+          'mini: a Python interpreter',
+          'mini: a C and C++ interpreter',
+          'mini: the Code app, and pyhost to run its interpreters on a Mac',
+          "mini: BoltOS Local AI, a language model on the Pi's own cores",
+        ],
+        shot: 'mini_ai',
+      },
+      {
+        date: 'Oct 29',
+        title: 'It updates itself',
+        body: 'BoltOS, BoltOS TV and BoltOS Mini ask boltos.dev for a newer version when they start and every six hours. Quick updates install and restart by themselves; big ones wait for Update.',
+        commits: [
+          'updates: the desktop and BoltOS TV install new kernels from boltos.dev',
+          'updates: BoltOS Mini installs new kernels onto its SD card',
+          'iso: every image rebuilt as the first release that updates itself',
+        ],
+        shot: 'mini_updates',
+      },
+    ],
+  },
+  {
+    name: 'Firefox and streaming',
+    range: 'November 2026',
+    blurb: 'A television that plays YouTube with its sound, and real Firefox on a Pi.',
+    items: [
+      {
+        date: 'Nov 17',
+        title: 'A boot splash',
+        body: 'Mini’s first five seconds: the bolt over the wordmark and a loading bar, while the kernel comes up behind it. Any key skips it.',
+        commits: ['mini: a five-second boot splash'],
+      },
+      {
+        date: 'Nov 21',
+        title: 'YouTube and the streaming apps on the TV',
+        body: 'BoltOS TV plays YouTube by itself, with an AAC decoder for the sound, and Netflix, Prime Video, Disney+ and HBO Max in Firefox on another computer, sent to the TV by the BoltOS Web Engine.',
+        commits: ['tv: an AAC-LC decoder, checked against ffmpeg', 'tv: YouTube, and Netflix, Prime Video, Disney+ and HBO Max'],
+        tag: 'streaming',
+      },
+      {
+        date: 'Nov 21',
+        title: 'Firefox and HDMI on Mini',
+        body: 'Mini keeps the A53’s hypervisor level for itself and runs Linux as a guest on it, so the Browser is real Firefox, on the Pi alone. The micro-HDMI port drives a monitor, set up by Mini from the display engine to the PHY.',
+        commits: [
+          'mini: an EL2 hypervisor, and a Linux machine on it for Firefox',
+          'mini: HDMI out, set up by Mini from the display engine to the PHY',
+          'mini: Firefox in the Browser, HDMI and touch, Ethernet only',
+        ],
+        tag: 'hypervisor',
+      },
+    ],
+  },
 ]

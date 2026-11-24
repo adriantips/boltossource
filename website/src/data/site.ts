@@ -86,7 +86,7 @@ export const downloads: Download[] = [
 ]
 
 export const stats = [
-  { value: 100, suffix: 'k', label: 'lines of first-party C and assembly' },
+  { value: 165, suffix: 'k', label: 'lines of first-party C and assembly' },
   { value: 43, suffix: '', label: 'desktop apps, every one written for it' },
   { value: 69, suffix: '', label: 'QEMU tests that boot the real image' },
   { value: 0, suffix: '', label: 'lines of Linux, GRUB or Multiboot' },

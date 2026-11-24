@@ -15,6 +15,10 @@ const built = [
   ['A browser', 'HTML, a CSS cascade, flex and grid layout, and a JavaScript interpreter.'],
   ['Compilers', 'C, C++ and C# through BoltCC, a native x86-64 backend, an assembler, a linker and make.'],
   ['A test suite', 'Sixty-nine VM tests and fuzzers with their own sanitizer, built because the toolchain had none.'],
+  ['BoltOS TV', 'A television edition on the same kernel: Live TV, YouTube with its sound, the streaming apps, a browser and an ad blocker.'],
+  ['BoltOS Mini', 'A second kernel, for AArch64 on an Orange Pi, with HDMI, Bluetooth, an SD card filesystem and Python, C and C++ interpreters.'],
+  ['A hypervisor', 'Mini keeps the A53’s EL2 for itself and runs Linux as a guest under it, so real Firefox runs on the board.'],
+  ['Decoders and a model', 'H.264 bit-exact against ffmpeg, AAC, MP3, and a transformer that runs Qwen3 on the Pi’s own cores.'],
 ]
 
 export default function Creator() {
@@ -31,18 +35,19 @@ export default function Creator() {
             <Reveal delay={0.25}>
               <div className="flex items-baseline gap-5">
                 <span className="display text-[clamp(6rem,16vw,13rem)] leading-[0.8]">
-                  <CountUp to={12} duration={1.6} />
+                  <CountUp to={13} duration={1.6} />
                 </span>
                 <span className="serif-i text-[clamp(1.6rem,3vw,2.6rem)] text-smoke">years old.</span>
               </div>
             </Reveal>
             <Reveal delay={0.35}>
               <p className="text-[clamp(1.1rem,1.6vw,1.35rem)] leading-relaxed text-smoke">
-                Adrian is a twelve-year-old programmer. BoltOS is the operating system Adrian wrote: a 64-bit kernel and everything on top of it,
-                written in C and x86-64 assembly without borrowing a bootloader or a kernel from anyone.
+                Adrian is a thirteen-year-old programmer. BoltOS is the operating system Adrian wrote: a 64-bit kernel and everything on top of it,
+                written in C and x86-64 assembly without borrowing a bootloader or a kernel from anyone — and a second kernel, for ARM, that runs
+                BoltOS Mini on an Orange Pi.
               </p>
               <p className="mt-6 font-mono text-[13px] text-fog">
-                <DecryptedText text="programmer · systems · x86-64 · C" animateOn="view" sequential speed={30} />
+                <DecryptedText text="programmer · systems · x86-64 · ARM64 · C" animateOn="view" sequential speed={30} />
               </p>
             </Reveal>
           </div>
@@ -95,8 +100,8 @@ export default function Creator() {
         <Container>
           <div className="grid gap-px overflow-hidden rounded-3xl border border-line bg-line sm:grid-cols-2 lg:grid-cols-4">
             {[
-              [100, 'k', 'lines of C and assembly'],
-              [122, '', 'commits in the repository'],
+              [165, 'k', 'lines of C and assembly'],
+              [189, '', 'commits in the repository'],
               [32, '', 'commits on the busiest day'],
               [69, '', 'VM tests, run with one command'],
             ].map(([n, s, l]) => (

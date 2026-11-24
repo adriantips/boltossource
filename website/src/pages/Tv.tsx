@@ -37,9 +37,8 @@ function Hero() {
       <div className="grid-bg fade-edges pointer-events-none absolute inset-0 opacity-40" />
       <Container className="relative">
         <Reveal>
-          <p className="inline-flex items-center gap-3 rounded-full border border-white/15 bg-black/40 py-1.5 pr-4 pl-1.5 backdrop-blur">
-            <span className="aurora-chip rounded-full px-2.5 py-0.5 font-mono text-[10.5px] font-medium text-black">NEW</span>
-            <span className="font-mono text-[11.5px] text-smoke">{tv.dates} · the television edition</span>
+          <p className="inline-flex items-center rounded-full border border-white/15 bg-black/40 px-4 py-1.5 backdrop-blur">
+            <span className="font-mono text-[11.5px] text-smoke">Since {tv.dates} · the television edition</span>
           </p>
         </Reveal>
         <h1 className="display mt-8 text-[clamp(4.2rem,16.5vw,17rem)] !leading-[0.86]">
@@ -49,8 +48,8 @@ function Hero() {
           <Reveal delay={0.35}>
             <p className="max-w-2xl text-[clamp(1.1rem,1.7vw,1.4rem)] leading-relaxed text-white/80">
               Switch it on and a film fills the screen. No login, no boot menu, no loading bar — just a slim pane of liquid glass
-              with your apps: Live TV, Apple TV, HDMI, a browser for the sofa and an ad blocker for the whole set. The same kernel
-              as the desktop, with the desktop taken away.
+              with your apps: Live TV, YouTube, Netflix, Prime Video, Disney+ and HBO Max, Apple TV, HDMI, a browser for the sofa
+              and an ad blocker for the whole set. The same kernel as the desktop, with the desktop taken away.
             </p>
           </Reveal>
           <Reveal delay={0.5} className="flex flex-wrap gap-3 lg:justify-end">
@@ -111,11 +110,11 @@ function Features() {
           n="01"
           eyebrow="What is on it"
           title={<>Everything a TV does. <span className="serif-i text-smoke">Nothing it does not.</span></>}
-          intro="Six screens, each one reachable with four arrows, OK and Back — which is what a remote has. A mouse or an air-remote works too."
+          intro="Every screen is reachable with four arrows, OK and Back — which is what a remote has. A mouse or an air-remote works too."
         />
         <div className="mt-16 space-y-20 sm:mt-24 sm:space-y-32">
           {tvFeatures.map((f, i) => (
-            <div key={f.title} className={cn('grid items-center gap-8 lg:grid-cols-[1fr_1.5fr] lg:gap-16', i % 2 === 1 && 'lg:grid-cols-[1.5fr_1fr]')}>
+            <div key={f.title} className={cn('grid items-center gap-8 lg:gap-16', f.shot && (i % 2 === 1 ? 'lg:grid-cols-[1.5fr_1fr]' : 'lg:grid-cols-[1fr_1.5fr]'))}>
               <Reveal className={cn(i % 2 === 1 && 'lg:order-2')}>
                 <p className="font-mono text-[11.5px] tracking-[0.14em] text-fog uppercase">{String(i + 1).padStart(2, '0')}</p>
                 <h3 className="mt-4 text-[clamp(1.8rem,3vw,2.6rem)] font-medium tracking-[-0.035em]">{f.title}</h3>
@@ -233,7 +232,7 @@ function Credits() {
           n="05"
           eyebrow="Credits"
           title={<>Made by <span className="serif-i text-smoke">Adrian Derakhshideh.</span></>}
-          intro="The films are from Pexels, filmed in 4K by the people below and cut into seamless loops. MPEG-1 decoding is pl_mpeg by Dominic Szablewski (MIT); the type is Inter; the icons are Lucide (ISC)."
+          intro="The films are from Pexels, filmed in 4K by the people below and cut into seamless loops. MPEG-1 decoding is pl_mpeg by Dominic Szablewski (MIT); the AAC decoder’s tables are generated from FFmpeg’s (LGPL-2.1+); the type is Inter; the icons are Lucide (ISC)."
         />
         <div className="mt-14 grid grid-cols-1 gap-px overflow-hidden rounded-2xl border border-line bg-line sm:grid-cols-2 lg:grid-cols-3">
           {tvFilms.map(([f, who]) => (

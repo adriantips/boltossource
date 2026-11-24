@@ -14,7 +14,7 @@ export const tvNumbers = [
   { value: '0', unit: '', label: 'logins, boot menus or loading screens between power and the picture' },
   { value: '6', unit: 'films', label: 'seamless loops, filmed in 4K, playing as Live TV channels' },
   { value: '293', unit: '', label: 'ad, tracking and smart-TV telemetry networks blocked for every app' },
-  { value: '37', unit: 'MB', label: 'for the whole thing, films included, on a USB stick' },
+  { value: '38', unit: 'MB', label: 'for the whole thing, films included, on a USB stick' },
 ]
 
 export type TvFeature = { title: string; body: string; shot?: string }
@@ -24,6 +24,14 @@ export const tvFeatures: TvFeature[] = [
     title: 'Live TV',
     body: 'Six channels of nature, each one a seamless loop cut from a 4K original. Up and down flip channels with a proper banner, number keys tune directly, and OK opens a guide with a still of every channel over the picture, which keeps playing.',
     shot: 'tv_guide',
+  },
+  {
+    title: 'YouTube, played by the TV itself',
+    body: 'Search, or pick a topic, and the results come up as a grid of thumbnails. A video plays full screen with its sound, decoded on the set — the H.264 decoder BoltOS Mini uses, and an AAC decoder written for the TV — with no account, no sign-in and no other computer. OK pauses, left and right jump ten seconds, Channel + and − jump a minute.',
+  },
+  {
+    title: 'Netflix, Prime Video, Disney+ and HBO Max',
+    body: 'These only play in a browser with a licensed DRM module, which no small operating system can get, so they play in a real Firefox on another computer on your network. The BoltOS Web Engine sends its picture to the TV as H.264, with the sound, and the remote’s pointer, clicks and keys go back the other way. You sign in once, in that Firefox, and it remembers you.',
   },
   {
     title: 'A browser for the sofa',
@@ -42,7 +50,7 @@ export const tvFeatures: TvFeature[] = [
   },
   {
     title: 'Settings that a TV has',
-    body: 'Brightness and four picture modes, volume and mute, which film plays at home, network status, a sleep timer that switches the set off, the clock and time zone, updates from boltos.dev that install themselves when the TV starts, and About with every credit.',
+    body: 'Brightness and four picture modes, volume and mute, which film plays at home, network status, where the streaming engine is, a sleep timer that switches the set off, the clock and time zone, updates from boltos.dev that install themselves when the TV starts, and About with every credit.',
     shot: 'tv_settings',
   },
   {
@@ -56,7 +64,9 @@ export const tvLimits = [
   'The HDMI and Apple TV screens cannot show those devices: BoltOS TV runs on a computer, and a computer’s HDMI port sends a picture out, it does not take one in. Use the TV’s Input button for a box plugged into the TV.',
   'Films play at 1080p, decoded in software as MPEG-1, and are silent. The TV scales them to its panel.',
   'Wired Ethernet only (Intel e1000-family, virtio). Sound comes out of the computer’s own jack, not over HDMI.',
-  'No disk, so settings start from the defaults at every power-on. The browser has no JavaScript: text-first sites work, web apps and streaming services do not.',
+  'Settings start from the defaults at every power-on, except automatic updates and the streaming engine’s address, which are kept on the stick. The browser has no JavaScript: text-first sites work, web apps do not.',
+  'YouTube plays at 360p: the one stream YouTube gives out with the picture and sound in a single file, which the TV can play without YouTube’s player scripts. Watchable on a big screen, but soft. Live streams don’t play.',
+  'Netflix, Prime Video, Disney+ and HBO Max need a second computer: an x86-64 Linux machine running the BoltOS Web Engine, because Google ships Widevine for Firefox on x86-64 Linux only. They come through at the 720p those services give Firefox on Linux.',
 ]
 
 export const tvSteps = [
@@ -71,7 +81,7 @@ export const tvSteps = [
   },
   {
     t: 'Boot it on the TV',
-    body: 'Plug the PC into the TV, add a USB keyboard or an air-mouse remote, and Ethernet for the browser. Open the boot menu (F12, F11, F7 or Esc on most machines) and pick the stick. On UEFI, switch Secure Boot off first.',
+    body: 'Plug the PC into the TV, add a USB keyboard or an air-mouse remote, and Ethernet for YouTube and the browser. Open the boot menu (F12, F11, F7 or Esc on most machines) and pick the stick. On UEFI, switch Secure Boot off first.',
   },
   {
     t: 'Make it part of the set',
@@ -84,10 +94,12 @@ export const tvKeys = [
   ['Enter / OK', 'Select'],
   ['Esc / Backspace', 'Back — on Home, ambient mode'],
   ['Home or Windows key', 'Home, from anywhere'],
-  ['Page Up / Down', 'Channel up and down; page through the web'],
+  ['Page Up / Down', 'Channel up and down; page through the web; a minute on YouTube'],
   ['0 – 9', 'Tune Live TV'],
   ['+  −  M', 'Volume, mute'],
   ['G  ·  I', 'Guide · channel banner'],
+  ['OK  ·  ← →  on YouTube', 'Pause · ten seconds back and on'],
+  ['I  ·  Tab  in a streaming app', 'Arrows to the player · type into the page'],
 ]
 
 export const tvFilms = [
@@ -106,7 +118,7 @@ export const tvDownloads: TvDownload[] = [
     id: 'tv-usb',
     name: 'USB stick for your TV',
     file: 'boltostv-usb.img.gz',
-    size: '≈ 37 MB',
+    size: '≈ 38 MB',
     href: '/dl/boltostv-usb.img.gz',
     blurb: 'Write it to a USB stick, plug it into a small PC on your TV’s HDMI, and boot. Legacy BIOS and UEFI both work; one copy of the kernel serves both.',
     bestFor: 'A mini PC, NUC or laptop on the TV (balenaEtcher, Rufus in DD mode, dd)',
@@ -115,7 +127,7 @@ export const tvDownloads: TvDownload[] = [
     id: 'tv-iso',
     name: 'CD image',
     file: 'boltos-tv.iso',
-    size: '≈ 37 MB',
+    size: '≈ 39 MB',
     href: '/dl/boltos-tv.iso',
     blurb: 'The same system as a bootable CD image, for trying it in a virtual machine before it goes anywhere near a television.',
     bestFor: 'QEMU, VirtualBox, VMware',
