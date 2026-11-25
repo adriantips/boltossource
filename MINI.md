@@ -156,6 +156,27 @@ Some Terminal commands: `about`, `net`, `usb`, `mem`, `cpu`, `log 40`,
 completes a name. `edit file` opens a file in Code, and `run file.py` (or
 `.c`, `.cpp`) runs it there.
 
+### Saving a picture and showing it full screen
+
+In the Browser (Mini's own pages, not Firefox, which has its own menu),
+**right-click a picture**: a page's, a thumbnail on Images, or the one open
+over the grid. Pick **Save image**, type a name (letters, numbers, `-` and
+`_`) and press Return. Mini downloads the picture as it is (PNG, JPEG, GIF
+or BMP) into `/Pictures` on the SD card. Then it tells you how to show it:
+
+```
+img --kitty
+```
+
+Type that in the Terminal and the picture fills the screen. **Ctrl+C closes
+it** and takes you back to the Terminal. Esc works too, and so does a click on
+the line at the bottom that says so. That line shows for a few seconds, and
+any other key or click brings it back. `img` on its own lists the saved pictures.
+
+While a picture is up, Mini does nothing else. It draws the picture once, stops
+Firefox's machine, skips package and update checks, and keeps the screen
+from going to sleep.
+
 ## Updating it
 
 BoltOS Mini updates itself from boltos.dev. It asks once it's online and

@@ -156,8 +156,10 @@ void kmain(uint64_t dtb) {
         uint64_t t_pump = now_us();
         g_perf.pump_us += t_pump - t_turn;
         int pkg_poll(void);
-        if (pkg_poll()) shell_request_frame();
-        if (update_poll()) shell_request_frame();
+        if (!shell_quiet()) {                          /* a picture or a status page: nothing else */
+            if (pkg_poll()) shell_request_frame();
+            if (update_poll()) shell_request_frame();
+        }
         shell_frame();
         uint64_t t_shell = now_us();
         g_perf.shell_us += t_shell - t_pump;

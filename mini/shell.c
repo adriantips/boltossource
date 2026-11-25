@@ -45,6 +45,10 @@ static int pointer_x = -1, pointer_y = -1, pointer_btn;
 /* An app that has the whole screen (a game): no bar, no arrow, every key
  * but Super is its own, and it draws and presents its frames itself. */
 static int fullscreen;
+/* What that app asked for (shell_quiet_mode): nothing else running in the
+ * background, the screen never going to sleep. It goes with the app: Home,
+ * another app or leaving full screen drops it. */
+static int hold_quiet, hold_awake;
 
 /* ---- the theme ---------------------------------------------------------------------------------- */
 typedef struct { uint32_t bg, bar, surface, line, text, sub, faint; } palette_t;
@@ -341,6 +345,7 @@ static void screen_sleep_poll(void) {
         if (dark) kprintf("[screen] not drawing: %s and no Screen Sharing viewer\n", asleep ? "asleep" : "nothing on the HDMI port");
         else { dirty = 1; kprintf("[screen] drawing again\n"); }
     }
+    if (hold_awake && fullscreen && cur) { woke_at = now; return; }   /* a page that stays on */
     if (asleep || !lit || !sleep_min || vnc_clients() > 0) return;
     uint64_t since = now - (last_input > woke_at ? last_input : woke_at);
     int plugged = display_plugged();
@@ -432,7 +437,10 @@ static void draw_toast(void) {
 /* ---- the bar ------------------------------------------------------------------------------------ */
 #define BAR_H S(28)
 
-/* The bar's left side: "BoltOS" (Home), then "1 Browser", "2 Terminal"... */
+/* The bar's left side: "BoltOS" (Home), then "1 Browser", "2 Terminal"...
+ * With more apps than the bar has room for, the apps that aren't open show
+ * only their key (bar_compact, decided each time the bar is drawn). */
+static int bar_compact;
 static int bar_item(int i, int *x) {                  /* i = -1 is Home; returns the width */
     int bx = S(14);
     const char *home = "BoltOS";
@@ -440,7 +448,8 @@ static int bar_item(int i, int *x) {                  /* i = -1 is Home; returns
     if (i < 0) { *x = bx - S(8); return hw; }
     bx += hw - S(8) + S(10);
     for (int k = 0; k < NAPPS; k++) {
-        int w = font_width(FONT_MONO, S(11), "1", -1) + S(6) + font_width(FONT_MEDIUM, S(12), apps[k]->name, -1) + S(16);
+        int named = !bar_compact || apps[k] == cur;
+        int w = font_width(FONT_MONO, S(11), "1", -1) + (named ? S(6) + font_width(FONT_MEDIUM, S(12), apps[k]->name, -1) : 0) + S(16);
         if (k == i) { *x = bx; return w; }
         bx += w + S(2);
     }
@@ -459,8 +468,26 @@ static const netif_t *main_link(void) {
 
 static int upd_x, upd_w;                             /* the bar's update note, to click */
 
+/* How much the bar's right side needs at the least (the link without its address). */
+static int bar_right_min(void) {
+    char hm[16], date[96], b[64];
+    clock_text(hm, sizeof hm, date, sizeof date);
+    int w = S(14);
+    if (clock_known()) w += font_width(FONT_SEMIBOLD, S(12), hm, -1) + S(8) + font_width(FONT_MEDIUM, S(12), "Wed 28 Sep", -1) + S(18);
+    else w += font_width(FONT_MEDIUM, S(12), "clock not set", -1) + S(18);
+    if (update_bar(b, sizeof b) > 0) w += font_width(FONT_MONO, S(11), b, -1) + S(18);
+    w += font_width(FONT_MONO, S(11), "cpu 100%", -1) + S(18);
+    const netif_t *n = main_link();
+    w += font_width(FONT_MONO, S(11), n ? n->name : "offline", -1) + S(16);
+    return w;
+}
+
 static void draw_bar(void) {
     int h = BAR_H, cy = h / 2;
+    int full_end;
+    bar_compact = 0;
+    bar_item(NAPPS, &full_end);
+    bar_compact = full_end + S(12) > scr_w - bar_right_min();
     gfx_fill(0, 0, scr_w, h, th.bar);
     gfx_fill(0, h, scr_w, 1, th.line);
     int x, w = bar_item(-1, &x);
@@ -473,8 +500,9 @@ static void draw_bar(void) {
         char n[2] = { (char)('1' + i), 0 };
         int nx = text_l(x + S(8), cy, n, FONT_MONO, S(11), on ? th.accent : th.faint);
         (void)nx;
-        text_l(x + S(8) + font_width(FONT_MONO, S(11), "1", -1) + S(6), cy, apps[i]->name, FONT_MEDIUM, S(12),
-               on ? th.text : th.sub);
+        if (!bar_compact || on)
+            text_l(x + S(8) + font_width(FONT_MONO, S(11), "1", -1) + S(6), cy, apps[i]->name, FONT_MEDIUM, S(12),
+                   on ? th.text : th.sub);
     }
 
     /* right: link, processor, clock -- the link's address is left out when
@@ -597,16 +625,26 @@ static void draw_app(void) {
 /* ---- input ---------------------------------------------------------------------------------------- */
 /* Raw input (a Linux program's keyboard and mouse) belongs to a full-screen
  * app: leaving it, for Home or another app, turns it off. */
-void shell_go_home(void) { cur = 0; fullscreen = 0; input_raw_enable(0); dirty = 1; }
+void shell_go_home(void) { cur = 0; fullscreen = 0; hold_quiet = hold_awake = 0; input_raw_enable(0); dirty = 1; }
 
 void shell_fullscreen(int on) {
     if (on == fullscreen) return;
     fullscreen = on && cur;
     if (fullscreen) screen_pointer(pointer_x, pointer_y, 0);
-    else input_raw_enable(0);
+    else { input_raw_enable(0); hold_quiet = hold_awake = 0; }
     dirty = 1;
 }
 int shell_is_fullscreen(void) { return fullscreen; }
+
+/* The full-screen app: quiet, nothing in the background (no package or update
+ * checks, no Code or Notes work; main.c and the frame below skip them), and
+ * awake, the screen kept on whatever Settings says. */
+void shell_quiet_mode(int quiet, int awake) {
+    hold_quiet = quiet && fullscreen && cur;
+    hold_awake = awake && fullscreen && cur;
+    if (hold_awake && asleep) screen_wake("a page that keeps the screen on");
+}
+int shell_quiet(void) { return hold_quiet && fullscreen && cur; }
 
 /* An installed package's app joins the bar and Home, after the built-in ones. */
 int shell_add_app(const app_t *a) {
@@ -631,7 +669,7 @@ void shell_remove_app(const app_t *a) {
 
 const app_t *shell_current(void) { return cur; }
 void shell_open(const app_t *a) {
-    cur = a; dirty = 1; fullscreen = 0; input_raw_enable(0);
+    cur = a; dirty = 1; fullscreen = 0; hold_quiet = hold_awake = 0; input_raw_enable(0);
     for (int i = 0; i < NAPPS; i++) if (apps[i] == a) sel = i;
     if (a->open) a->open();
 }
@@ -791,6 +829,7 @@ int shell_frame(void) {
     screen_sleep_poll();                               /* nobody looking: go dark */
     if (fullscreen && cur) {                           /* the app draws and presents itself */
         if (cur->tick) cur->tick();
+        if (shell_quiet()) return 0;                   /* nothing else, as it asked */
         int code_background(void), notes_background(void);
         code_background();
         notes_background();

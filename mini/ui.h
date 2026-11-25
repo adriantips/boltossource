@@ -73,6 +73,10 @@ void shell_go_home(void);
  * calls screen_present itself. Going Home or to another app ends it. */
 void shell_fullscreen(int on);
 int  shell_is_fullscreen(void);
+/* While full screen: quiet stops background work (package and update checks,
+ * Code and Notes), awake keeps the screen from sleeping. Both end with the
+ * app's full screen (Home, another app). */
+void shell_quiet_mode(int quiet, int awake);
 void shell_open(const app_t *a);
 int  shell_add_app(const app_t *a);                 /* an installed package's   */
 void shell_remove_app(const app_t *a);

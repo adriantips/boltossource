@@ -110,12 +110,37 @@ static void cmd_help(void) {
         { "mv from to", "rename or move" }, { "cp from to", "copy a file" },
         { "touch file", "make an empty file" }, { "df", "room on the card" },
         { "edit file", "open it in Code" }, { "run file.py|.c|.cpp", "run it in Code" },
+        { "img --name", "a saved picture, full screen (Ctrl+C closes)" }, { "img", "the saved pictures" },
         { "echo TEXT", "say something" }, { "clear", "clear the screen" },
         { "reboot", "restart the Pi" }, { "poweroff", "stop the Pi" },
     };
     out(C_ACC, "Commands:");
     for (unsigned i = 0; i < sizeof h / sizeof h[0]; i++) out(C_TEXT, "  %-26s %s", h[i][0], h[i][1]);
     out(C_DIM, "Up and down recall earlier commands. Esc on an empty line goes home.");
+}
+
+/* ---- pictures: `img --name` shows one full screen (imgview.c) ------------------------------- */
+int imgview_show(const char *name, char *msg, int cap);
+int pictures_list(char *out, int cap);
+
+static void cmd_img(const char *arg) {
+    char name[FS_NAME];
+    while (*arg == '-') arg++;                            /* img --cat, img -cat, img cat */
+    snprintf(name, sizeof name, "%s", arg);
+    for (int i = (int)strlen(name) - 1; i >= 0 && name[i] == ' '; i--) name[i] = 0;
+    if (!name[0] || !strcmp(name, "list") || !strcmp(name, "l")) {
+        char list[1200];
+        int n = pictures_list(list, sizeof list);
+        if (!n) { out(C_DIM, "No saved pictures yet. In the Browser, right-click an image and pick Save image."); return; }
+        out(C_ACC, "Saved pictures (in /Pictures):");
+        out(C_TEXT, "  %s", list);
+        out(C_DIM, "Show one with: img --name    While it's up, Ctrl+C brings you back here.");
+        return;
+    }
+    char msg[700];
+    out(C_DIM, "Showing %s full screen. Press Ctrl+C to come back here (Esc works too).", name);
+    if (imgview_show(name, msg, sizeof msg)) out(C_WARN, "%s", msg);
+    else out(C_OK, "Closed %s.", name);                  /* read once you're back */
 }
 
 /* ---- the SD card's files -------------------------------------------------------------------- */
@@ -322,6 +347,7 @@ static void run(char *line) {
         if (w < 0) out(C_WARN, "usage: theme dark|light|black");
         else { theme_set(w, th.accent_i); shell_settings_save(); }
     }
+    else if (!strcmp(line, "img") || !strcmp(line, "image") || !strcmp(line, "pic")) cmd_img(arg);
     else if (!strcmp(line, "echo")) out(C_TEXT, "%s", arg);
     else if (!strcmp(line, "reboot") || !strcmp(line, "restart")) { out(C_TEXT, "Restarting..."); board_reboot(); }
     else if (!strcmp(line, "poweroff") || !strcmp(line, "shutdown")) board_poweroff();

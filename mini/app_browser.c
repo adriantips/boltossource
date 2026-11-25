@@ -31,7 +31,8 @@
  *  Keys: type to search or enter an address (Ctrl+L too). Tab and arrows
  *  move between results; Return opens; Backspace goes back; Space and the
  *  page keys scroll; Shift+Left/Right change the search tab; Esc leaves an
- *  address being typed, a picture, or the browser.
+ *  address being typed, a picture, or the browser. On Images, the switch at
+ *  the right of the tabs (or Ctrl+S) turns SafeSearch on and off; it's kept.
  * ===========================================================================*/
 #include <stdint.h>
 #include "ui.h"
@@ -44,6 +45,7 @@
 #include "vm.h"
 #include "engine.h"
 #include "store.h"
+#include "fs.h"
 #include "kheap.h"
 #include "kprintf.h"
 #include "string.h"
@@ -105,6 +107,7 @@ static hit_t hits[MAXHIT];
 static int nhits;
 static struct { char *url; image_t *im; int state, near; } wimg[MAXWIMG];
 static int nwimg;
+static int safe_off;                    /* images: SafeSearch off (a keep record) */
 static struct http_conn *img_sess;
 static char img_sess_host[160];
 
@@ -118,6 +121,21 @@ void player_toggle(void);
 void player_seek(int secs);
 int  player_pos_ms(void);
 int  player_len_ms(void);
+
+/* Saving a picture (right-click, Save image): see "saving a picture" below. */
+enum { SV_NONE, SV_MENU, SV_NAME, SV_SAVING, SV_DONE, SV_ERROR };
+static struct {
+    int st, drawn;
+    int mx, my, mw, mh;                 /* the menu, where it was drawn            */
+    int dx, dy, dw, dh;                 /* the dialog's box                        */
+    char url[600], url2[600];           /* the picture, and a smaller one to fall back on */
+    char name[33]; int nlen;
+    int exists;                         /* that name is taken: Return again replaces it */
+    char saved[FS_NAME], msg[240];
+} SV;
+static int pg_ox, pg_oy;                /* a web page's (0,0) on screen, last frame */
+static void draw_save(int x, int y, int w, int h);
+static void save_now(void);
 
 static void set_status(const char *fmt, const char *a) {
     snprintf(B.status, sizeof B.status, fmt, a ? a : "");
@@ -137,10 +155,11 @@ static void to_white(image_t *im) {               /* composite onto the page onc
 
 /* One image, over a kept-alive connection when the host repeats (a page's
  * images, a grid of thumbnails: one TLS handshake, not one each). */
-static image_t *fetch_image(const char *url) {
-    if (strncmp(url, "http", 4)) return 0;
-    uint8_t *buf = kmalloc(IMG_CAP);
-    if (!buf) return 0;
+/* A picture's bytes, on the pictures' own connection, one redirect followed:
+ * the length (and the HTTP code in *code_out), or -1. */
+static int fetch_bytes(const char *url, uint8_t *buf, int cap, int *code_out) {
+    *code_out = 0;
+    if (strncmp(url, "http", 4)) return -1;
     char host[160]; url_host(url, host, sizeof host);
     if (img_sess && (strcmp(host, img_sess_host) || !http_conn_can_reuse(img_sess, url))) { http_close_conn(img_sess); img_sess = 0; }
     int code = 0, n = -1;
@@ -148,13 +167,22 @@ static image_t *fetch_image(const char *url) {
     for (int attempt = 0; attempt < 2 && n < 0; attempt++) {
         if (!img_sess) { int st; img_sess = http_open(url, &st); snprintf(img_sess_host, sizeof img_sess_host, "%s", host); }
         if (!img_sess) break;
-        n = http_fetch(img_sess, url, (char *)buf, IMG_CAP, &code, loc, sizeof loc);
+        n = http_fetch(img_sess, url, (char *)buf, cap, &code, loc, sizeof loc);
         if (n < 0) { http_close_conn(img_sess); img_sess = 0; }
     }
     if (n >= 0 && code >= 300 && code < 400 && loc[0]) {   /* one hop, on its own connection */
         char to[600]; url_resolve(url, loc, to, sizeof to);
-        n = web_request("GET", to, 0, 0, 0, (char *)buf, IMG_CAP, &code, 0, 0);
+        n = web_request("GET", to, 0, 0, 0, (char *)buf, cap, &code, 0, 0);
     }
+    *code_out = code;
+    return n;
+}
+
+static image_t *fetch_image(const char *url) {
+    if (strncmp(url, "http", 4)) return 0;
+    uint8_t *buf = kmalloc(IMG_CAP);
+    if (!buf) return 0;
+    int code = 0, n = fetch_bytes(url, buf, IMG_CAP, &code);
     image_t *im = (n > 0 && code == 200) ? image_decode(buf, (uint32_t)n) : 0;
     if (!im) {
         static int told;
@@ -582,7 +610,7 @@ static void search_images(const char *q) {
     char *buf = kmalloc(1024 * 1024);
     if (!buf) return;
     /* The page carries a token (vqd) that the image API wants back. */
-    snprintf(u, sizeof u, "https://duckduckgo.com/?q=%s&iax=images&ia=images", eq);
+    snprintf(u, sizeof u, "https://duckduckgo.com/?q=%s&iax=images&ia=images&kp=%s", eq, safe_off ? "-2" : "1");
     int code, n = web_request("GET", u, 0, 0, 0, buf, 1024 * 1024, &code, 0, 0);
     char vqd[80] = "";
     if (n > 0) {
@@ -598,7 +626,7 @@ static void search_images(const char *q) {
         }
     }
     if (!vqd[0]) { kfree(buf); set_status("%s", "DuckDuckGo didn't give an image search"); return; }
-    snprintf(u, sizeof u, "https://duckduckgo.com/i.js?l=us-en&o=json&q=%s&vqd=%s&f=,,,,,&p=1", eq, vqd);
+    snprintf(u, sizeof u, "https://duckduckgo.com/i.js?l=us-en&o=json&q=%s&vqd=%s&f=,,,,,&p=%s", eq, vqd, safe_off ? "-1" : "1");
     n = web_request("GET", u, "Referer: https://duckduckgo.com/\r\n", 0, 0, buf, 1024 * 1024, &code, 0, 0);
     jarena *ar = 0;
     jv *root = n > 0 ? json_parse(buf, n, &ar) : 0;
@@ -873,6 +901,28 @@ static void draw_tabs(int x, int y) {
     }
 }
 
+/* Images: "SafeSearch" and a switch, right-aligned on the tabs' row (ends at r). */
+static void safe_where(int r, int *sx, int *sw) {
+    *sw = font_width(FONT_MEDIUM, S(12), "SafeSearch", -1) + S(10) + S(34);
+    *sx = r - *sw;
+}
+
+static void draw_safe(int r, int y) {
+    int sx, sw; safe_where(r, &sx, &sw);
+    int on = !safe_off, w = S(34), hh = S(18), tx = sx + sw - w, ty = y + S(1);
+    text_l(sx, y + S(10), "SafeSearch", FONT_MEDIUM, S(12), th.sub);
+    gfx_rrect(tx, ty, w, hh, S(4), on ? th.accent : th.line, 255);
+    int k = hh - S(6), kx = on ? tx + w - k - S(3) : tx + S(3);
+    gfx_rrect(kx, ty + S(3), k, k, S(2), on ? 0xFFFFFF : th.faint, 255);
+}
+
+static void toggle_safe(void) {
+    safe_off = !safe_off;
+    int v = safe_off;
+    keep_put("safe", &v, (int)sizeof v);
+    if (B.view == V_IMAGES && B.query[0]) go(V_IMAGES, T_IMAGES, 0, B.query, 0);
+}
+
 static const struct { const char *name, *url; uint32_t c; } quick[] = {
     { "DuckDuckGo", "https://html.duckduckgo.com/html/", 0xDE5833 },
     { "Wikipedia", "https://en.m.wikipedia.org/wiki/Main_Page", 0x6E6E6E },
@@ -1108,6 +1158,7 @@ static void b_draw(int x, int y, int w, int h) {
         int top = y + pad + S(46);
         if (B.view == V_RESULTS || B.view == V_IMAGES || B.view == V_VIDEOS) {
             draw_tabs(x + pad + S(6), top);
+            if (B.view == V_IMAGES) draw_safe(x + w - pad - S(6), top);
             top += S(34);
         }
         int bottom = y + h - S(24);
@@ -1121,6 +1172,7 @@ static void b_draw(int x, int y, int w, int h) {
                 ensure_layout(pw - 2 * S(14));
                 gfx_rrect(cx, top, pw, bottom - top, S(4), B.paper, 255);
                 gfx_clip_push(cx, top, pw, bottom - top);
+                pg_ox = cx + S(14); pg_oy = top + S(10) - B.scroll;   /* for a right-click on a picture */
                 paint_page(cx + S(14), top + S(10) - B.scroll, top, bottom);
                 B.doc_h = B.fl.doc_h + S(30);
                 for (int i = 0; i < nhits; i++) { hits[i].x += cx + S(14); hits[i].y += S(10); }
@@ -1151,6 +1203,7 @@ static void b_draw(int x, int y, int w, int h) {
             font_draw_fit(FONT_REGULAR, S(11), x + pad, y + h - S(8), s, w - 2 * pad, th.faint, 255);
         }
     }
+    draw_save(x, y, w, h);                                    /* Save image's menu or dialog, on top */
 }
 
 /* ---- work between frames ------------------------------------------------------------------- */
@@ -1180,6 +1233,11 @@ static int fx_tick(void) {
 static int b_tick(void) {
     static uint64_t blink;
     if (B.view == V_FIREFOX) return fx_tick();
+    if (SV.st == SV_SAVING) { if (SV.drawn) save_now(); return 1; }   /* "Saving" is on screen: now */
+    if (SV.st == SV_NAME) {                                   /* the name's cursor blinks */
+        uint64_t p = now_ms() / 530;
+        if (p != blink) { blink = p; return 1; }
+    }
     if (B.pending) {
         if (!B.drawn_loading) { B.drawn_loading = 1; return 1; }
         B.pending = 0;
@@ -1239,6 +1297,223 @@ static int b_tick(void) {
         if (p != blink) { blink = p; return 1; }
     }
     return 0;
+}
+
+/* ---- saving a picture -------------------------------------------------------------------------
+ *  Right-click a picture (a page's, an Images thumbnail, the one open over
+ *  the grid): a menu with Save image. It asks for a name, downloads the
+ *  picture as it is (PNG, JPEG, GIF, BMP) into /Pictures on the card, and
+ *  says how to show it: `img --name` in the Terminal (imgview.c), Ctrl+C to
+ *  come back. Firefox has its own right-click menu; this is the quick one.  */
+#define SAVE_CAP (8 * 1024 * 1024)
+int pictures_find(const char *name, char *path, int cap);
+
+static int name_char(int c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_'; }
+
+/* A name from a title or an address: its first words, lower case, dashes
+ * between, and a number on the end if a picture has it already. */
+static void suggest_name(const char *from) {
+    const char *slash = strrchr(from, '/');
+    if (!strncmp(from, "http", 4) && slash) from = slash + 1;
+    int o = 0, words = 0;
+    const char *p = from;
+    while (*p && *p != '?' && words < 3) {                /* whole words only, 20 letters at most */
+        while (*p && *p != '?' && !name_char(*p)) p++;
+        char w[24]; int n = 0;
+        while (*p && *p != '?' && ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9')))
+            { if (n < 23) w[n++] = (char)(*p >= 'A' && *p <= 'Z' ? *p + 32 : *p); p++; }
+        if (*p == '-' || *p == '_') p++;
+        w[n] = 0;
+        if (!n) continue;
+        if (!strcmp(w, "jpg") || !strcmp(w, "jpeg") || !strcmp(w, "png") || !strcmp(w, "gif") || !strcmp(w, "webp")) continue;
+        if (o + (o ? 1 : 0) + n > 20) break;
+        if (o) SV.name[o++] = '-';
+        memcpy(SV.name + o, w, (size_t)n); o += n;
+        words++;
+    }
+    SV.name[o] = 0;
+    if (!SV.name[0]) snprintf(SV.name, sizeof SV.name, "picture");
+    char base[24], path[FS_PATH];
+    snprintf(base, sizeof base, "%s", SV.name);
+    for (int k = 2; k < 100 && pictures_find(SV.name, path, sizeof path) == 0; k++) snprintf(SV.name, sizeof SV.name, "%s%d", base, k);
+    SV.nlen = (int)strlen(SV.name);
+}
+
+/* A right-click at (sx, sy), page y py: the menu, if it's on a picture. */
+static void right_click(int sx, int sy, int py) {
+    const item_t *it = 0;
+    const char *url = 0;
+    if (B.view == V_IMAGES && B.picked >= 0 && B.picked < B.nitems) it = &B.items[B.picked];
+    else if (B.view == V_IMAGES)
+        for (int i = nhits - 1; i >= 0 && !it; i--)
+            if (hits[i].kind == H_ITEM && hits[i].item >= 0 && hits[i].item < B.nitems &&
+                sx >= hits[i].x && sx < hits[i].x + hits[i].w && py >= hits[i].y && py < hits[i].y + hits[i].h)
+                it = &B.items[hits[i].item];
+    if (B.view == V_WEB) {
+        int px = sx - pg_ox, ppy = sy - pg_oy;
+        for (int i = B.fl.n - 1; i >= 0 && !url; i--) {
+            fl_item *f = &B.fl.it[i];
+            if (f->kind == FL_IMAGE && f->img >= 0 && f->img < nwimg && wimg[f->img].state > 0 &&
+                px >= f->x && px < f->x + f->w && ppy >= f->y && ppy < f->y + f->h)
+                url = wimg[f->img].url;
+        }
+    }
+    SV.url[0] = SV.url2[0] = 0;
+    if (it) {
+        snprintf(SV.url, sizeof SV.url, "%s", it->full[0] ? it->full : it->thumb);
+        if (it->full[0] && it->thumb[0]) snprintf(SV.url2, sizeof SV.url2, "%s", it->thumb);
+        suggest_name(it->title[0] ? it->title : SV.url);
+    } else if (url) {
+        snprintf(SV.url, sizeof SV.url, "%s", url);
+        suggest_name(url);
+    }
+    if (!SV.url[0]) { SV.st = SV_NONE; return; }          /* not on a picture: nothing to save */
+    SV.st = SV_MENU; SV.mx = sx; SV.my = sy; SV.exists = 0;
+}
+
+static const char *pic_ext(const uint8_t *b, int n) {
+    if (n > 8 && b[0] == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G') return "png";
+    if (n > 3 && b[0] == 0xFF && b[1] == 0xD8) return "jpg";
+    if (n > 6 && !memcmp(b, "GIF8", 4)) return "gif";
+    if (n > 2 && b[0] == 'B' && b[1] == 'M') return "bmp";
+    return "tga";
+}
+
+/* After the frame that says "Saving": download it, check Mini can show it, write it. */
+static void save_now(void) {
+    SV.st = SV_ERROR;
+    if (!fs_ready()) { snprintf(SV.msg, sizeof SV.msg, "The SD card's files aren't there to save into."); return; }
+    int cap = SAVE_CAP;                                   /* 8 MiB if the heap has it in one piece */
+    uint8_t *buf = 0;
+    while (!buf && cap >= IMG_CAP) { buf = kmalloc((uint64_t)cap); if (!buf) cap /= 2; }
+    if (!buf) { snprintf(SV.msg, sizeof SV.msg, "There's no memory free for the picture right now."); return; }
+    int code = 0, n = fetch_bytes(SV.url, buf, cap, &code);
+    image_t *im = n > 0 && code == 200 ? image_decode(buf, (uint32_t)n) : 0;
+    if (!im && SV.url2[0]) {                              /* the full one won't come: the thumbnail */
+        kprintf("[web] save: the full picture didn't come (HTTP %d, %d bytes), so the thumbnail: %.100s\n", code, n, SV.url);
+        n = fetch_bytes(SV.url2, buf, cap, &code);
+        im = n > 0 && code == 200 ? image_decode(buf, (uint32_t)n) : 0;
+    }
+    if (!im) {
+        if (n > 0 && code == 200) snprintf(SV.msg, sizeof SV.msg, "That picture is in a format Mini can't show. It shows PNG, JPEG, GIF and BMP.");
+        else snprintf(SV.msg, sizeof SV.msg, "The picture didn't download (%s %d). Try another one.", code ? "HTTP" : "error", code ? code : n);
+        kfree(buf);
+        return;
+    }
+    image_free(im);
+    char path[FS_PATH];
+    fs_mkdir("/Pictures");
+    for (int k = 0; k < 4 && pictures_find(SV.name, path, sizeof path) == 0; k++) fs_remove(path);   /* replacing it */
+    snprintf(SV.saved, sizeof SV.saved, "%s.%s", SV.name, pic_ext(buf, n));
+    snprintf(path, sizeof path, "/Pictures/%s", SV.saved);
+    int r = fs_write(path, buf, (uint32_t)n);
+    kfree(buf);
+    if (r) { snprintf(SV.msg, sizeof SV.msg, "Couldn't write %s: %s", path, fs_why()); return; }
+    kprintf("[web] saved %s, %d bytes\n", path, n);
+    SV.st = SV_DONE;
+}
+
+static int save_key(const input_ev_t *e) {
+    if (SV.st == SV_MENU) {
+        if (e->key == KEY_ENTER || (e->key == KEY_CHAR && e->ch == ' ')) SV.st = SV_NAME;
+        else SV.st = SV_NONE;
+        return 1;
+    }
+    if (SV.st == SV_NAME) {
+        if (e->key == KEY_ENTER) {
+            char path[FS_PATH];
+            if (!SV.nlen) return 1;
+            if (!SV.exists && pictures_find(SV.name, path, sizeof path) == 0) { SV.exists = 1; return 1; }
+            SV.st = SV_SAVING; SV.drawn = 0;
+        } else if (e->key == KEY_BACKSPACE) { if (SV.nlen) SV.name[--SV.nlen] = 0; SV.exists = 0; }
+        else if (e->key == KEY_CHAR && !(e->mods & (MOD_CTRL | MOD_ALT))) {
+            int c = e->ch == ' ' ? '-' : e->ch;
+            if (name_char(c) && SV.nlen < (int)sizeof SV.name - 1) { SV.name[SV.nlen++] = (char)c; SV.name[SV.nlen] = 0; SV.exists = 0; }
+        }
+        return 1;
+    }
+    if (SV.st == SV_DONE || SV.st == SV_ERROR) {
+        if (e->key == KEY_ENTER || (e->key == KEY_CHAR && e->ch == ' ')) SV.st = SV_NONE;
+        return 1;
+    }
+    return SV.st == SV_SAVING;
+}
+
+/* 1 if the pointer was the menu's or a dialog's. */
+static int save_pointer(int click, int rclick, int ex, int ey) {
+    if (!SV.st || (!click && !rclick)) return SV.st != SV_NONE && SV.st != SV_MENU;
+    if (SV.st == SV_MENU) {
+        if (click && ui_hit(ex, ey, SV.mx, SV.my, SV.mw, SV.mh)) { SV.st = SV_NAME; return 1; }
+        SV.st = SV_NONE;
+        return click;                                     /* a right-click elsewhere opens a new one */
+    }
+    if (SV.st == SV_SAVING) return 1;
+    if (SV.st == SV_NAME) { if (click && !ui_hit(ex, ey, SV.dx, SV.dy, SV.dw, SV.dh)) SV.st = SV_NONE; return 1; }
+    SV.st = SV_NONE;                                      /* Saved / Not saved: a click closes it */
+    return 1;
+}
+
+static int ui_px(int v, int min) { int p = S(v); return p < min ? min : p; }   /* readable on a 3.5" screen */
+
+static void draw_save(int x, int y, int w, int h) {
+    if (!SV.st) return;
+    int px = ui_px(14, 12);
+    if (SV.st == SV_MENU) {
+        const char *l = "Save image" TXT_ELLIPSIS;
+        SV.mw = font_width(FONT_MEDIUM, px, l, -1) + px * 3; SV.mh = px * 5 / 2;
+        if (SV.mx + SV.mw > x + w) SV.mx = x + w - SV.mw;
+        if (SV.my + SV.mh > y + h) SV.my = y + h - SV.mh;
+        gfx_rrect(SV.mx, SV.my, SV.mw, SV.mh, S(4), th.line, 255);
+        gfx_rrect(SV.mx + 1, SV.my + 1, SV.mw - 2, SV.mh - 2, S(3), th.surface, 255);
+        text_l(SV.mx + px * 3 / 2, SV.my + SV.mh / 2, l, FONT_MEDIUM, px, th.text);
+        return;
+    }
+    int lh = px * 2, tpx = px * 4 / 3;
+    int lines = SV.st == SV_DONE ? 6 : SV.st == SV_NAME ? 5 : 3;
+    SV.dw = px * 36 < w - 2 * px ? px * 36 : w - 2 * px;
+    SV.dh = lines * lh + px * 2;
+    SV.dx = x + (w - SV.dw) / 2; SV.dy = y + (h - SV.dh) / 2;
+    gfx_rrect(SV.dx, SV.dy, SV.dw, SV.dh, S(5), th.line, 255);
+    gfx_rrect(SV.dx + 1, SV.dy + 1, SV.dw - 2, SV.dh - 2, S(4), th.surface, 255);
+    int lx = SV.dx + px * 3 / 2, lw = SV.dw - px * 3, ly = SV.dy + px + lh / 2;
+    char b[300];
+    switch (SV.st) {
+    case SV_NAME: {
+        text_l(lx, ly, "Save image", FONT_SEMIBOLD, tpx, th.text); ly += lh;
+        int fh = lh + px / 2;
+        gfx_rrect(lx, ly - fh / 2 + lh / 2, lw, fh, S(4), th.accent, 255);
+        gfx_rrect(lx + 1, ly - fh / 2 + lh / 2 + 1, lw - 2, fh - 2, S(3), th.bg, 255);
+        int tw = text_l(lx + px, ly + lh / 2, SV.name, FONT_MONO, px, th.text);
+        if ((now_ms() / 530) % 2 == 0) gfx_fill(lx + px + tw + 1, ly + lh / 2 - px * 2 / 3, S(2) > 1 ? S(2) : 2, px * 4 / 3, th.accent);
+        ly += lh * 2;
+        if (SV.exists) snprintf(b, sizeof b, "\"%s\" is already saved. Return again replaces it.", SV.name);
+        else snprintf(b, sizeof b, "It goes in /Pictures on the SD card.");
+        text_fit_l(lx, ly, b, lw, FONT_REGULAR, px, SV.exists ? th.accent : th.sub); ly += lh;
+        text_fit_l(lx, ly, "Letters, numbers, - and _   " TXT_BULLET "   Return saves   " TXT_BULLET "   Esc cancels", lw, FONT_REGULAR, px, th.faint);
+        break;
+    }
+    case SV_SAVING:
+        text_l(lx, ly, "Saving" TXT_ELLIPSIS, FONT_SEMIBOLD, tpx, th.text); ly += lh;
+        snprintf(b, sizeof b, "Downloading the picture as %s.", SV.name);
+        text_fit_l(lx, ly, b, lw, FONT_REGULAR, px, th.sub);
+        SV.drawn = 1;
+        break;
+    case SV_DONE:
+        text_l(lx, ly, "Saved", FONT_SEMIBOLD, tpx, th.text); ly += lh;
+        snprintf(b, sizeof b, "%s is in /Pictures on the SD card.", SV.saved);
+        text_fit_l(lx, ly, b, lw, FONT_REGULAR, px, th.sub); ly += lh;
+        text_fit_l(lx, ly, "To show it full screen, open the Terminal and type:", lw, FONT_REGULAR, px, th.text); ly += lh;
+        snprintf(b, sizeof b, "img --%s", SV.name);
+        text_l(lx + px, ly, b, FONT_MONO_BOLD, tpx, th.accent); ly += lh;
+        text_fit_l(lx, ly, "While it's showing, press Ctrl+C to come back. Esc works too.", lw, FONT_MEDIUM, px, th.text); ly += lh;
+        text_fit_l(lx, ly, "Return or a click closes this.", lw, FONT_REGULAR, px, th.faint);
+        break;
+    case SV_ERROR:
+        text_l(lx, ly, "Not saved", FONT_SEMIBOLD, tpx, th.text); ly += lh;
+        text_fit_l(lx, ly, SV.msg, lw, FONT_REGULAR, px, th.sub); ly += lh;
+        text_fit_l(lx, ly, "Return or a click closes this.", lw, FONT_REGULAR, px, th.faint);
+        break;
+    }
 }
 
 /* ---- input ---------------------------------------------------------------------------------- */
@@ -1371,12 +1646,14 @@ static void b_key(const input_ev_t *e) {
         if (fx_remote()) engine_key(e->key, e->ch, e->mods); else vinput_key(e->key, e->ch, e->mods);
         return;
     }
+    if (SV.st && save_key(e)) return;                         /* the Save image menu or dialog */
     if (B.pending) return;
     if (e->key == KEY_CHAR && (e->mods & MOD_CTRL) && (e->ch == 'l' || e->ch == 'L')) { start_editing(0); return; }
     if (e->key == KEY_CHAR && (e->mods & MOD_CTRL) && (e->ch == 'r' || e->ch == 'R')) {
         if (B.view != V_START) go(B.view, B.tab, B.view == V_WATCH ? B.vid : B.url, B.query, 0);
         return;
     }
+    if (e->key == KEY_CHAR && (e->mods & MOD_CTRL) && (e->ch == 's' || e->ch == 'S') && B.view == V_IMAGES) { toggle_safe(); return; }
     if (B.editing) { edit_address(e); return; }
     if (B.field && B.view == V_WEB) { edit_field(e); return; }
     if ((e->mods & MOD_SHIFT) && (e->key == KEY_LEFT || e->key == KEY_RIGHT) &&
@@ -1425,7 +1702,16 @@ static void b_pointer(const input_ev_t *e, int x, int y, int w, int h) {
         return;
     }
     int click = (e->buttons & 1) && !(last_btn & 1);
+    int rclick = (e->buttons & 2) && !(last_btn & 2);         /* the right button: Save image */
     last_btn = e->buttons;
+    if (save_pointer(click, rclick, e->x, e->y)) return;
+    if (rclick && !B.pending && B.view != V_START) {
+        int t = y + S(16) + S(46);
+        if (B.view == V_RESULTS || B.view == V_IMAGES || B.view == V_VIDEOS) t += S(34);
+        int org = B.view == V_RESULTS ? S(8) : B.view == V_VIDEOS ? S(10) : B.view == V_IMAGES ? S(4) : 0;
+        if (e->y >= t) right_click(e->x, e->y, e->y - t - org + B.scroll);
+        return;
+    }
     if (e->wheel) { scroll_by(-e->wheel * S(60)); return; }
     if (!click || B.pending) return;
     int pad = S(16);
@@ -1448,6 +1734,10 @@ static void b_pointer(const input_ev_t *e, int x, int y, int w, int h) {
     if (B.view == V_RESULTS || B.view == V_IMAGES || B.view == V_VIDEOS) {
         for (int i = 0; i < 3; i++)
             if (ui_hit(e->x, e->y, tab_x(x + pad + S(6), i) - S(6), top, font_width(FONT_MEDIUM, S(13), tab_names[i], -1) + S(12), S(28))) { set_tab(i); return; }
+        if (B.view == V_IMAGES) {
+            int sx, sw; safe_where(x + w - pad - S(6), &sx, &sw);
+            if (ui_hit(e->x, e->y, sx - S(6), top - S(4), sw + S(12), S(28))) { toggle_safe(); return; }
+        }
         top += S(34);
     }
     if (B.view == V_IMAGES && B.picked >= 0) { B.picked = -1; return; }
@@ -1474,6 +1764,7 @@ int browser_esc(void) {
         if (fx_remote()) engine_key(KEY_ESC, 0, 0); else vinput_key(KEY_ESC, 0, 0);
         return 1;
     }
+    if (SV.st) { if (SV.st != SV_SAVING) SV.st = SV_NONE; return 1; }   /* Save image: cancel, or close */
     if (B.editing && B.view != V_START) { B.editing = 0; snprintf(B.addr, sizeof B.addr, "%s", B.query[0] ? B.query : B.url); return 1; }
     if (B.field) { B.field = 0; return 1; }
     if (B.view == V_IMAGES && B.picked >= 0) { B.picked = -1; return 1; }
@@ -1485,6 +1776,7 @@ static void b_open(void) {
     if (!once) {
         once = 1;
         B.view = V_START; B.focus = -1; B.picked = -1;
+        int v; if (keep_get("safe", &v, (int)sizeof v) == (int)sizeof v) safe_off = v != 0;
         start_editing(1);
     }
     if (B.view == V_START) B.editing = 1;

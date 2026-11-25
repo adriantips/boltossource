@@ -306,6 +306,7 @@ extern char g_vnc_password[9];
 void shell_init(void);
 int  shell_frame(void);                /* 1 if it drew something                */
 void shell_toast(const char *title, const char *detail);
+int  shell_quiet(void);                /* a full-screen page wants nothing else running */
 void shell_request_frame(void);
 
 /* ---- the boot splash (mini/splash.c) ----------------------------------- */
