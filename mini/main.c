@@ -84,6 +84,7 @@ void mini_pump(void) {
     inet_poll();
     netsvc_poll();
     board_poll();
+    lcd_poll();                         /* the SPI screen: the next rectangle, the touch */
     depth--;
 }          /* shell.c: time spent asleep, for the load */
 static uint64_t g_dtb;

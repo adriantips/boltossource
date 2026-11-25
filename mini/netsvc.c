@@ -682,6 +682,11 @@ static void http_handle(int i) {
         int hdmi_debug(const char *path, char *out, int cap);
         char *buf = kmalloc(4096);
         if (buf) { hdmi_debug(path, buf, 4096); http_text(c, 200, buf); kfree(buf); }
+    } else if (strncmp(path, "/lcd", 4) == 0 && (path[4] == 0 || path[4] == '?')) {
+        /* the SPI screen (lcd.c): state, touch readings, ?mode= ?flip= ?inv= ?rgb= ?madctl= ?mhz= ?fill= ?cal */
+        int lcd_debug(const char *path, char *out, int cap);
+        char *buf = kmalloc(4096);
+        if (buf) { lcd_debug(path, buf, 4096); http_text(c, 200, buf); kfree(buf); }
     } else if (strcmp(path, "/screen.bmp") == 0) {
         http_shot(c);
         http[i].c = 0;                         /* the pump owns it now         */

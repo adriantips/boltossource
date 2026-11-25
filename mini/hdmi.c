@@ -32,6 +32,8 @@
  *
  *  The second half decides the screen's size: Automatic, or a size chosen in
  *  Settings (kept across restarts), on the monitor or, with none, for VNC.
+ *  A 3.5" SPI screen on the header (lcd.c) makes Automatic its 480 x 320
+ *  when no monitor is plugged in; with one, the SPI screen shows it scaled.
  * ===========================================================================*/
 #include <stdint.h>
 #include "mini.h"
@@ -672,6 +674,7 @@ static disp_pick_t option(int i) {
 void display_label(int i, char *out, int cap) {
     if (i <= 0) {
         if (plugged) snprintf(out, (size_t)cap, "Automatic  " "\xB7" "  %d x %d", modes[0].w, modes[0].h);
+        else if (lcd_on()) snprintf(out, (size_t)cap, "Automatic  " "\xB7" "  %d x %d", LCD_W, LCD_H);
         else snprintf(out, (size_t)cap, "Automatic");
         return;
     }
@@ -711,6 +714,12 @@ static void display_apply(void) {
             if (known[i].w == pick.w && known[i].h == pick.h) { m = &known[i]; break; }
         if (m) { w = m->w; h = m->h; }
         else { w = pick.w; h = pick.h; }
+    } else if (lcd_on()) {
+        /* The SPI screen on the header, and nothing on HDMI: its size,
+         * and the HDMI port carries the same (480 x 320 LCD timing). */
+        w = LCD_W; h = LCD_H;
+        for (int i = 0; i < NKNOWN; i++)
+            if (known[i].w == LCD_W && known[i].h == LCD_H) { m = &known[i]; break; }
     } else {
         /* Nothing detected and no saved choice: still output a default
          * signal so an LCD panel that doesn't answer EDID gets one. 720p
@@ -738,18 +747,26 @@ void display_choose(int i) {
 
 /* After the card's files are back: a choice saved before a power cut. */
 void display_restore(void) {
+    int lcd = lcd_restore();                                  /* the SPI screen's settings too */
     disp_pick_t p;
-    if (keep_get("disp", &p, (int)sizeof p) != (int)sizeof p || p.w > 1920 || p.h > 1200) return;
-    if (p.w == pick.w && p.h == pick.h && p.hz == pick.hz) return;
+    if (keep_get("disp", &p, (int)sizeof p) != (int)sizeof p || p.w > 1920 || p.h > 1200) {
+        if (lcd) display_apply();
+        return;
+    }
+    if (p.w == pick.w && p.h == pick.h && p.hz == pick.hz && !lcd) return;
     pick = p;
     display_apply();
 }
+
+/* Settings turned the SPI screen on or off. */
+void display_lcd_changed(void) { display_apply(); }
 
 /* Before screen_init: the size to start at. */
 void display_start(int *w, int *h) {
     disp_pick_t p;
     if (keep_get("disp", &p, (int)sizeof p) == (int)sizeof p && p.w <= 1920 && p.h <= 1200) pick = p;
-    hdmi_init();
+    hdmi_init();                                              /* (DLDO1 at 3.3 V: the header's banks too) */
+    int lcd = lcd_start();                                    /* a 3.5" screen on the header? */
     hpd_seen = plugged;
     if (plugged && nmodes) {
         const video_mode_t *m = &modes[0];
@@ -757,6 +774,7 @@ void display_start(int *w, int *h) {
             if (modes[i].w == pick.w && modes[i].h == pick.h && modes[i].hz == pick.hz) m = &modes[i];
         *w = m->w; *h = m->h;
     } else if (pick.w) { *w = pick.w; *h = pick.h; }
+    else if (lcd) { *w = LCD_W; *h = LCD_H; }
 }
 
 /* After screen_init: start showing it. */
@@ -790,24 +808,30 @@ void display_poll(void) {
 }
 
 /* ---- screen sleep (shell.c decides when) ------------------------------------------------------ */
-int  display_lit(void) { return !hw_up || showing; }
-int  display_plugged(void) { return plugged; }
+int  display_lit(void) { return !hw_up || showing || lcd_lit(); }
+int  display_plugged(void) { return plugged || lcd_on(); }
 int display_sleep(void) {
-    if (!hw_up || !showing) return 0;
+    int did = lcd_sleep();                                    /* the SPI screen's backlight off */
+    if (!hw_up || !showing) return did;
     hdmi_off();                                               /* no signal: the monitor goes to standby */
     slept = 1;
     return 1;
 }
 void display_wake(void) {
     slept = 0;
+    lcd_wake();
     if (hw_up && !showing) display_apply();
 }
 
 /* For Settings and About: one line on what's showing where. */
 void display_status(char *out, int cap) {
     if (g_plat == PLAT_QEMU) snprintf(out, (size_t)cap, "%d x %d in QEMU's window and over Screen Sharing.", scr_w, scr_h);
+    else if (showing && plugged && lcd_lit()) snprintf(out, (size_t)cap, "%s on the HDMI port at %d x %d, and the SPI screen.", hdmi_monitor(), shown.w, shown.h);
+    else if (showing && plugged) snprintf(out, (size_t)cap, "%s on the HDMI port, at %d x %d and %d Hz.", hdmi_monitor(), shown.w, shown.h, shown.hz);
+    else if (lcd_lit()) snprintf(out, (size_t)cap, "The 3.5\" SPI screen on the header, %d x %d%s.", LCD_W, LCD_H,
+                                 lcd_scaled() ? " (the screen scaled to fit)" : "");
     else if (showing) snprintf(out, (size_t)cap, "%s on the HDMI port, at %d x %d and %d Hz.", hdmi_monitor(), shown.w, shown.h, shown.hz);
-    else if (slept) snprintf(out, (size_t)cap, "The screen is asleep. Any key, click or touch wakes it.");
+    else if (slept || lcd_on()) snprintf(out, (size_t)cap, "The screen is asleep. Any key, click or touch wakes it.");
     else if (plugged) snprintf(out, (size_t)cap, "%s is plugged in, but isn't showing anything.", hdmi_monitor());
     else snprintf(out, (size_t)cap, "Nothing on the HDMI port. The screen is %d x %d, for Screen Sharing.", scr_w, scr_h);
 }

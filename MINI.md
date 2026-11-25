@@ -492,8 +492,8 @@ The signal is DVI-style RGB, so no audio is carried over HDMI.
 
 The driver (`mini/hdmi.c`) sets up the H618's display engine (DE 3.3), TCON
 TOP, TCON TV0 and the DesignWare HDMI controller and PHY itself, because our
-U-Boot has no video. A small SPI LCD would need its own driver behind
-`screen_present()` (`mini/screen.c`).
+U-Boot has no video. A small SPI screen on the 26-pin header has its own
+driver (`mini/lcd.c`, below).
 
 ### An HDMI LCD
 
@@ -518,6 +518,53 @@ micro-HDMI to HDMI cable or adapter. Many come with one for the Pi 4 and 5.
 - **Power**: a 7" panel draws about half an amp. If the Pi restarts when the
   screen lights up, power the screen from its own USB charger and keep only
   the touch cable on the Pi.
+
+### A 3.5" SPI screen
+
+The 3.5" 480 × 320 SPI modules with an **ST7796S** controller (sold for
+Arduino and STM32 boards, with or without touch) go on the Zero3's 26-pin
+header. Wire it with the Pi off:
+
+| Module | Zero3 pin | | Module | Zero3 pin |
+|---|---|---|---|---|
+| 3V3 | 17 (3.3 V) | | GND | 20 |
+| SCK | 23 (PH6) | | MOSI | 19 (PH7) |
+| MISO | 21 (PH8) | | CS | 24 (PH9) |
+| RS (DC) | 22 (PC7) | | RST | 18 (PC14) |
+| BL | 16 (PC15) | | T_CS | 26 (PC10) |
+
+The two 4-pin cables that come with some modules carry most of these; RST,
+BL and T_CS are on the long header. RST is optional (Mini resets the panel
+with a command too). Leaving BL unconnected keeps the backlight on all the time, so
+screen sleep can't turn it off. T_CS is only for the touch version. IRQ
+isn't needed, because the touch is polled. Power the module from 3.3 V, not 5 V.
+
+At start, Mini resets the panel and asks it whether it's asleep. A panel that
+answers gets the screen. **Automatic** in Settings → Display is then
+480 × 320, and the HDMI port shows the same. With a monitor plugged in too,
+the monitor sets the size and the small screen shows it scaled to fit. Only
+the 16 × 16 tiles that changed are sent, as RGB565, by the H618's DMA
+controller through SPI1 at 30 MHz. A full screen takes about 80 ms, and a
+typical change a few. Screen sleep turns the backlight off.
+
+Settings → Display has three rows for it:
+
+- **SPI screen**: Automatic (use it when it answers), On (a module wired
+  without MISO, which can't answer), or Off (Mini leaves the header's pins
+  alone).
+- **Upside down**: turns the picture round.
+- **Touch** (when an XPT2046 answers on T_CS): Return shows three crosses on
+  the small screen. Tap each one to calibrate. After that, tap, slide and hold work as
+  they do on an HDMI LCD's touch.
+
+`/lcd` (development) shows what the driver sees: the probe's answers, the
+transfers, and the touch's raw readings. It also sets what a particular module may need,
+kept on the card:
+`?inv=0` if the picture looks like a negative (inversion is on by default,
+which the TK035F5501 panel on these modules needs), `?rgb=1` if red and blue
+are swapped, `?madctl=HEX` if the picture is mirrored, `?mhz=20` if long
+wires give a noisy picture (`?mhz=50` for more speed on short ones),
+`?fill=RRGGBB` for a test colour, `?mode=1` to force it on.
 
 ## How it works
 
@@ -552,6 +599,10 @@ micro-HDMI to HDMI cable or adapter. Many come with one for the Pi 4 and 5.
   LCD's touch; `input_touch()` in `mini/input.c` turns a finger into taps,
   scrolls and drags). EHCI is left off, so a USB 2.0 hub runs at full speed
   and passes keyboards through.
+- **The SPI screen**: `mini/lcd.c` drives SPI1 and the DMA controller for
+  an ST7796S on the 26-pin header. It sends what changed in the screen by
+  the tiles' generations, as the VNC server does, and polls an XPT2046 touch
+  on the same bus.
 - **Wi-Fi and Bluetooth**: `mini/sdio.c` drives the H618's MMC1 as an
   SDIO host for the UWE5622; `mini/wcn.c` loads its firmware and carries
   its packets. `mini/wifi.c` is the host side of its Wi-Fi firmware (scans,

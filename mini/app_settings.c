@@ -32,7 +32,7 @@ static char pw_edit[9]; static int pw_editing, pw_len;
 
 /* Bluetooth's scroll, and work for the next tick. */
 static int btop;
-enum { DO_NONE, DO_DISPLAY, DO_BT_ON, DO_BT_OFF, DO_BT_SCAN, DO_BT_PAIR, DO_BT_FORGET, DO_BT_CANCEL };
+enum { DO_NONE, DO_DISPLAY, DO_BT_ON, DO_BT_OFF, DO_BT_SCAN, DO_BT_PAIR, DO_BT_FORGET, DO_BT_CANCEL, DO_LCD };
 static int todo, todo_arg;
 static int dpick = -1;                   /* Display: the size Left/Right reached, not yet Return'd */
 static uint64_t bt_last_scan;
@@ -46,7 +46,8 @@ static int items(void) {
     case P_NET:  return 0;
     case P_BT:   return 1 + (bt_state() >= BT_READY ? bt_device_count() : 0);
     case P_LOOK: return 2;
-    case P_DISPLAY: return 2;                /* the size, and screen sleep */
+    case P_DISPLAY:                          /* the size, screen sleep; on the Pi the SPI screen */
+        return g_plat == PLAT_H618 ? 4 + lcd_touch() : 2;
 #ifndef MINI_RELEASE
     case P_SHARE: return 1;
 #endif
@@ -66,6 +67,9 @@ static void nudge_time(int dh, int dm) {
 
 static void change(int dir) {
     if (page == P_DISPLAY && item == 1) { screen_sleep_cycle(dir); return; }
+    if (page == P_DISPLAY && item == 2) { todo = DO_LCD; todo_arg = (lcd_mode() + 3 + dir) % 3; return; }
+    if (page == P_DISPLAY && item == 3) { lcd_set_flip(!lcd_flipped()); return; }
+    if (page == P_DISPLAY && item == 4) { if (dir > 0) lcd_calibrate(); return; }
     if (page == P_DISPLAY) {
         int n = display_count();
         if (dpick < 0 || dpick >= n) dpick = display_current();
@@ -388,6 +392,7 @@ static int s_tick(void) {
         todo = DO_NONE; shown = 0;
         switch (t) {
         case DO_DISPLAY:  display_choose(a); dpick = -1; break;
+        case DO_LCD:      lcd_set_mode(a); display_lcd_changed(); break;
         case DO_BT_ON:    if (bt_start() == 0) { bt_scan(); bt_last_scan = now_ms(); } break;
         case DO_BT_OFF:   bt_stop(); break;
         case DO_BT_SCAN:  bt_scan(); bt_last_scan = now_ms(); break;
@@ -465,8 +470,19 @@ static void s_draw(int x, int y, int w, int h) {
         ui_row(pane_x, pane_y, pane_w, "Resolution", v, sel == 0);
         char sl[32]; screen_sleep_label(sl, sizeof sl);
         ui_row(pane_x, pane_y + S(46), pane_w, "Screen off", sl, sel == 1);
-        if (shown_i != cur) text_l(pane_x + S(14), pane_y + S(98), "Return switches to the new size.", FONT_REGULAR, S(13), th.accent);
-        int ty = pane_y + S(140);
+        if (g_plat == PLAT_H618) {                         /* the 3.5" screen on the header */
+            static const char *const lm[3] = { "Automatic", "On", "Off" };
+            char lv[48];
+            if (todo == DO_LCD) snprintf(lv, sizeof lv, "Switching" TXT_ELLIPSIS);
+            else if (lcd_mode() == 0) snprintf(lv, sizeof lv, "Automatic  " "\xB7" "  %s", lcd_on() ? "found" : "none found");
+            else snprintf(lv, sizeof lv, "%s", lm[lcd_mode() % 3]);
+            ui_row(pane_x, pane_y + S(92), pane_w, "SPI screen", lv, sel == 2);
+            ui_row(pane_x, pane_y + S(138), pane_w, "Upside down", lcd_flipped() ? "Yes" : "No", sel == 3);
+            if (lcd_touch()) ui_row(pane_x, pane_y + S(184), pane_w, "Touch", "Return calibrates", sel == 4);
+        }
+        int rows_end = pane_y + items() * S(46);
+        if (shown_i != cur) text_l(pane_x + S(14), rows_end + S(6), "Return switches to the new size.", FONT_REGULAR, S(13), th.accent);
+        int ty = rows_end + S(48);
         const char *mon = hdmi_monitor();
         snprintf(b, sizeof b, "%s", mon ? mon : "None");
         text_l(pane_x + S(14), ty, "Monitor", FONT_MEDIUM, S(14), th.sub);
@@ -475,6 +491,7 @@ static void s_draw(int x, int y, int w, int h) {
         text_l(pane_x + S(14), ty + S(30), "Screen", FONT_MEDIUM, S(14), th.sub);
         text_l(pane_x + S(130), ty + S(30), b, FONT_REGULAR, S(14), th.text);
         const char *touch = usbh_touch_name();
+        if (!touch && lcd_touch()) touch = "XPT2046, on the SPI screen";
         text_l(pane_x + S(14), ty + S(60), "Touch", FONT_MEDIUM, S(14), th.sub);
         text_fit_l(pane_x + S(130), ty + S(60), touch ? touch : "None", pane_w - S(140), FONT_REGULAR, S(14), th.text);
         text_l(pane_x + S(14), ty + S(100), mon ? "Automatic uses the size the monitor asks for. Plug one in any time."
@@ -536,7 +553,9 @@ static void s_draw(int x, int y, int w, int h) {
 #ifdef MINI_RELEASE
         snprintf(v[3], 64, "%d x %d", scr_w, scr_h);
 #else
-        snprintf(v[3], 64, "%d x %d, %s", scr_w, scr_h, g_plat == PLAT_QEMU ? "QEMU window and VNC" : hdmi_shown() ? "HDMI and VNC" : "over VNC");
+        snprintf(v[3], 64, "%d x %d, %s", scr_w, scr_h, g_plat == PLAT_QEMU ? "QEMU window and VNC" :
+                 hdmi_monitor() && lcd_lit() ? "HDMI, SPI screen and VNC" : lcd_lit() ? "SPI screen and VNC" :
+                 hdmi_shown() ? "HDMI and VNC" : "over VNC");
 #endif
         snprintf(v[4], 64, "%s, boot #%u", up, klog_boot_count());
         snprintf(v[5], 64, "Inter, DejaVu Sans Mono");

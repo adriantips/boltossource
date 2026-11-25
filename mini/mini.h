@@ -182,6 +182,28 @@ int  display_lit(void);                /* a picture is going out (always, withou
 int  display_plugged(void);            /* a monitor is detected on the port    */
 int  display_sleep(void);              /* the output off (1), the monitor to standby; 0 if it can't */
 void display_wake(void);               /* and back on                          */
+void display_lcd_changed(void);        /* the SPI screen came or went: fit the screen to it */
+
+/* ---- a 3.5" SPI screen on the 26-pin header (lcd.c) ------------------------ *
+ *  An ST7796S 480 x 320 panel on SPI1, fed what changed in front by DMA, and
+ *  the XPT2046 touch some of them have. MINI.md has the wiring.             */
+#define LCD_W 480
+#define LCD_H 320
+int  lcd_start(void);                  /* before screen_init: 1 if a panel is there (or forced on) */
+int  lcd_restore(void);                /* the card's settings: 1 if the panel came or went */
+void lcd_poll(void);                   /* every turn: send what changed, read the touch */
+int  lcd_on(void);                     /* the panel is being drawn on          */
+int  lcd_lit(void);                    /* and isn't asleep                     */
+int  lcd_found(void);                  /* it answered at bring-up              */
+int  lcd_touch(void);                  /* an XPT2046 answered                  */
+int  lcd_scaled(void);                 /* the screen isn't 480 x 320: scaled to fit */
+int  lcd_mode(void);                   /* 0 Automatic, 1 On, 2 Off             */
+void lcd_set_mode(int m);              /* then display_lcd_changed()           */
+int  lcd_flipped(void);
+void lcd_set_flip(int on);
+void lcd_calibrate(void);              /* three crosses on the panel            */
+int  lcd_sleep(void);
+void lcd_wake(void);
 
 /* ---- screen sleep (shell.c) --------------------------------------------------- *
  *  Nothing is drawn while nobody can see it: no picture on the HDMI port and
@@ -214,7 +236,7 @@ typedef struct {
     int8_t   wheel;                    /* +1 up, -1 down                       */
     uint8_t  source;                   /* where it came from, for the Monitor  */
 } input_ev_t;
-enum { SRC_USB = 1, SRC_VNC, SRC_QEMU, SRC_SERIAL, SRC_BT };
+enum { SRC_USB = 1, SRC_VNC, SRC_QEMU, SRC_SERIAL, SRC_BT, SRC_TOUCH };   /* SRC_TOUCH: the SPI screen's */
 
 void input_key(int key, int ch, int mods, int source);
 void input_pointer(int x, int y, int buttons, int wheel, int source);

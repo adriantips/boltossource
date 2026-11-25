@@ -88,7 +88,7 @@ for f in mini/sdio.c mini/wcn.c mini/wifi.c mini/bt.c mini/hid.c mini/emac.c min
          mini/splash.c \
          mini/pkg.c mini/exports.c mini/fs.c mini/rt.c mini/gc.c mini/numfmt.c mini/mathx.c mini/app_code.c \
          mini/py_obj.c mini/py_parse.c mini/py_eval.c mini/py_lib.c mini/cc.c mini/cc_eval.c mini/cc_lib.c \
-         mini/vm.c mini/vdev.c mini/fxget.c mini/engine.c mini/hdmi.c \
+         mini/vm.c mini/vdev.c mini/fxget.c mini/engine.c mini/hdmi.c mini/lcd.c \
          mini/lx.c mini/lx_sys.c mini/lx_fs.c mini/lx_dev.c mini/lx_net.c; do
     [ -f "$f" ] || continue
     # The release build is the Pi on its own: what only a Mac uses stays out.
