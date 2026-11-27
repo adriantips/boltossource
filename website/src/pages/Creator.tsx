@@ -101,7 +101,7 @@ export default function Creator() {
           <div className="grid gap-px overflow-hidden rounded-3xl border border-line bg-line sm:grid-cols-2 lg:grid-cols-4">
             {[
               [165, 'k', 'lines of C and assembly'],
-              [196, '', 'commits in the repository'],
+              [198, '', 'commits in the repository'],
               [32, '', 'commits on the busiest day'],
               [69, '', 'VM tests, run with one command'],
             ].map(([n, s, l]) => (
