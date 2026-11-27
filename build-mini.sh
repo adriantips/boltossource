@@ -69,7 +69,7 @@ LIBC_SRCS=(libc/string.c libc/string_ext.c libc/malloc.c libc/printf.c
            libc/stdlib.c libc/support.c libc/math.c libc/scanf.c)
 SRCS=(
     # shared with the desktop and the TV
-    mm/kheap.c kernel/gfx.c kernel/font.c kernel/font8x8.c kernel/font_latin1.c
+    mm/kheap.c kernel/gfx.c kernel/boltmark.c kernel/font.c kernel/font8x8.c kernel/font_latin1.c
     # the machine
     mini/main.c mini/board.c mini/fdt.c mini/klog.c mini/stubs.c mini/screen.c
     mini/input.c mini/qemu.c

@@ -275,12 +275,14 @@ def lucide_glyph(name, x, y, size, color="#fff", sw=2.2, extra=""):
 # ---------------------------------------------------------------------------
 I = {}
 
-I["start"] = svg(  # the BoltOS mark: a bolt, no tile
-    '<g filter="url(#ds)"><path d="M74 8 L28 70 Q25 75 31 75 L58 75 L50 116 Q49 121 53 117 L100 54 '
-    'Q103 49 97 49 L70 49 L78 12 Q79 6 74 8 Z" fill="url(#bolt)"/></g>'
-    '<path d="M74 8 L28 70 Q25 75 31 75 L58 75 L50 116 Q49 121 53 117 L100 54 Q103 49 97 49 L70 49 L78 12 Q79 6 74 8 Z" '
-    'fill="none" stroke="#fff" stroke-opacity=".45" stroke-width="2"/>',
-    lg("bolt", "#6EE7FF", "#7B5CFF", 0, 0, 0.6, 1))
+# The BoltOS mark from boltos.dev (website/src/components/site/Logo.tsx): the
+# website's favicon -- the white mark on black -- as a tile. mkmark.py draws
+# the same thing straight into the atlases, without Chrome.
+MARK = ('<path d="M61.9 28 A23.8 23.8 0 0 1 46.3 72.1" stroke="#fff" stroke-width="3.6" fill="none"/>'
+        '<path d="M38.6 69.5 A23.8 23.8 0 0 1 53.3 25" stroke="#fff" stroke-width="3.6" fill="none"/>'
+        '<path d="M63.2 18.2 L36.5 52 L48.2 52 L37.8 78 L63.6 44.8 L51.4 44.8 Z" fill="#fff"/>')
+I["start"] = tile("#2C2D33", "#060608",
+    '<g filter="url(#gs)" transform="translate(64 64.5) scale(1.2895) translate(-49.93 -48.57)">%s</g>' % MARK)
 
 I["terminal"] = tile("#45464D", "#18181B",
     '<rect x="22" y="26" width="84" height="76" rx="10" fill="#0B0B0D" opacity=".55"/>'

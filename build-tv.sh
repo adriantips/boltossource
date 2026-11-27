@@ -128,7 +128,7 @@ SRCS=(
     # the disk it started from, for updates
     kernel/blk.c drivers/ata.c drivers/ahci.c drivers/nvme.c drivers/usbstor.c fs/fat32.c kernel/sysupdate.c
     # drawing and the web engine
-    kernel/gfx.c kernel/font.c kernel/image.c
+    kernel/gfx.c kernel/boltmark.c kernel/font.c kernel/image.c
     kernel/html.c kernel/dom.c
     # the television
     tv/main.c tv/stubs.c tv/video.c tv/art.c tv/ui.c tv/shell.c tv/home.c

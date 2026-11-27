@@ -279,17 +279,11 @@ def stroke_glyph(name, size, sw=2.0, fill=False, inset=0.0):
 
 # -------------------------------------------------------------- the bolt ----
 def bolt_glyph(size):
-    """BoltOS's own mark: a filled lightning bolt, a little italic."""
-    big = size * SS
-    m = Image.new("L", (big, big), 0)
-    d = ImageDraw.Draw(m)
-    pts = [(13.6, 1.5), (4.4, 13.4), (11.0, 13.4), (9.6, 22.5), (19.6, 9.8), (12.9, 9.8), (13.6, 1.5)]
-    k = big / 24.0
-    d.polygon([(x * k, y * k) for x, y in pts], fill=255)
-    m = m.filter(ImageFilter.GaussianBlur(k * 0.12)).resize((size, size), Image.LANCZOS)
-    out = Image.new("RGBA", (size, size), (255, 255, 255, 0))
-    out.putalpha(m)
-    return out
+    """BoltOS's own mark, the one on boltos.dev: a bolt through a broken ring
+    (mkmark.py draws it, from the website's path data)."""
+    sys.path.insert(0, ROOT)
+    import mkmark
+    return mkmark.mark_image(size, size * 76.0 / 70.0, size / 2, size / 2 + size * 0.02, max(3.6, 1.1 * 76.0 / size))
 
 
 # ----------------------------------------------------------------- tiles ----
