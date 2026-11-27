@@ -1700,6 +1700,7 @@ void gui_run(void) {
      * panel larger than that would have the compositor drawing past their end
      * -- on exactly the machine nobody tests on. Say so and fall back. */
     if (PW > MAX_PW || PH > MAX_PH) {
+        console_reveal();
         kprintf("\nThe display is %dx%d and the desktop is built for at most "
                 "%dx%d.\nStarting BoltShell instead.\n", PW, PH, MAX_PW, MAX_PH);
         shell_run();

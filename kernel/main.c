@@ -349,7 +349,7 @@ void kmain(struct bootinfo *bi) {
 
     serial_init();
     fb_init(bi);
-    console_init();          /* paints background + taskbar, starts text console */
+    console_init();          /* the boot screen (the log, in safe mode), starts text console */
 
     kprintf("==================================================\n");
     kprintf("   BoltOS kernel  -  64-bit long mode\n");
@@ -439,6 +439,7 @@ void kmain(struct bootinfo *bi) {
                 keys, keys == 1 ? "" : "s", ps2_kbd, usb_kbd,
                 points, points == 1 ? "" : "s", ps2_mouse, usb_mouse);
         if (!keys || !points) {
+            console_reveal();          /* the boot log is the diagnosis: show it */
             kprintf("[--] nothing will respond to the %s.\n",
                     !keys && !points ? "keyboard or the mouse"
                                      : (!keys ? "keyboard" : "mouse"));
@@ -583,6 +584,7 @@ void kmain(struct bootinfo *bi) {
         gui_run();          /* enter the GUI desktop; never returns */
     }
 
+    console_reveal();
     kprintf("\nBoltOS is up (%s mode). Starting BoltShell.\n", boot_mode_name());
     if (boot_is_safe())
         kprintf("The desktop is not running. 'help' lists commands; "

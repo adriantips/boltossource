@@ -37,6 +37,8 @@ void kputc(char c) {
     logtotal++;
 }
 
+void console_reveal(void) { }           /* kernel/interrupts.c, on a panic: nothing to reveal */
+
 uint32_t tv_log_snapshot(char *out, uint32_t cap) {
     if (!cap) return 0;
     uint32_t have = logtotal < LOGCAP ? (uint32_t)logtotal : LOGCAP;

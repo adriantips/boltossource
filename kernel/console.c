@@ -6,6 +6,8 @@
 #include "framebuffer.h"
 #include "pit.h"
 #include "io.h"
+#include "boot.h"
+#include "boltmark.h"
 
 extern const unsigned char font8x8_basic[128][8];
 extern const unsigned char font8x8_latin1[128][8];  /* mkfont.py, 0x80..0xFF */
@@ -43,10 +45,30 @@ static uint32_t lerp_color(uint32_t a, uint32_t b, int n, int d) {
     return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)c;
 }
 
-static void draw_bolt(uint32_t x, uint32_t y, uint32_t col) {
-    for (int i = 0; i < 22; i++) fb_rect(x + 8 - i / 3, y + i,       5, 1, col);
-    fb_rect(x - 6, y + 20, 14, 4, col);
-    for (int i = 0; i < 22; i++) fb_rect(x + 2 - i / 3, y + 24 + i,  5, 1, col);
+/* A normal boot keeps quiet: the screen is black with the BoltOS mark unlit
+ * in the middle, and the boot log goes to the serial port and `dmesg` only,
+ * until gui_login.c lights the mark up. Safe and recovery boots show the log
+ * as text, and so does a boot that goes wrong (console_reveal). */
+static int quiet;
+
+/* The mark, straight onto the panel, over a flat colour. Before the heap
+ * exists, so one row at a time. */
+static void fb_mark(int x, int y, int size, uint32_t col, int a, uint32_t bg) {
+    static uint8_t row[2048];
+    if (size <= 0 || size > (int)sizeof row) return;
+    bm_pose_t p = BM_STILL;
+    p.stroke = bm_stroke_for(size);
+    for (int j = 0; j < size; j++) {
+        boltmark_raster(&p, (float)size, 0, j, size, 1, row, 0, 0, size);
+        for (int i = 0; i < size; i++)
+            if (row[i] && x + i >= 0 && y + j >= 0)
+                fb_pixel((uint32_t)(x + i), (uint32_t)(y + j), lerp_color(bg, col, row[i] * a, 255 * 255));
+    }
+}
+
+void console_boot_mark(int W, int H, int *x, int *y, int *size) {
+    *size = H * 22 / 100;
+    boltmark_center(W / 2, H * 46 / 100, *size, x, y);
 }
 
 /* Background tint for a cell, sampled at its vertical center (one color per
@@ -57,6 +79,7 @@ static uint32_t bg_at(uint32_t py) {
 
 /* Repaint one cell: restore its background, then stamp its glyph (if any). */
 static void draw_cell(uint32_t col, uint32_t row) {
+    if (quiet) return;
     uint32_t px = MARGIN + col * CELL, py = MARGIN + row * CELL;
     fb_rect(px, py, CELL, CELL, bg_at(py));
     unsigned char ch = (unsigned char)grid[row][col];
@@ -79,7 +102,7 @@ static void cursor_erase(void) {
     if (cur_on) { cur_on = 0; if (on_fb) draw_cell(ccol, crow); }
 }
 static void cursor_draw(void) {
-    if (!on_fb) return;
+    if (!on_fb || quiet) return;
     uint32_t px = MARGIN + ccol * CELL, py = MARGIN + crow * CELL;
     fb_rect(px, py + CELL - 3, CELL - 2, 2, fg);     /* underline */
     cur_on = 1;
@@ -131,7 +154,20 @@ static void vbe_ping(void) {
     outw(0x01CE, 4);               /* DI_ENABLE */
     outw(0x01CF, 0);               /* disable   */
     outw(0x01CE, 4);
-    outw(0x01CF, 0x41);           /* enable + LFB */
+    /* enable + LFB + NOCLEARMEM: without 0x80 the adapter wipes video memory
+     * as it comes back on, and with it whatever was just drawn (QEMU does) */
+    outw(0x01CF, 0xC1);
+}
+
+/* The text console's backdrop: the gradient, and a taskbar strip with the mark. */
+static void paint_text_backdrop(void) {
+    for (uint32_t y = 0; y < H; y++) {
+        uint32_t c = lerp_color(0x0F0C29, 0x24243E, (int)y, (int)H);
+        fb_rect(0, y, W, 1, c);
+    }
+    fb_rect(0, H - 52, W, 52, 0x0D0D0F);     /* taskbar */
+    fb_rect(0, H - 52, W, 1,  0x2E2E38);
+    fb_mark(22, (int)H - 44, 36, 0xFFFFFF, 230, 0x0D0D0F);
 }
 
 void console_init(void) {
@@ -139,14 +175,16 @@ void console_init(void) {
     on_fb = 1;
     W = fb_width();
     H = fb_height();
+    quiet = !boot_is_safe();
 
-    for (uint32_t y = 0; y < H; y++) {
-        uint32_t c = lerp_color(0x0F0C29, 0x24243E, (int)y, (int)H);
-        fb_rect(0, y, W, 1, c);
+    if (quiet) {
+        int mx, my, ms;
+        fb_fill(BOOT_BG);
+        console_boot_mark((int)W, (int)H, &mx, &my, &ms);
+        fb_mark(mx, my, ms, 0xFFFFFF, BOOT_GHOST, BOOT_BG);
+    } else {
+        paint_text_backdrop();
     }
-    fb_rect(0, H - 52, W, 52, 0x0D0D0F);     /* taskbar */
-    fb_rect(0, H - 52, W, 1,  0x2E2E38);
-    draw_bolt(30, H - 44, 0x5E6EFF);          /* bolt logo */
     vbe_ping();                                /* flush to VirtualBox display */
 
     bottom = H - 60;
@@ -158,6 +196,16 @@ void console_init(void) {
             grid[r][c] = 0;
     cur_on = 0;
     cur_last = 0;
+}
+
+/* Something went wrong during a quiet boot, or there is no desktop to come:
+ * the boot log, as text, from here on. */
+void console_reveal(void) {
+    if (!on_fb || !quiet) return;
+    quiet = 0;
+    paint_text_backdrop();
+    repaint();
+    vbe_ping();
 }
 
 /* Minimal ANSI CSI handling.

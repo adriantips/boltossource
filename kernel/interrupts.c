@@ -5,6 +5,7 @@
 #include "apic.h"
 #include "io.h"
 #include "klog.h"
+#include "console.h"
 #include "sched.h"
 #include "proc.h"
 
@@ -109,6 +110,7 @@ static void backtrace(uint64_t rbp, uint64_t rip) {
 /* Full crash dump: cause, every GPR, control/segment state, page-fault decode,
  * and a stack backtrace. Mirrors to screen and COM1, then halts. */
 static void panic_dump(struct registers *r) {
+    console_reveal();      /* a quiet boot shows the log now (no-op once the desktop runs) */
     kprintf("\n\n================ KERNEL PANIC ================\n");
     kprintf("  CPU EXCEPTION #%lu", r->int_no);
     if (r->int_no < 32) kprintf(" (%s)", exc[r->int_no]);

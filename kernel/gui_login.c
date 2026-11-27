@@ -1,7 +1,7 @@
 /* ===========================================================================
  *  BoltOS  -  kernel/gui_login.c
  *
- *  Sign-in and lock screen, and the splash in front of them at boot.
+ *  Sign-in and lock screen, and the startup in front of them at boot.
  *
  *  The same screen serves both, because they ask the same question and must
  *  be equally hard to get past. The difference is only what happens behind
@@ -27,6 +27,9 @@
 #include "string.h"
 #include "acpi.h"
 #include "math.h"
+#include "console.h"
+#include "settings.h"
+#include "boltmark.h"
 
 int login_active;
 static int  login_locked;         /* 1 = locking a live session, not signing in */
@@ -42,7 +45,8 @@ uint64_t    gui_last_input_tick;
 /* Minutes of idleness before the session locks itself. 0 disables it. */
 static int lock_idle_minutes = 10;
 
-static uint64_t t_splash;         /* boot splash start, 0 once it is over   */
+static uint64_t t_splash;         /* the startup's clock, 0 once it is over */
+static int      splash_frames;    /* frames of it drawn so far              */
 static uint64_t t_reveal;         /* the sign-in UI fading in                */
 static uint64_t t_shake;          /* a wrong password                        */
 static uint64_t t_out;            /* fading out over the desktop             */
@@ -54,7 +58,8 @@ static backdrop_t bgblur;
 static int      bg_for_w, bg_for_h, bg_for_ver = -1;
 static int      caret_phase = -1;
 
-#define SPLASH_MS 1100
+#define SPLASH_MS 2500             /* the startup, before the sign-in fades in */
+#define SPLASH_REDUCED_MS 900      /* with Reduce motion: the finished mark      */
 #define REVEAL_MS 420
 #define OUT_MS    360
 #define IN_MS     320
@@ -74,7 +79,7 @@ void login_begin(void) {
     reset_fields();
     uint64_t now = gui_now();
     static int booted;
-    if (!booted) { booted = 1; t_splash = now ? now : 1; gui_cursor_show(0); }  /* from boot */
+    if (!booted) { booted = 1; t_splash = now ? now : 1; splash_frames = 0; gui_cursor_show(0); }  /* from boot */
     else t_in = now;                                                         /* sign out */
     t_out = 0;
     need = 1;
@@ -341,25 +346,75 @@ static void draw_screen(int a, int ui_a) {
         gfx_circle((float)(bx + bw / 2), (float)(by + bh / 2), 21.0f, 0xFFFFFF, (hot ? 60 : 26) * ua / 255);
         glyph_draw_c(k ? GLYPH_POWER : GLYPH_REFRESH, bx + bw / 2, by + bh / 2, 20, 0xFFFFFF, ua);
     }
-    /* bottom left: the build */
-    font_draw(FONT_SEMIBOLD, 13, 26, H - 34, "BoltOS", -1, 0xFFFFFF, 200 * ua / 255);
+    /* bottom left: the mark and the name */
+    { int lx, ly; boltmark_center(36, H - 39, 22, &lx, &ly);
+      boltmark_draw(lx, ly, 22, 0xFFFFFF, 200 * ua / 255); }
+    font_draw(FONT_SEMIBOLD, 13, 54, H - 34, "BoltOS", -1, 0xFFFFFF, 200 * ua / 255);
+}
+
+/* ---- the startup -------------------------------------------------------------
+ * The boot screen (console.c) left the BoltOS mark unlit in the middle of a
+ * black screen. This lights it. The two arcs of the ring sweep round into
+ * place; the bolt strikes down through the gap between them, its front
+ * white-hot; where it lands the mark flashes and a blue glow spreads out and
+ * settles; a band of light crosses it; the name comes up underneath. Then
+ * the sign-in screen fades in over the top.
+ *
+ * Times are ms from the first frame the main loop draws, not from gui_run's
+ * first one: the apps are set up in between, and the clock starting before
+ * that would skip the beginning on a slow machine. */
+static int splash_t(uint64_t now) {
+    if (g_settings.motion == MOTION_REDUCED) return 100000;      /* where it all ends */
+    return splash_frames < 2 ? 0 : (int)(now - t_splash);
+}
+
+static int word_px(int H) { int px = H * 42 / 1000; return px < 22 ? 22 : px; }
+
+/* Draws the startup at time t. Returns the rectangle that changes while it
+ * runs (the mark, its glow and the name), for gui_present_rect. */
+static void draw_splash_at(int t, int *rx, int *ry, int *rw, int *rh) {
+    int W = gui_screen_w(), H = gui_screen_h();
+    int mx, my, ms;
+    console_boot_mark(W, H, &mx, &my, &ms);
+    float ft = (float)t;
+
+    bm_pose_t p = BM_STILL;
+    float ring = bm_ease_out(bm_span(ft, 0.0f, 950.0f));
+    p.ring = ring;
+    p.spin = -120.0f * (1.0f - ring);
+    float b = bm_span(ft, 640.0f, 880.0f);
+    p.bolt = b * b;                                         /* falling, faster and faster */
+    p.stroke = bm_stroke_for(ms);
+    p.glow = 15.0f;
+    p.sheen = (ft >= 1050.0f && ft < 1900.0f) ? bm_span(ft, 1050.0f, 1900.0f) : -1.0f;
+    /* the flash where it lands, settling to a low steady glow */
+    float fl = ft < 880.0f ? 0.0f : ft < 1000.0f ? (ft - 880.0f) / 120.0f
+             : 1.0f - 0.72f * bm_ease_out(bm_span(ft, 1000.0f, 2100.0f));
+    int hot = p.sheen >= 0.0f || (p.bolt > 0.0f && p.bolt < 1.0f);
+    int ma = 205 + (int)(50.0f * bm_span(ft, 1900.0f, 2300.0f));
+
+    int pad = (int)(p.glow * (float)ms / 76.0f) + 3;
+    int px = word_px(H);
+    int base = my + ms * 66 / 76 + H * 7 / 100;             /* under the bolt's lower point */
+    int x0 = mx - pad, y0 = my - pad, x1 = mx + ms + pad, y1 = base + px / 2 + 16;
+    gfx_fill(x0, y0, x1 - x0, y1 - y0, BOOT_BG);
+
+    boltmark_draw(mx, my, ms, 0xFFFFFF, BOOT_GHOST);        /* unlit, as the boot screen left it */
+    boltmark_draw_pose(mx, my, ms, &p, 0xFFFFFF, ma, 0xFFFFFF, hot ? 255 : 0, 0x4C74FF, (int)(165.0f * fl));
+
+    float w = bm_ease_out(bm_span(ft, 1100.0f, 1650.0f));
+    if (w > 0.0f) {
+        int ww = font_width(FONT_SEMIBOLD, px, "BoltOS", -1);
+        font_draw(FONT_SEMIBOLD, px, W / 2 - ww / 2, base + (int)(12.0f * (1.0f - w)), "BoltOS", -1, 0xFFFFFF,
+                  (int)(235.0f * w));
+    }
+    if (rx) { *rx = x0; *ry = y0; *rw = x1 - x0; *rh = y1 - y0; }
 }
 
 static void draw_splash(uint64_t now) {
     int W = gui_screen_w(), H = gui_screen_h();
-    float t = anim_t(now, t_splash, SPLASH_MS);
-    gfx_fill(0, 0, W, H, 0x05060A);
-    int a = (int)(255.0f * ease_out(clamp01(t * 3.0f)));
-    /* a faint glow behind the mark */
-    for (int r = 6; r >= 1; r--)
-        gfx_circle((float)(W / 2), (float)(H / 2 - 30), 40.0f + r * 18.0f, 0x3D5BFF, (6 + (6 - r) * 3) * a / 255);
-    icon_draw(ICON_START, W / 2 - 56, H / 2 - 86, 112, a);
-    int ww = font_width(FONT_SEMIBOLD, 28, "BoltOS", -1);
-    font_draw(FONT_SEMIBOLD, 28, W / 2 - ww / 2, H / 2 + 62, "BoltOS", -1, 0xFFFFFF, a);
-    /* the spinner */
-    float spin = (float)(now % 1000) * 0.36f;
-    gfx_ring((float)(W / 2), (float)(H / 2 + 118), 11.0f, 2.5f, 0xFFFFFF, 30 * a / 255);
-    gfx_arc((float)(W / 2), (float)(H / 2 + 118), 11.0f, 2.5f, spin, spin + 100.0f, 0xFFFFFF, 220 * a / 255);
+    gfx_fill(0, 0, W, H, BOOT_BG);
+    draw_splash_at(splash_t(now), 0, 0, 0, 0);
 }
 
 int login_frame(uint64_t now) {
@@ -372,9 +427,16 @@ int login_frame(uint64_t now) {
     if (cp != caret_phase) { caret_phase = cp; need = 1; }          /* caret */
     gfx_bind(bb, 0, 0, 0, 0, W, H);
     if (t_splash) {
-        if (now < t_splash + SPLASH_MS) {
-            draw_splash(now);
-            gui_present_all();
+        if (splash_frames == 1) t_splash = now ? now : 1;     /* the main loop's first frame */
+        splash_frames++;
+        int dur = g_settings.motion == MOTION_REDUCED ? SPLASH_REDUCED_MS : SPLASH_MS;
+        if (splash_frames <= 2 || now < t_splash + (uint64_t)dur) {
+            if (splash_frames <= 2) { draw_splash(now); gui_present_all(); }
+            else {
+                int x, y, w, h;
+                draw_splash_at(splash_t(now), &x, &y, &w, &h);
+                gui_present_rect(x, y, w, h);
+            }
             return 1;
         }
         t_splash = 0;
@@ -387,7 +449,7 @@ int login_frame(uint64_t now) {
         gui_present_all();
         return 1;
     }
-    if (t_reveal) { t_reveal = 0; need = 1; gui_cursor_show(1); }
+    if (t_reveal) { t_reveal = 0; need = 1; gui_cursor_show(1); boltmark_release(); }
     if (t_in) {
         /* fading in over the desktop: blend a little more of the lock screen
          * over what is already there each frame. Converges, and needs no copy
