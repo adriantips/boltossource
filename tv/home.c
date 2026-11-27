@@ -12,6 +12,7 @@
 #include "tv.h"
 #include "string.h"
 #include "stdio.h"
+#include "boltmark.h"
 
 enum { A_LIVE, A_YOUTUBE, A_NETFLIX, A_PRIME, A_DISNEY, A_HBOMAX, A_APPLETV, A_HDMI, A_WEB, A_ADBLOCK, A_SETTINGS };
 
@@ -52,6 +53,8 @@ static glasscache_t gc_side;
 #define ROW_H 84
 #define GROUP_GAP 22                       /* between watching, inputs and apps */
 #define AMBIENT_MS 45000
+#define INTRO_MS    3800                   /* the startup, black to film           */
+#define INTRO_UI_MS 3000                   /* the pane and the corner come in here */
 
 /* The pane runs the height of the screen, 1080 / density design px. */
 static int pane_y(void) { return SY; }
@@ -122,9 +125,9 @@ static void home_tick(uint64_t now) {
     last_tick = now;
     if (!ambient && now - last_input > AMBIENT_MS && tv_top() == &view_home) ambient = 1;
 
-    /* the intro: a moment of logo, then the glass slides in */
+    /* the intro (draw_intro), then the glass slides in as it lifts */
     float target_ui = ambient ? 0.0f : 1.0f;
-    if (now - intro_t0 < 1500) target_ui = 0.0f;
+    if (now - intro_t0 < INTRO_UI_MS) target_ui = 0.0f;
     float nu = ui_ease(ui_a, target_ui, dt, ambient ? 1600 : 650);
     float ty = (float)row_y(focus);
     if (fy < 0) fy = ty;
@@ -135,7 +138,7 @@ static void home_tick(uint64_t now) {
         hero_t0 = now;
     }
     float nh = (now - hero_t0) < 420 ? (float)(now - hero_t0) / 420.0f : 1.0f;
-    if (nu != ui_a || nfy != fy || nh != hero_a || now - intro_t0 < 3200) tv_redraw();
+    if (nu != ui_a || nfy != fy || nh != hero_a || now - intro_t0 < INTRO_MS + 200) tv_redraw();
     ui_a = nu; fy = nfy; hero_a = nh;
 }
 
@@ -199,21 +202,62 @@ static void draw_sidebar(int alpha, int slide) {
     gfx_fill_a(x + S(34), S(row_y(A_WEB)) - S(GROUP_GAP) / 2 - 1, w - S(68), 1, 0xFFFFFF, alpha * 34 / 255);
 }
 
+/* The startup. The set comes on to black; the BoltOS mark draws itself in
+ * the middle of it -- the two arcs of the ring sweep slowly round into place,
+ * the bolt strikes down through the gap and the whole mark blooms with light
+ * where it lands, a band of light crosses it, and the name fades up small
+ * underneath. Then it lifts: the mark drifts towards you and fades as the
+ * black opens onto the film, and the pane slides in. Times in ms. */
 static void draw_intro(uint64_t now) {
+    /* The clock starts with the first frame drawn, not when Home was set up:
+     * the film's first picture can take a moment, and the start is the part
+     * worth seeing. */
+    static int started;
+    if (!started) { started = 1; intro_t0 = now; }
     uint64_t dt = now - intro_t0;
-    if (dt > 2600) return;
-    int a = dt < 300 ? (int)(dt * 255 / 300) : dt > 1700 ? (int)((2600 - dt) * 255 / 900) : 255;
-    if (a < 0) a = 0;
-    /* black under the logo until the first frame of film is in */
-    int black = dt < 1300 ? 255 : dt < 2300 ? (int)((2300 - dt) * 255 / 1000) : 0;
+    if (dt > INTRO_MS) { boltmark_release(); return; }
+    float t = (float)dt;
+    float out = bm_ease_in_out(bm_span(t, 2900.0f, 3700.0f));     /* lifting off the film */
+    int a = (int)(255.0f * (1.0f - out));
+
+    /* black under it all until it lifts, and the film is in by then */
+    int black = (int)(255.0f * (1.0f - bm_ease_in_out(bm_span(t, 2800.0f, 3800.0f))));
     if (black > 0) gfx_fill_a(0, 0, tv_w, tv_h, 0x000000, black);
-    int cx = tv_w / 2, cy = tv_h / 2;
-    float s = 1.0f + (float)dt / 26000.0f;
-    int px = (int)(S(80) * s);
-    int wb = font_width(FONT_SEMIBOLD, px, "BoltOS", -1), wt = font_width(FONT_DISPLAY, px, " TV", -1);
-    int x0 = cx - (wb + wt) / 2;
-    ui_text(FONT_SEMIBOLD, px, x0, cy, "BoltOS", 0xFFFFFF, a, 0);
-    ui_text(FONT_DISPLAY, px, x0 + wb, cy, " TV", 0xFFFFFF, a, 0);
+    if (a <= 0) { tv_redraw(); return; }
+
+    float z = 1.0f + 0.06f * out;
+    int size = (int)((float)S(380) * z);
+    int cx = tv_w / 2, cy = tv_h * 46 / 100;
+    int mx, my;
+    boltmark_center(cx, cy, size, &mx, &my);
+
+    bm_pose_t p = BM_STILL;
+    float ring = bm_ease_out(bm_span(t, 250.0f, 1500.0f));
+    p.ring = ring;
+    p.spin = -150.0f * (1.0f - ring);
+    float b = bm_span(t, 1200.0f, 1480.0f);
+    p.bolt = b * b;
+    p.stroke = bm_stroke_for(size);
+    p.glow = 20.0f;
+    p.sheen = (t >= 1650.0f && t < 2550.0f) ? bm_span(t, 1650.0f, 2550.0f) : -1.0f;
+    float fl = t < 1480.0f ? 0.0f : t < 1600.0f ? (t - 1480.0f) / 120.0f
+             : 1.0f - 0.7f * bm_ease_out(bm_span(t, 1600.0f, 2700.0f));
+    int hot = p.sheen >= 0.0f || (p.bolt > 0.0f && p.bolt < 1.0f);
+    int ma = 215 + (int)(40.0f * bm_span(t, 2400.0f, 2800.0f));
+    boltmark_draw_pose(mx, my, size, &p, 0xFFFFFF, ma * a / 255, 0xFFFFFF, hot ? a : 0,
+                       0xBFD3FF, (int)(150.0f * fl) * a / 255);
+
+    /* the name, small, under the bolt's lower point */
+    float w = bm_ease_out(bm_span(t, 1750.0f, 2350.0f));
+    if (w > 0.0f) {
+        int px = S(36);
+        int base = my + size * 66 / 76 + S(84) + (int)((float)S(10) * (1.0f - w));
+        int wb = font_width(FONT_SEMIBOLD, px, "BoltOS", -1), wt = font_width(FONT_DISPLAY, px, " TV", -1);
+        int x0 = cx - (wb + wt) / 2;
+        int ta = (int)(225.0f * w) * a / 255;
+        ui_text(FONT_SEMIBOLD, px, x0, base, "BoltOS", 0xFFFFFF, ta, 0);
+        ui_text(FONT_DISPLAY, px, x0 + wb, base, " TV", 0xFFFFFF, ta, 0);
+    }
     tv_redraw();
 }
 
@@ -232,7 +276,7 @@ static void home_draw(uint64_t now) {
         if (hero_prev >= 0 && hero_a < 1.0f) draw_hero(hero_prev, (255 - (int)(hero_a * 255)) * ua / 255, -S(8));
         draw_hero(hero_shown, ha, dy);
     }
-    int ia = now - intro_t0 < 1500 ? 0 : 255;
+    int ia = now - intro_t0 < INTRO_UI_MS ? 0 : 255;
     draw_corner(ambient ? 190 : ia);
     draw_intro(now);
 }
