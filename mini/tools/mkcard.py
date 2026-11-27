@@ -5,7 +5,7 @@ The H618's boot ROM looks for a boot program 8 KiB into the card, before any
 partition, so the card is laid out the way every Allwinner card is:
 
     LBA 0           an MBR with one partition entry, no boot code
-    8 KiB           u-boot-sunxi-with-spl.bin: SPL (DRAM), TF-A, U-Boot
+    8 KiB           the firmware: BoltBoot (mini/boot/), or a U-Boot image
     1 MiB           partition 1: FAT32 "BOLTOS"
                       /BOLTOS.BIN   the kernel, which U-Boot loads
                       /README.TXT   what this card is
@@ -14,7 +14,7 @@ Only the first part of the card is written; the rest of a 128 GB card is left
 alone and unused. The MBR and FAT32 builders are mkusb.py's, the same ones the
 desktop's USB stick is made with.
 
-    mkcard.py OUT --uboot u-boot-sunxi-with-spl.bin [--kernel boltos.bin]
+    mkcard.py OUT --boot boltboot.bin [--kernel boltos.bin]
                   [--fat-mb 128]
 """
 import argparse, os, struct, sys
@@ -44,7 +44,8 @@ See MINI.md in the BoltOS repository.
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("out")
-    ap.add_argument("--uboot", required=True)
+    ap.add_argument("--boot", "--uboot", dest="uboot", required=True,
+                    help="the firmware: build/mini/boltboot.bin (or a U-Boot image)")
     ap.add_argument("--kernel")
     ap.add_argument("--fat-mb", type=int, default=128)
     a = ap.parse_args(argv)
@@ -53,7 +54,7 @@ def main(argv):
     if uboot[4:12] != b"eGON.BT0":
         raise SystemExit("%s has no eGON header: not an Allwinner boot image" % a.uboot)
     if UBOOT_OFFSET + len(uboot) > PART_LBA * SECTOR:
-        raise SystemExit("U-Boot is %d bytes and runs into the partition at 1 MiB"
+        raise SystemExit("the firmware is %d bytes and runs into the partition at 1 MiB"
                          % len(uboot))
 
     files = {"README.TXT": README}
@@ -80,8 +81,8 @@ def main(argv):
         f.write(fat)
     os.replace(tmp, a.out)
     size = os.path.getsize(a.out)
-    print("%s: %d MiB (U-Boot %d KiB, FAT32 %d MiB%s)" % (
-        a.out, size >> 20, len(uboot) >> 10, a.fat_mb,
+    print("%s: %d MiB (%s %d KiB, FAT32 %d MiB%s)" % (
+        a.out, size >> 20, "BoltBoot" if uboot[0x14:0x18] == b"BOLT" else "U-Boot", len(uboot) >> 10, a.fat_mb,
         ", kernel %d KiB" % (len(files["BOLTOS.BIN"]) >> 10) if a.kernel else ", no kernel yet"))
 
 

@@ -10,6 +10,9 @@ While BoltOS Mini runs, the Pi is a network adapter on the Mac at 10.77.0.1:
     pi.py log            print BoltOS's log (or, if BoltOS is not running,
                          the one the last run left in RAM, through U-Boot)
     pi.py reboot         restart the Pi
+    pi.py firmware FILE  write FILE (BoltBoot, or any eGON boot image) to the
+                         card's boot area, 8 KiB in; the files on the card
+                         stay as they are (development kernels only)
 
 Every time the Pi starts, U-Boot spends two seconds as a USB DFU device before
 it boots the kernel on the card. In that window this tool can also:
@@ -19,10 +22,18 @@ it boots the kernel on the card. In that window this tool can also:
     pi.py install KERNEL write KERNEL to the card as BOLTOS.BIN, then boot it
 
 Both restart a running BoltOS first, so a new kernel goes over without
-anybody touching the Pi. The DFU commands need pyusb and libusb
+anybody touching the Pi.
+
+With no card in it at power-on, the H618's boot ROM waits on USB-C in its
+FEL mode instead, and these talk to the ROM itself (mini/boot/, BoltBoot):
+
+    pi.py fel                       which chip, which die
+    pi.py fel run boltboot.bin      run boot0 in SRAM and print its report
+    pi.py fel read ADDR LEN [FILE]  read memory (hex dump, or into FILE)
+ The DFU commands need pyusb and libusb
 (build/.tools/env has both; see MINI.md); the others need only Python.
 """
-import argparse, os, sys, time, urllib.request
+import argparse, os, struct, sys, time, urllib.request
 
 try:
     import usb.core, usb.util
@@ -207,14 +218,234 @@ def print_log(raw):
     print("---- end of log ----")
 
 
+# ---- the boot ROM's FEL mode ------------------------------------------------
+# With no card to boot (or no valid one), the H618's ROM is a USB device that
+# can read and write memory and call code: two bulk endpoints, every message
+# wrapped as "AWUC" request -> data -> "AWUS" reply, and on top of that a
+# 16-byte FEL request (version, write, exec, read) answered by an 8-byte status.
+FEL_PID = 0xEFE8
+FEL_VERSION, FEL_WRITE, FEL_EXEC, FEL_READ = 0x001, 0x101, 0x102, 0x103
+FEL_CHUNK = 64 * 1024
+SRAM, FEL_HOLE, FEL_HOLE_END = 0x20000, 0x21000, 0x22000      # mini/boot/boot.h
+BOOT0_REPORT, THUNK = 0x50000, 0x53A00
+H616_SOC = 0x1823
+
+
+class FelError(Exception):
+    pass
+
+
+class Fel:
+    def __init__(self, dev):
+        self.dev = dev
+        try:
+            cfg = dev.get_active_configuration()
+        except usb.core.USBError:
+            dev.set_configuration()
+            cfg = dev.get_active_configuration()
+        it = cfg[(0, 0)]
+        try:
+            if dev.is_kernel_driver_active(0):
+                dev.detach_kernel_driver(0)
+        except (usb.core.USBError, NotImplementedError):
+            pass
+        usb.util.claim_interface(dev, 0)
+        self.ep_out = usb.util.find_descriptor(it, custom_match=lambda e:
+            usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_OUT)
+        self.ep_in = usb.util.find_descriptor(it, custom_match=lambda e:
+            usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN)
+
+    def _usb(self, kind, length):
+        req = b"AWUC\0\0\0\0" + struct.pack("<IIHI", length, 0x0C000000, kind, length) + bytes(10)
+        self.ep_out.write(req, 10000)
+
+    def _reply(self, timeout=10000):
+        r = bytes(self.ep_in.read(64, timeout))
+        if r[:4] != b"AWUS":
+            raise FelError("the boot ROM answered %s, not AWUS" % r.hex())
+
+    def _write(self, data, timeout=10000):
+        self._usb(0x12, len(data))
+        self.ep_out.write(data, timeout)
+        self._reply()
+
+    def _read(self, n, timeout=10000):
+        self._usb(0x11, n)
+        out = bytearray()
+        while len(out) < n:
+            out += self.ep_in.read(n - len(out), timeout)
+        self._reply()
+        return bytes(out)
+
+    def _request(self, kind, addr, length, timeout=10000):
+        self._write(struct.pack("<IIII", kind, addr, length, 0), timeout)
+
+    def _status(self, timeout=10000):
+        self._read(8, timeout)
+
+    def version(self):
+        self._request(FEL_VERSION, 0, 0)
+        v = self._read(32)
+        self._status()
+        return {"sig": v[:8], "soc": (struct.unpack_from("<I", v, 8)[0] >> 8) & 0xFFFF,
+                "protocol": struct.unpack_from("<H", v, 16)[0],
+                "scratch": struct.unpack_from("<I", v, 20)[0]}
+
+    def read(self, addr, n):
+        out = bytearray()
+        while len(out) < n:
+            k = min(FEL_CHUNK, n - len(out))
+            self._request(FEL_READ, addr + len(out), k)
+            out += self._read(k)
+            self._status()
+        return bytes(out)
+
+    def write(self, addr, data):
+        for o in range(0, len(data), FEL_CHUNK):
+            k = data[o:o + FEL_CHUNK]
+            self._request(FEL_WRITE, addr + o, len(k))
+            self._write(k)
+            self._status()
+
+    def exec(self, addr, timeout=10000):
+        """Call ARM32 code at addr; back when it returns to the ROM."""
+        self._request(FEL_EXEC, addr, 0)
+        self._status(timeout)
+
+    def r32(self, addr):
+        return struct.unpack("<I", self.read(addr, 4))[0]
+
+    def icache_flush(self):
+        # ICIALLU; DSB; ISB; BX LR -- so code just written is what runs.
+        self.write(THUNK, struct.pack("<4I", 0xEE070F15, 0xF57FF04F, 0xF57FF06F, 0xE12FFF1E))
+        self.exec(THUNK)
+
+
+def wait_for_fel(timeout):
+    if usb is None:
+        raise SystemExit("pyusb is missing: run this with build/.tools/env/bin/python3")
+    t0 = time.time()
+    said = False
+    while True:
+        dev = usb.core.find(idVendor=VID, idProduct=FEL_PID)
+        if dev is not None:
+            time.sleep(0.5)                 # let it finish enumerating
+            try:
+                fel = Fel(dev)
+                v = fel.version()
+            except (FelError, usb.core.USBError) as e:
+                print("  FEL handshake failed (%s); trying again" % e)
+                time.sleep(1)
+                continue
+            if v["sig"] != b"AWUSBFEX":
+                raise SystemExit("a FEL device that says %r" % v["sig"])
+            return fel, v
+        if not said:
+            print("Waiting for the Pi's boot ROM in FEL mode (take the card out, "
+                  "plug USB-C into the Mac)...")
+            said = True
+        if timeout and time.time() - t0 > timeout:
+            raise SystemExit("no FEL device after %d s" % timeout)
+        time.sleep(0.1)
+
+
+def fel_report(fel):
+    head = fel.read(BOOT0_REPORT, 8)
+    if head[:4] != b"BRPT":
+        print("  (no report from boot0 at 0x%x)" % BOOT0_REPORT)
+        return
+    n = min(struct.unpack_from("<I", head, 4)[0], 4096 - 8)
+    text = fel.read(BOOT0_REPORT + 8, (n + 3) & ~3)[:n].decode("utf-8", "replace")
+    print("---- boot0 ----")
+    sys.stdout.write(text if text.endswith("\n") else text + "\n")
+    print("---- end ----")
+
+
+def fel_main(args, timeout):
+    fel, v = wait_for_fel(timeout)
+    soc = "H616/H618" if v["soc"] == H616_SOC else "an unknown SoC"
+    if not args:
+        die = fel.r32(0x03000024) & 0xFF
+        print("FEL: SoC %04x (%s), protocol %d, scratch 0x%x, SRAM_VER die %d (RVBAR at 0x%08x)"
+              % (v["soc"], soc, v["protocol"], v["scratch"], die, 0x08100040 if die else 0x09010040))
+        return
+    if v["soc"] != H616_SOC:
+        raise SystemExit("this is SoC %04x, not the Zero3's H618" % v["soc"])
+    what = args[0]
+    if what == "run":
+        if len(args) < 2:
+            raise SystemExit("usage: pi.py fel run build/mini/boltboot.bin")
+        img = bytearray(open(args[1], "rb").read())
+        if img[4:12] != b"eGON.BT0" or img[0x14:0x18] != b"BOLT":
+            raise SystemExit("%s is not BoltBoot" % args[1])
+        n = struct.unpack_from("<I", img, 0x10)[0]
+        boot0 = img[:n]
+        struct.pack_into("<I", boot0, 0x18, 1)               # flags: from FEL, come back
+        fel.write(BOOT0_REPORT, b"\0" * 8)
+        # Everything but the 4 KiB the ROM keeps its stacks in, while it runs.
+        fel.write(SRAM, bytes(boot0[:FEL_HOLE - SRAM]))
+        fel.write(FEL_HOLE_END, bytes(boot0[FEL_HOLE_END - SRAM:]))
+        fel.icache_flush()
+        print("  boot0: %d KiB into SRAM, running it" % (n >> 10))
+        t0 = time.time()
+        fel.exec(SRAM, timeout=60000)
+        print("  boot0 came back after %.2f s" % (time.time() - t0))
+        fel_report(fel)
+    elif what == "read":
+        if len(args) < 3:
+            raise SystemExit("usage: pi.py fel read ADDR LEN [FILE]")
+        addr, n = int(args[1], 0), int(args[2], 0)
+        data = fel.read(addr, n)
+        if len(args) > 3:
+            open(args[3], "wb").write(data)
+            print("  %d bytes from 0x%x into %s" % (n, addr, args[3]))
+        else:
+            for o in range(0, n, 16):
+                row = data[o:o + 16]
+                print("%08x  %s" % (addr + o, " ".join("%08x" % w for w in
+                      struct.unpack("<%dI" % (len(row) // 4), row[:len(row) // 4 * 4]))))
+    else:
+        raise SystemExit("pi.py fel [run FILE | read ADDR LEN [FILE]]")
+
+
+
+def put_firmware(path):
+    """Hand a boot image to a running (development) BoltOS Mini, which writes
+    it to the card's boot area, 8 KiB in, and reads it back. The partition
+    with the files is not touched. The Pi starts it at the next power-on."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import mkboot
+    img = open(path, "rb").read()
+    if not mkboot.check(img):
+        raise SystemExit("%s is not a boot image the H618's ROM would run (eGON header or sum)" % path)
+    if len(img) > mkboot.GAP:
+        raise SystemExit("%s is too big for the space in front of the partition" % path)
+    if not running():
+        raise SystemExit("BoltOS Mini did not answer at %s" % PI[7:])
+    r = http("/firmware", data=img, timeout=60)
+    if r is None:
+        raise SystemExit("no answer from /firmware (is this a development kernel?)")
+    sys.stdout.write(r.decode("utf-8", "replace"))
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("cmd", choices=["screen", "time", "shot", "log", "reboot", "boot", "install", "wait"])
+    ap.add_argument("cmd", choices=["screen", "time", "shot", "log", "reboot", "boot", "install", "wait",
+                                    "fel", "firmware"])
     ap.add_argument("kernel", nargs="?", help="the kernel (boot, install) or file name (shot)")
+    ap.add_argument("more", nargs="*", help=argparse.SUPPRESS)
     ap.add_argument("--no-log", action="store_true", help="do not fetch the last log")
     ap.add_argument("--timeout", type=int, default=0)
     a = ap.parse_args(argv)
 
+    if a.cmd == "fel":
+        fel_main(([a.kernel] if a.kernel else []) + a.more, a.timeout)
+        return
+    if a.cmd == "firmware":
+        if not a.kernel:
+            ap.error("firmware needs a boot image (build/mini/boltboot.bin)")
+        put_firmware(a.kernel)
+        return
     if a.cmd in ("screen", "time"):
         for _ in range(60):
             if running():

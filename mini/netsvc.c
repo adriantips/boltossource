@@ -337,7 +337,8 @@ static void http_shot(tcb_t *c) {
  *  language model, say, over the Mac's link instead of Wi-Fi).
  *  The body comes over many polls; the reply says how it went.            */
 static struct {
-    tcb_t *c; int kind;                   /* 1 a package, 2 a store file, 3 a file on the card */
+    tcb_t *c; int kind;                   /* 1 a package, 2 a store file, 3 a file on the card,
+                                             4 boot firmware for the card's boot area */
     uint64_t len, got, written;
     uint8_t *buf; uint32_t blen, cap;
     const store_entry_t *e; char name[48];
@@ -363,6 +364,35 @@ static void up_finish(const char *msg) {
     tcp_close(up.c);
     if (up.buf) kfree(up.buf);
     memset(&up, 0, sizeof up);
+}
+
+/* ---- the card's boot area (POST /firmware, pi.py firmware) -----------------
+ *  What the H618's boot ROM runs sits 8 KiB into the card, in front of the
+ *  FAT partition at 1 MiB: BoltBoot (mini/boot/), or U-Boot before it. This
+ *  writes a new one there -- only an image the ROM would accept (eGON magic,
+ *  a length that is a multiple of 512, the right sum), only sectors 16-2047,
+ *  then reads it all back. The files on the card are never touched.        */
+int sd_read(uint64_t lba, void *buf, uint32_t n);
+int sd_write(uint64_t lba, const void *buf, uint32_t n);
+
+static void firmware_write(const uint8_t *img, uint32_t len, char *msg, int cap) {
+    if (len < 512 || memcmp(img + 4, "eGON.BT0", 8)) { snprintf(msg, cap, "not an eGON boot image"); return; }
+    uint32_t n = *(const uint32_t *)(img + 0x10), want = *(const uint32_t *)(img + 0x0C), sum = 0;
+    if (!n || (n & 511) || n > 0xC000 || n > len) { snprintf(msg, cap, "bad eGON length %u", n); return; }
+    for (uint32_t o = 0; o < n; o += 4) sum += o == 0x0C ? 0x5F0A6C39u : *(const uint32_t *)(img + o);
+    if (sum != want) { snprintf(msg, cap, "eGON sum is %08x, the header says %08x", sum, want); return; }
+    uint32_t secs = (len + 511) / 512;
+    if (16 + secs > 2048) { snprintf(msg, cap, "%u bytes: more than fits before the partition", len); return; }
+    uint8_t *pad = kmalloc(secs * 512), *back = kmalloc(secs * 512);
+    if (!pad || !back) { if (pad) kfree(pad); if (back) kfree(back); snprintf(msg, cap, "out of memory"); return; }
+    memset(pad, 0, secs * 512);
+    memcpy(pad, img, len);
+    int bad = sd_write(16, pad, secs) || sd_read(16, back, secs) || memcmp(pad, back, secs * 512);
+    kprintf("[fw] boot area: %u bytes (boot0 %u) %s\n", len, n, bad ? "FAILED" : "written and read back");
+    if (bad) snprintf(msg, cap, "the card did not take it: the boot area may be damaged, rewrite it now");
+    else snprintf(msg, cap, "wrote %u bytes to the boot area (boot0 %u), read back the same; "
+                  "it runs at the next power-on", len, n);
+    kfree(pad); kfree(back);
 }
 
 static int up_flush(void) {
@@ -408,6 +438,8 @@ static void up_pump(void) {
         char msg[200];
         if (up.kind == 1) {
             pkg_install_file(up.buf, (uint32_t)up.len, msg, sizeof msg);
+        } else if (up.kind == 4) {
+            firmware_write(up.buf, (uint32_t)up.len, msg, sizeof msg);
         } else if (up.kind == 3) {
             char dirp[256]; snprintf(dirp, sizeof dirp, "%s", up.fpath);
             char *sl = strrchr(dirp, '/');
@@ -440,6 +472,9 @@ static int up_begin(int i, const char *path) {
         up.kind = 3; up.cap = (uint32_t)up.len;
         url_decode(path + 9, up.fpath, sizeof up.fpath);
         if (up.len > (8u << 20) || !(up.buf = kmalloc(up.cap + 1))) { up_finish("too big"); return 0; }
+    } else if (!strcmp(path, "/firmware")) {
+        up.kind = 4; up.cap = (uint32_t)up.len;
+        if (up.len > (1016u << 10) || !(up.buf = kmalloc(up.cap + 1))) { up_finish("too big"); return 0; }
     } else if (!strcmp(path, "/pkg")) {
         up.kind = 1; up.cap = (uint32_t)up.len;
         if (up.len > (16u << 20) || !(up.buf = kmalloc(up.cap + 1))) { up_finish("too big"); return 0; }
@@ -493,6 +528,33 @@ static void http_handle(int i) {
     } else if (strcmp(path, "/reboot") == 0 && strcmp(method, "POST") == 0) {
         http_text(c, 200, "restarting\n");
         reboot_at = now_ms() + 300;
+    } else if (!strcmp(method, "POST") && !strcmp(path, "/firmware")) {
+        if (up_begin(i, path) == 0) return;
+        http_text(c, 503, "busy, or no Content-Length\n");
+    } else if (!strncmp(path, "/regs?", 6)) {
+        /* Development: read-only MMIO words, /regs?a=0x3001000&n=64 -- to see
+         * what the firmware left in a block. The SoC's register space only,
+         * 4 KiB at most; a block with its bus clock off can still hang. */
+        const char *pa = strstr(path, "a="), *pn = strstr(path, "n=");
+        uint64_t a = pa ? strtoull(pa + 2, 0, 0) : 0;
+        long n = pn ? strtol(pn + 2, 0, 0) : 16;
+        if (n < 1) n = 1;
+        if (n > 1024) n = 1024;
+        a &= ~3ull;
+        if (a < 0x01000000ull || a + (uint64_t)n * 4 > 0x09100000ull) http_text(c, 400, "usage: /regs?a=ADDR&n=WORDS, ADDR in 0x01000000..0x090FFFFF\n");
+        else {
+            char *buf = kmalloc(16384);
+            if (buf) {
+                int k = 0;
+                for (long w = 0; w < n && k < 16000; w++) {
+                    if (w % 4 == 0) k += snprintf(buf + k, 16384 - k, "%s%08lx:", w ? "\n" : "", (unsigned long)(a + w * 4));
+                    k += snprintf(buf + k, 16384 - k, " %08x", r32((uintptr_t)(a + w * 4)));
+                }
+                snprintf(buf + k, 16384 - k, "\n");
+                http_text(c, 200, buf);
+                kfree(buf);
+            }
+        }
     } else if (strncmp(path, "/keys?", 6) == 0) {
         /* Development: type at the shell. Text as it is, and {enter} {tab} {esc}
          * {bs} {up} {down} {left} {right} {pgdn} {pgup} {home} {end} {s-tab}
