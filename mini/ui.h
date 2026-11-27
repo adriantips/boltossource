@@ -3,6 +3,7 @@
 #include "mini.h"
 #include "gfx.h"
 #include "font.h"
+#include "boltmark.h"                  /* the BoltOS mark (kernel/boltmark.c) */
 
 /* ===========================================================================
  *  BoltOS Mini  -  mini/ui.h

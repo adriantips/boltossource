@@ -541,7 +541,12 @@ static void s_draw(int x, int y, int w, int h) {
         break;
     }
     case P_ABOUT: {
-        heading(pane_x, hy, "BoltOS Mini", mini_version());
+        {
+            int lx, ly, ms = S(52);
+            boltmark_center(pane_x + S(20), hy + S(14), ms, &lx, &ly);
+            boltmark_draw(lx, ly, ms, th.text, 255);
+        }
+        heading(pane_x + S(52), hy, "BoltOS Mini", mini_version());
         uint64_t used, total; kheap_usage(&used, &total);
         char up[32]; mini_uptime_str(up, sizeof up);
         const char *k[] = { "Board", "Processor", "Memory", "Screen", "Up", "Fonts" };

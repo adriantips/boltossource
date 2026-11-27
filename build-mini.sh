@@ -142,20 +142,6 @@ for spec in "${UIFONTS[@]}"; do
     ( cd "$B" && llvm-objcopy -I binary -O elf64-littleaarch64 "$fname.bfnt" "${fname}_bfnt.o" )
     OBJS+=("$B/${fname}_bfnt.o")
 done
-# Pictures, the same way: premultiplied ARGB that gfx_image() draws as it is.
-# The splash logo is drawn on #1A1A1A, which --key makes transparent.
-IMAGES=(
-    "splash_logo:assets/mini/splash-logo.png:--key 1A1A1A --fade 28"
-)
-for spec in "${IMAGES[@]}"; do
-    IFS=: read -r iname isrc iargs <<< "$spec"
-    if [ ! -f "$B/$iname.img" ] || [ "$isrc" -nt "$B/$iname.img" ] || [ mini/tools/mkimg.py -nt "$B/$iname.img" ]; then
-        "$PYTHON" mini/tools/mkimg.py "$isrc" "$B/$iname.img.tmp" $iargs
-        mv "$B/$iname.img.tmp" "$B/$iname.img"
-    fi
-    ( cd "$B" && llvm-objcopy -I binary -O elf64-littleaarch64 "$iname.img" "${iname}_img.o" )
-    OBJS+=("$B/${iname}_img.o")
-done
 
 # The Wi-Fi/Bluetooth module's firmware (mini/wcn.c): Unisoc's UWE5622 runs its own
 # Cortex-M code, which the Pi loads into it at every start. It's not ours to put in

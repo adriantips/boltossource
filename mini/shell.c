@@ -436,6 +436,7 @@ static void draw_toast(void) {
 
 /* ---- the bar ------------------------------------------------------------------------------------ */
 #define BAR_H S(28)
+#define BAR_MARK S(18)                         /* the mark in front of "BoltOS", Home's item */
 
 /* The bar's left side: "BoltOS" (Home), then "1 Browser", "2 Terminal"...
  * With more apps than the bar has room for, the apps that aren't open show
@@ -444,7 +445,7 @@ static int bar_compact;
 static int bar_item(int i, int *x) {                  /* i = -1 is Home; returns the width */
     int bx = S(14);
     const char *home = "BoltOS";
-    int hw = font_width(FONT_BOLD, S(12), home, -1) + S(16);
+    int hw = BAR_MARK + S(5) + font_width(FONT_BOLD, S(12), home, -1) + S(16);
     if (i < 0) { *x = bx - S(8); return hw; }
     bx += hw - S(8) + S(10);
     for (int k = 0; k < NAPPS; k++) {
@@ -492,7 +493,12 @@ static void draw_bar(void) {
     gfx_fill(0, h, scr_w, 1, th.line);
     int x, w = bar_item(-1, &x);
     if (!cur) gfx_fill(x, h - S(2), w, S(2), th.accent);
-    text_l(x + S(8), cy, "BoltOS", FONT_BOLD, S(12), th.text);
+    {
+        int lx, ly;
+        boltmark_center(x + S(8) + BAR_MARK / 2, cy, BAR_MARK, &lx, &ly);
+        boltmark_draw(lx, ly, BAR_MARK, th.text, 255);
+    }
+    text_l(x + S(8) + BAR_MARK + S(5), cy, "BoltOS", FONT_BOLD, S(12), th.text);
     for (int i = 0; i < NAPPS; i++) {
         w = bar_item(i, &x);
         int on = cur == apps[i];
@@ -572,6 +578,17 @@ static void draw_facts(int x, int y) {
                                  tc ? ", touch" : "");
     else snprintf(v[5], sizeof v[5], "%s", shell_mac_connected() ? "the Mac's keyboard" : "none yet");
     int lh = S(20), kw = font_width(FONT_MONO, S(12), "memory  ", -1);
+    /* The mark on the left, the way neofetch puts the system's logo next to
+     * its facts -- when the screen is wide enough for both. */
+    int vw = 0;
+    for (int i = 0; i < 6; i++) { int w = font_width(FONT_MONO, S(12), v[i], -1); if (w > vw) vw = w; }
+    int lm = S(118);
+    if (scr_w - x - S(24) >= lm + S(18) + kw + vw) {
+        int lx, ly;
+        boltmark_center(x + lm / 2, y + 5 * lh / 2, lm, &lx, &ly);
+        boltmark_draw(lx, ly, lm, th.sub, 255);
+        x += lm + S(18);
+    }
     for (int i = 0; i < 6; i++) {
         text_l(x, y + i * lh, k[i], FONT_MONO, S(12), th.faint);
         text_l(x + kw, y + i * lh, v[i], FONT_MONO, S(12), th.sub);
