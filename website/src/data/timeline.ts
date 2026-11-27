@@ -280,6 +280,17 @@ export const eras: Era[] = [
         ],
         tag: 'hypervisor',
       },
+      {
+        date: 'Nov 27',
+        title: 'One mark, and a new startup for each',
+        body: 'The logo on this site is the one in BoltOS now, drawn by the kernels from the same path data: on the desktop’s Start button and sign-in screen, in Mini’s top bar and beside its facts on Home. Each edition starts by drawing it. The ring sweeps round, the bolt strikes down through it, and the desktop, the film or Mini’s Home comes up behind.',
+        commits: [
+          'boltmark: the logo from boltos.dev, drawn by every edition',
+          'desktop: a quiet boot, and a startup that lights the mark',
+          'tv: a new startup around the mark',
+          'mini: a new splash, and the mark in the bar, on Home and in About',
+        ],
+      },
     ],
   },
 ]
